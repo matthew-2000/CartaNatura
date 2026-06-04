@@ -36,10 +36,6 @@ def index(request):
             "municipalitiesUrl": static("data/campania-municipalities-32633.geojson"),
             "boundariesUrl": static("data/campania-boundaries-4326.geojson"),
         },
-        "assets": {
-            "loadingUrl": static("assets/small-load.gif"),
-            "reportLogoUrl": "https://www.unidformazione.com/wp-content/uploads/2018/06/unisa-universita-di-salerno.jpg",
-        },
     }
     return render(
         request,

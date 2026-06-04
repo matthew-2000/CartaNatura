@@ -1,5 +1,10 @@
 import { requestNatureClip, fetchGeoJson } from "./modules/api.js";
-import { summarizeClippedFeatures, formatCurrency, formatRoundedNumber } from "./modules/analysis.js";
+import {
+  deriveSummaryMetrics,
+  summarizeClippedFeatures,
+  formatCurrency,
+  formatRoundedNumber,
+} from "./modules/analysis.js";
 import { appConfig, categories, categoryByCode, priceOptions } from "./modules/config.js";
 import { MapController } from "./modules/map-controller.js";
 import { generatePdfReport } from "./modules/pdf-export.js";
@@ -10,6 +15,7 @@ const state = {
   intersectedMunicipalities: [],
   calculatedValue: 0,
   analysisContext: null,
+  noticeTimer: null,
 };
 
 const elements = {
@@ -24,6 +30,7 @@ const elements = {
   municipalitySearch: document.getElementById("municipalitySearch"),
   selectedCountLabel: document.getElementById("selectedCountLabel"),
   loadingOverlay: document.querySelector(".loading"),
+  appNotice: document.getElementById("appNotice"),
   popup: document.getElementById("popup"),
   infoContainer: document.getElementById("infoNatura"),
   closePopupButton: document.getElementById("butchiudipopup"),
@@ -56,39 +63,54 @@ function escapeHtml(value) {
 
 function setBusy(mapController, busy) {
   elements.loadingOverlay.classList.toggle("visible", busy);
+  elements.loadingOverlay.setAttribute("aria-hidden", String(!busy));
   elements.selectMunicipalityButton.disabled = busy;
   elements.runAnalysisButton.disabled = busy;
   elements.infoButton.disabled = busy;
   elements.appInfoButton.disabled = busy;
+  elements.runAnalysisButton.textContent = busy ? "Estrazione..." : "Estrai";
   mapController.setInteractionDisabled(busy);
 }
 
 function openPopup(mapController) {
   elements.popup.classList.add("open-popup");
+  elements.popup.setAttribute("aria-hidden", "false");
   mapController.setInteractionDisabled(true);
 }
 
 function closePopup(mapController) {
   elements.popup.classList.remove("open-popup");
+  elements.popup.setAttribute("aria-hidden", "true");
   mapController.setInteractionDisabled(false);
 }
 
 function openAppInfo(mapController) {
   elements.appInfoModal.classList.add("open-infoApp");
+  elements.appInfoModal.setAttribute("aria-hidden", "false");
   mapController.setInteractionDisabled(true);
 }
 
 function closeAppInfo(mapController) {
   elements.appInfoModal.classList.remove("open-infoApp");
+  elements.appInfoModal.setAttribute("aria-hidden", "true");
   mapController.setInteractionDisabled(false);
+}
+
+function syncMunicipalityPanelState() {
+  document.body.classList.toggle(
+    "municipality-panel-open",
+    elements.municipalityPanel.classList.contains("visualizzaListaComuni")
+  );
 }
 
 function toggleMunicipalityPanel() {
   elements.municipalityPanel.classList.toggle("visualizzaListaComuni");
+  syncMunicipalityPanelState();
 }
 
 function closeMunicipalityPanel() {
   elements.municipalityPanel.classList.remove("visualizzaListaComuni");
+  syncMunicipalityPanelState();
 }
 
 function setPanelCollapsed(panelElement, buttonElement, collapsed) {
@@ -102,6 +124,32 @@ function setPanelCollapsed(panelElement, buttonElement, collapsed) {
 
 function togglePanel(panelElement, buttonElement) {
   setPanelCollapsed(panelElement, buttonElement, !panelElement.classList.contains("is-collapsed"));
+}
+
+function showNotice(message, tone = "info") {
+  if (!elements.appNotice) {
+    return;
+  }
+
+  if (state.noticeTimer) {
+    clearTimeout(state.noticeTimer);
+  }
+
+  elements.appNotice.textContent = message;
+  elements.appNotice.className = `app-notice is-visible is-${tone}`;
+  elements.appNotice.hidden = false;
+
+  state.noticeTimer = window.setTimeout(() => {
+    elements.appNotice.className = "app-notice";
+    elements.appNotice.hidden = true;
+  }, 3400);
+}
+
+function updateActionStates(mapController) {
+  const hasInputs = mapController.hasSelectedMunicipalities() || mapController.hasDrawnAreas();
+  const hasSummary = Boolean(state.summary);
+  elements.runAnalysisButton.disabled = !hasInputs;
+  elements.infoButton.disabled = !hasSummary;
 }
 
 function renderLegend() {
@@ -205,20 +253,6 @@ function renderPriceOptions() {
     .join("");
 }
 
-function getDerivedSummaryMetrics() {
-  const items = state.summary?.items || [];
-  const totalHectares = items.reduce((sum, item) => sum + (Number(item.hectares) || 0), 0);
-  const topCategory = items.reduce(
-    (current, item) => ((Number(item.hectares) || 0) > (Number(current?.hectares) || 0) ? item : current),
-    null
-  );
-
-  return {
-    totalHectares,
-    topCategory,
-  };
-}
-
 function renderInfoSummary() {
   if (!state.summary) {
     elements.infoContainer.innerHTML = `
@@ -240,7 +274,7 @@ function renderInfoSummary() {
     return;
   }
 
-  const derivedMetrics = getDerivedSummaryMetrics();
+  const derivedMetrics = deriveSummaryMetrics(state.summary);
   const maxHectares = Math.max(...state.summary.items.map((item) => item.hectares), 1);
   const summaryRows = state.summary.items
     .map(
@@ -348,10 +382,10 @@ function renderInfoSummary() {
           selectedPrice: selectedValue,
           calculatedValue: state.calculatedValue,
           mapElement: elements.map,
-          reportLogoUrl: appConfig.assets.reportLogoUrl,
         });
+        showNotice("PDF generato correttamente.", "success");
       } catch (error) {
-        alert(error.message || "Errore nella generazione del PDF.");
+        showNotice(error.message || "Errore nella generazione del PDF.", "error");
       } finally {
         calculateButton.disabled = false;
         printButton.disabled = false;
@@ -402,11 +436,13 @@ function resetAnalysis(mapController) {
   });
   closePopup(mapController);
   closeAppInfo(mapController);
+  updateActionStates(mapController);
 }
 
 async function runAnalysis(mapController) {
   closePopup(mapController);
   closeAppInfo(mapController);
+  closeMunicipalityPanel();
 
   const payload = buildAnalysisPayload(mapController);
   const analysisContext = {
@@ -414,7 +450,7 @@ async function runAnalysis(mapController) {
     drawnFeatureCount: mapController.getDrawnFeatureCount(),
   };
   if (!payload.areas.length) {
-    alert("Non hai selezionato alcuna area.");
+    showNotice("Seleziona almeno un comune o disegna un'area prima di estrarre.", "warning");
     return;
   }
 
@@ -439,12 +475,20 @@ async function runAnalysis(mapController) {
       selectedMunicipalityCount: mapController.getSelectedMunicipalityCount(),
       drawnFeatureCount: mapController.getDrawnFeatureCount(),
     });
+    updateActionStates(mapController);
     renderInfoSummary();
     openPopup(mapController);
+    showNotice(
+      state.summary.hasSupportedVegetation
+        ? "Estrazione completata. Report aggiornato."
+        : "Estrazione completata, ma senza categorie supportate.",
+      state.summary.hasSupportedVegetation ? "success" : "warning"
+    );
   } catch (error) {
-    alert(error.message || "Errore durante analisi.");
+    showNotice(error.message || "Errore durante l'analisi.", "error");
   } finally {
     setBusy(mapController, false);
+    updateActionStates(mapController);
   }
 }
 
@@ -463,6 +507,7 @@ async function bootstrap() {
       selectionState?.drawnFeatureCount ?? mapControllerRef?.getDrawnFeatureCount() ?? 0;
 
     renderStatusPanel({ selectedMunicipalityCount, drawnFeatureCount });
+    updateActionStates(mapControllerRef || mapController);
   };
 
   const mapController = new MapController({
@@ -476,6 +521,7 @@ async function bootstrap() {
   renderLegend();
   renderStatusPanel();
   renderMunicipalityList(mapController, () => refreshSelectionStatus(null, mapController));
+  updateActionStates(mapController);
 
   elements.selectMunicipalityButton.addEventListener("click", () => {
     toggleMunicipalityPanel();
@@ -527,8 +573,26 @@ async function bootstrap() {
       closeMunicipalityPanel();
     }
   });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+
+    if (elements.popup.classList.contains("open-popup")) {
+      closePopup(mapController);
+      return;
+    }
+
+    if (elements.appInfoModal.classList.contains("open-infoApp")) {
+      closeAppInfo(mapController);
+      return;
+    }
+
+    closeMunicipalityPanel();
+  });
 }
 
 bootstrap().catch((error) => {
-  alert(error.message || "Errore durante inizializzazione applicazione.");
+  showNotice(error.message || "Errore durante inizializzazione applicazione.", "error");
 });

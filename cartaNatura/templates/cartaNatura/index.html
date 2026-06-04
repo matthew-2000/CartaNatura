@@ -50,6 +50,7 @@
     </div>
   </div>
   <div id="container">
+  <div id="appNotice" class="app-notice" role="status" aria-live="polite" hidden></div>
 	<div class="loading" aria-live="polite" aria-hidden="true">
       <div class="loading-card">
         <div class="loading-visual" aria-hidden="true">
@@ -67,7 +68,7 @@
         </div>
       </div>
 	</div>
-  <div class="popup" id="popup">
+  <div class="popup" id="popup" role="dialog" aria-modal="true" aria-hidden="true">
     <div class="drawer-shell">
       <nav id="navVisualizzaInfo" class="drawer-content">
 		    <div class="drawer-header">
@@ -81,85 +82,44 @@
       </nav>
     </div>
   </div>
-  <div class="infoApp" id="infoApplicazione">
+  <div class="infoApp" id="infoApplicazione" role="dialog" aria-modal="true" aria-hidden="true">
     <nav class="guide-content">		
-		  <h2>Come utilizzare l'applicazione</h2>
-		  <div>
-        <p><br>L'applicazione consente di verificare la tipologia di vegetazione presente nell'area selezionata, indicando quanti ettari (ha) di vegetazione sono presenti a seconda della tipologia.<br></p>
-        <img src="{% static 'assets/selezionacomuninav.png'%}" width="400">    
-        <p><br>Puoi selezionare i comuni cliccando sul pulsante azzurro "Seleziona comune" situato in alto a destra e andando in seguito a spuntare le caselle dei comuni desiderati.<br></p>
-        <img src="{% static 'assets/selezionacomuni.png'%}" width="400">   
-        <p><br>Una volta selezionati, sarà possibile vedere i comuni sulla mappa evidenziati in azzurro.<br></p>
-        <img src="{% static 'assets/seleziona.png'%}" width="400">   
-        <p><br>Oltre ai confini dei comuni prestabiliti, è possibile anche selezionare un'area a scelta utilizzando i pulsanti situati in basso a sinistra. Con gli appositi pulsanti si possono creare 2 tipologie di geometrie: rettangoli e poligoni.<br></p>
-        <img src="{% static 'assets/modifica.png'%}" width="400">   
-        <p><br>Sarà in seguito possibile modificare le geometrie disegnate, cambiando la posizione sulla mappa dei punti scelti precedentemente.<br></p>
-        <img src="{% static 'assets/elimina.png'%}" width="400">   
-        <p><br>Con l'ultimo pulsante invece l'utente potrà eliminare le geometrie disegnate. Basterà cliccare, una volta premuto il pulsante, sulle geometrie che si desidera elimiare. Per cancellare tutte le geometrie si può utilizare il tasto "Clear All"<br></p>
-        <img src="{% static 'assets/eseguiclip.png'%}" width="400">   
-        <p><br>Una volta selezionate le aree interessate, cliccando il pulsante rosso in alto a destra "Esegui clip", è possibile ottenere le informazioni inerenti alla vegetazione presente nelle aree selezionate.<br></p>
-        <img src="{% static 'assets/risultatoclip.png'%}" width="400">   
-        <p><br>Verranno mostrate le aree con colori differenti, ad ogni colore corrisponderà una categoria forestale. Di seguito è riportata la legenda della vegetazione<br></p>
-        <table >
-          <tbody>
-          <tr>
-          <td style="background-color:black">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td style="">&nbsp;Boschi di abete bianco&nbsp;</td>
-          <td style="background-color:aqua">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Altri boschi caducifogli&nbsp;</td><td style="background-color:blue">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Castagneti&nbsp;</td>
-          </tr>
-          <tr><td>&nbsp;</td></tr>
-          <tr>
-          <td style="background-color:gray">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Sugherete&nbsp;</td>
-          <td style="background-color:lime">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Pinete di pini mediterranei &nbsp;<p></p></td>
-          <td style="background-color:maroon">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Boschi igrofili&nbsp;</td>
-          </tr>
-          <tr><td>&nbsp;</td></tr>
-          <tr>
-          <td style="background-color:navy">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Ostrieti e carpineti&nbsp;</td>
-          <td style="background-color:olive">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Querceti di roverella&nbsp;</td>
-          <td style="background-color:purple">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Cerrete e boschi di farnetto&nbsp;</td>
-          </tr>
-          <tr><td>&nbsp;</td></tr>
-          <tr>
-          <td style="background-color:orange">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Faggete&nbsp;</td>
-          <td style="background-color:gold">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Altri boschi di conifere, pure o miste&nbsp;</td>
-          <td style="background-color:teal">&nbsp;&nbsp;&nbsp;&nbsp;
-          </td>
-          <td>&nbsp;Leccete&nbsp;</td>
-          </tr>    
-          </tbody>
-          </table>
-        <p><br><br></p>
-        <img src="{% static 'assets/infonatura.png'%}" width="400">   
-        <p><br>Dopo aver effettuato la clip, premendo il pulsante in alto a destra "Visualizza info natura" sarà possibile ottenere le informazioni inerenti alla vegetazione contenuta nell'area selezionata.<br></p>
-        <img src="{% static 'assets/valoremonetario.png'%}" width="400">   
-        <p><br>Mentre se si imposta un valore monetario per tonnelata di CO2 nell'apposita area e in seguito si preme sul pulsante azzurro "Calcola valore totale", sarà possibile visualizzare il valore monetario del totale di CO2 assorbito dalla vegetazione presente nell'area selezionata.<br></p>
-        <img src="{% static 'assets/generapdf.png'%}" width="400"> 
-        <p><br>Una volta completato il calcolo, sarà possibile generare un pdf con i dati relativi alla clip effettuata premendo il pulsante verde "Genera PDF"<br></p>
-    
-
-
+      <div class="guide-hero">
+        <p class="guide-lead">Seleziona comuni o disegna un perimetro, esegui l'estrazione GIS e ottieni un report sintetico su copertura forestale, CO2 annua e valorizzazione economica.</p>
+      </div>
+      <div class="guide-grid">
+        <article class="guide-step-card">
+          <div class="guide-step-index">01</div>
+          <h3>Definisci l'area</h3>
+          <p>Apri il pannello <strong>Comuni</strong> e seleziona uno o piu comuni, oppure usa i tool mappa per disegnare un poligono o un rettangolo.</p>
+          <img src="{% static 'assets/selezionacomuni.png'%}" alt="Pannello di selezione dei comuni">
+        </article>
+        <article class="guide-step-card">
+          <div class="guide-step-index">02</div>
+          <h3>Rifinisci la geometria</h3>
+          <p>Puoi combinare area amministrativa e geometrie disegnate. I comandi in basso a sinistra consentono di creare, modificare o rimuovere le selezioni.</p>
+          <img src="{% static 'assets/modifica.png'%}" alt="Comandi di modifica della geometria">
+        </article>
+        <article class="guide-step-card">
+          <div class="guide-step-index">03</div>
+          <h3>Esegui l'estrazione</h3>
+          <p>Con <strong>Estrai</strong> l'applicazione interseca la selezione con la Carta della Natura e restituisce in mappa le categorie forestali rilevate.</p>
+          <img src="{% static 'assets/risultatoclip.png'%}" alt="Risultato dell'estrazione sulla mappa">
+        </article>
+        <article class="guide-step-card">
+          <div class="guide-step-index">04</div>
+          <h3>Leggi e valorizza il report</h3>
+          <p>Il pannello <strong>Analisi</strong> mostra ettari, CO2, categoria prevalente, dettaglio per vegetazione e una stima economica esportabile in PDF.</p>
+          <img src="{% static 'assets/infonatura.png'%}" alt="Report analitico della vegetazione">
+        </article>
+      </div>
+      <div class="guide-tips-card">
+        <h3>Indicazioni rapide</h3>
+        <ul class="guide-tips-list">
+          <li>Usa <strong>Reset</strong> per pulire selezioni, risultati e report correnti.</li>
+          <li>La <strong>Legenda</strong> puo restare chiusa e si apre solo quando serve.</li>
+          <li>Dopo il calcolo economico puoi generare un PDF con mappa e riepilogo dei risultati.</li>
+        </ul>
       </div>
     </nav>  
 			  <button id="closeInfoApp" type="button" class="btn btn-sm mt-3 app-btn app-btn-ghost app-btn-dark">Chiudi finestra</button>

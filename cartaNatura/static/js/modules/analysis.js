@@ -24,17 +24,25 @@ export function summarizeClippedFeatures(clipped, categories, categoryByCode) {
     }))
     .filter((category) => category.hectares > 0);
 
-  const topCategory = items.reduce(
-    (current, item) => (item.hectares > (current?.hectares || 0) ? item : current),
-    null
-  );
-
   return {
     items,
     totalCo2,
     totalHectares,
-    topCategory,
     hasSupportedVegetation: items.length > 0,
+  };
+}
+
+export function deriveSummaryMetrics(summary) {
+  const items = summary?.items || [];
+  const totalHectares = items.reduce((sum, item) => sum + (Number(item.hectares) || 0), 0);
+  const topCategory = items.reduce(
+    (current, item) => ((Number(item.hectares) || 0) > (Number(current?.hectares) || 0) ? item : current),
+    null
+  );
+
+  return {
+    totalHectares,
+    topCategory,
   };
 }
 

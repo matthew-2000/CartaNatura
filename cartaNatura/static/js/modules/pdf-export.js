@@ -1,28 +1,26 @@
-import { formatCurrency, formatRoundedNumber } from "./analysis.js";
+import { deriveSummaryMetrics, formatCurrency, formatRoundedNumber } from "./analysis.js";
 
 function getJsPdfConstructor() {
   return window.jsPDF || window.jspdf?.jsPDF || null;
 }
 
-function addOptionalLogo(doc, logoUrl) {
-  if (!logoUrl) {
-    return Promise.resolve();
-  }
+function addMetricCard(doc, { x, y, width, height, label, value }) {
+  doc.setDrawColor(224, 229, 225);
+  doc.setFillColor(249, 247, 242);
+  doc.roundedRect(x, y, width, height, 4, 4, "FD");
+  doc.setFontSize(9);
+  doc.setTextColor(98, 108, 102);
+  doc.text(label.toUpperCase(), x + 4, y + 6);
+  doc.setFontSize(16);
+  doc.setTextColor(22, 38, 31);
+  const lines = doc.splitTextToSize(value, width - 8);
+  doc.text(lines, x + 4, y + 15);
+}
 
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.crossOrigin = "anonymous";
-    image.onload = () => {
-      try {
-        doc.addImage(image, "JPEG", 62, 5, 90, 38);
-      } catch (error) {
-        // Ignore logo errors. Report still valid.
-      }
-      resolve();
-    };
-    image.onerror = () => resolve();
-    image.src = logoUrl;
-  });
+function addSectionTitle(doc, title, x, y) {
+  doc.setFontSize(16);
+  doc.setTextColor(22, 38, 31);
+  doc.text(title, x, y);
 }
 
 export async function generatePdfReport({
@@ -31,7 +29,6 @@ export async function generatePdfReport({
   selectedPrice,
   calculatedValue,
   mapElement,
-  reportLogoUrl,
 }) {
   const JsPdf = getJsPdfConstructor();
   if (!JsPdf || !window.domtoimage) {
@@ -39,48 +36,108 @@ export async function generatePdfReport({
   }
 
   const doc = new JsPdf();
-  await addOptionalLogo(doc, reportLogoUrl);
+  const derivedMetrics = deriveSummaryMetrics(summary);
 
   const title = "Informazioni sulla natura";
   const pageWidth = doc.internal.pageSize.getWidth();
-  const titleWidth = (doc.getStringUnitWidth(title) * 20) / doc.internal.scaleFactor;
-  doc.setFontSize(20);
-  doc.text(title, (pageWidth - titleWidth) / 2, 50);
+  doc.setFontSize(22);
+  doc.setTextColor(22, 38, 31);
+  doc.text(title, 14, 24);
+  doc.setFontSize(10);
+  doc.setTextColor(98, 108, 102);
+  doc.text("Report sintetico di estrazione GIS e valorizzazione forestale", 14, 31);
 
   const mapImage = await window.domtoimage.toPng(mapElement);
-  doc.addImage(mapImage, "PNG", 10, 55, 130, 120);
+  doc.addImage(mapImage, "PNG", 14, 38, 108, 88);
 
+  addMetricCard(doc, {
+    x: 128,
+    y: 38,
+    width: 68,
+    height: 22,
+    label: "CO2 annua",
+    value: `${formatRoundedNumber(summary.totalCo2)} t`,
+  });
+  addMetricCard(doc, {
+    x: 128,
+    y: 64,
+    width: 68,
+    height: 22,
+    label: "Superficie",
+    value: `${formatRoundedNumber(derivedMetrics.totalHectares)} ha`,
+  });
+  addMetricCard(doc, {
+    x: 128,
+    y: 90,
+    width: 68,
+    height: 22,
+    label: "Categoria prevalente",
+    value: derivedMetrics.topCategory?.label || "-",
+  });
+
+  addSectionTitle(doc, "Ripartizione della vegetazione", 14, 138);
   doc.setFontSize(11);
-  let cursorY = 185;
+  let cursorY = 147;
   for (const item of summary.items) {
-    doc.text(`${item.label}: ${formatRoundedNumber(item.hectares)} ha`, 10, cursorY);
-    cursorY += 6;
+    doc.setTextColor(22, 38, 31);
+    doc.text(item.label, 14, cursorY);
+    doc.text(`${formatRoundedNumber(item.hectares)} ha`, 176, cursorY, { align: "right" });
+    doc.setFillColor(234, 237, 233);
+    doc.roundedRect(14, cursorY + 2, 162, 2.8, 1, 1, "F");
+    const width = Math.max((item.hectares / Math.max(derivedMetrics.totalHectares, 1)) * 162, 5);
+    const rgb = hexToRgb(item.color);
+    doc.setFillColor(rgb.r, rgb.g, rgb.b);
+    doc.roundedRect(14, cursorY + 2, width, 2.8, 1, 1, "F");
+    cursorY += 12;
   }
 
+  cursorY += 2;
   doc.text(
     `CO2 assorbita annua: ${formatRoundedNumber(summary.totalCo2)} t`,
-    10,
-    cursorY + 4
+    14,
+    cursorY
   );
   cursorY += 12;
 
   if (selectedPrice) {
-    doc.text(`Valore per tonnellata: ${selectedPrice} EUR`, 10, cursorY);
+    doc.text(`Valore per tonnellata: ${selectedPrice} EUR`, 14, cursorY);
     cursorY += 6;
   }
 
   if (calculatedValue > 0) {
-    doc.text(`Valore monetario totale: ${formatCurrency(calculatedValue)}`, 10, cursorY);
+    doc.text(`Valore monetario totale: ${formatCurrency(calculatedValue)}`, 14, cursorY);
   }
 
   doc.addPage();
+  doc.setFontSize(18);
+  doc.setTextColor(22, 38, 31);
+  doc.text("Comuni interessati", 14, 20);
+  doc.setFontSize(10);
+  doc.setTextColor(98, 108, 102);
+  doc.text("Elenco dei comuni intercettati dalla selezione finale", 14, 26);
   const municipalitiesText = intersectedMunicipalities.length
     ? `I comuni interessati sono: ${intersectedMunicipalities.join(", ")}`
     : "Nessun comune interessato.";
-  const lines = doc.splitTextToSize(municipalitiesText, 180);
+  const lines = doc.splitTextToSize(municipalitiesText, 178);
   for (let index = 0; index < lines.length; index += 1) {
-    doc.text(lines[index], 10, 10 + index * 6);
+    doc.setTextColor(22, 38, 31);
+    doc.text(lines[index], 14, 40 + index * 7);
   }
 
   doc.save("carta-natura-report.pdf");
+}
+
+function hexToRgb(hexColor) {
+  const normalized = hexColor.replace("#", "");
+  const safe = normalized.length === 3
+    ? normalized.split("").map((char) => `${char}${char}`).join("")
+    : normalized;
+
+  const value = Number.parseInt(safe, 16);
+
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
 }
