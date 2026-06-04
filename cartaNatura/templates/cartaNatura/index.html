@@ -15,11 +15,9 @@
 
   <title>Carta della Natura</title>
   <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
-  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
-  <link rel="stylesheet" href="{% static 'css/leaflet-notifications.min.css' %}">
 
   <style>
   .loading {
@@ -40,16 +38,25 @@
   .comune-item {
     display: flex;
   }
+
+  .map-disabled,
+  .map-disabled + .leaflet-control-container,
+  .map-disabled .leaflet-control-container {
+    pointer-events: none;
+  }
   
   </style>
 </head>
 <body>
   <div class="navbar">
-    <button id="butSelezionaComune" class="btn btn-info btn-sm text-light" onclick="mostraListaComuni()" style="margin:10px">1) Seleziona comune</button>
-    <div>
-      <button id="infoApp" onclick="mostraInfoApp()" title="Visualizza info app" class="btn btn-danger btn-sm text-light fa fa-info-circle" style="margin: 10px"></button>
-      <button id="eseguiClipBut" onclick="geojsonExport()" title="Esegui clip" class="btn btn-danger btn-sm text-light" style="margin: 10px"> 2) Estrai dati</button>
-      <button id="mostraInfoBut" onclick="mostraInfo()" title="Visualizza info" class="btn btn-danger btn-sm text-light" style="margin: 10px"> 3) Elabora informazioni</button>
+    <div class="navbar-group">
+      <button id="butSelezionaComune" class="btn btn-info btn-sm text-light" style="margin:10px">1) Seleziona comune</button>
+      <button id="resetMapState" class="btn btn-outline-light btn-sm" style="margin:10px">Reset</button>
+    </div>
+    <div class="navbar-group">
+      <button id="infoApp" title="Visualizza info app" class="btn btn-danger btn-sm text-light" style="margin: 10px">Info</button>
+      <button id="eseguiClipBut" title="Esegui clip" class="btn btn-danger btn-sm text-light" style="margin: 10px"> 2) Estrai dati</button>
+      <button id="mostraInfoBut" title="Visualizza info" class="btn btn-danger btn-sm text-light" style="margin: 10px"> 3) Elabora informazioni</button>
     </div>
   </div> 
   <div id="container">
@@ -57,12 +64,14 @@
 		<img src="{% static 'assets/loading.gif'%}" width="300" height="300"></img>
 	</div>
   <div class="popup" id="popup">
-    <div>
-      <nav id='navVisualizzaInfo' style="overflow: hidden scroll;height: 200px;">
-		    <h2>Informazioni sulla natura</h2>
+    <div class="drawer-shell">
+      <nav id="navVisualizzaInfo" class="drawer-content">
+		    <div class="drawer-header">
+          <h2>Informazioni sulla natura</h2>
+          <button id="butchiudipopup" type="button" class="btn btn-danger btn-sm text-light">Chiudi</button>
+        </div>
 		    <div id="infoNatura"><p>dettagli qui</p></div>
-		    <button id="butchiudipopup" type="button" onclick="chiudiPopup()"  class="btn btn-danger btn-sm text-light mt-3">Chiudi finestra</button>
-      </nav>   
+      </nav>
     </div>
   </div>
   <div class="infoApp" id="infoApplicazione">
@@ -146,12 +155,29 @@
 
       </div>
     </nav>  
-		  <button type="button" onclick="chiudiInfoApp()"  class="btn btn-danger btn-sm text-light mt-3">Chiudi finestra</button>
-	</div>
-	<nav id="navListaComuni" class="nascondiListaComuni" style="height:300px; width:18%; overflow:hidden; overflow-y:scroll;position:absolute;z-index:999;background-color: #333;border-radius: 2px; top:270px; left:10px;padding-top: 20px;padding-left: 20px">
-    <div id='lista-comuni'>
+			  <button id="closeInfoApp" type="button" class="btn btn-danger btn-sm text-light mt-3">Chiudi finestra</button>
+		</div>
+	<nav id="navListaComuni" class="nascondiListaComuni comuni-panel">
+    <div class="comuni-panel-header">
+      <div class="comuni-panel-title">Comuni Campania</div>
+      <div id="selectedCountLabel" class="comuni-panel-count">0 selezionati</div>
+      <input id="municipalitySearch" type="search" class="form-control form-control-sm" placeholder="Cerca comune" />
+    </div>
+    <div id='lista-comuni' class="comuni-list">
     </div>
   </nav>
+    <aside id="mapStatusPanel" class="map-card status-card">
+      <div class="map-card-title">Stato analisi</div>
+      <div id="statusContent">
+        <div class="status-line"><strong>Comuni selezionati:</strong> 0</div>
+        <div class="status-line"><strong>Geometrie disegnate:</strong> 0</div>
+        <div class="status-line"><strong>Risultato:</strong> nessuna analisi</div>
+      </div>
+    </aside>
+    <aside id="legendPanel" class="map-card legend-card">
+      <div class="map-card-title">Legenda vegetazione</div>
+      <div id="legendContent"></div>
+    </aside>
     <div id="map"></div>
   </div>
   <template class="comune-template">
@@ -165,17 +191,13 @@
     </div>
   </template>
   <div id="div-finale"></div>
-  <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
-  <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+  <script id="app-config" type="application/json">{{ app_config_json|safe }}</script>
   <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/geotoolbox" charset="utf-8"></script>
-  <script src="{% static 'js/leaflet-notifications.min.js' %}"></script>
-  <script src="{% static 'js/app.js' %}"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-geometryutil/0.10.3/leaflet.geometryutil.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/1.5.3/jspdf.min.js"></script>
   <script src="{% static 'js/dom-to-image.min.js' %}"></script>
+  <script type="module" src="{% static 'js/app.js' %}"></script>
   
 </body>
 </html>

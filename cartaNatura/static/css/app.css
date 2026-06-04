@@ -1,24 +1,14 @@
 .popup{
-	width: 400px;
-	background-color: #efe9e4;
-	border-radius: 25px;
-	position: absolute;
-	top: 0%;
-	left: 50%;
-	transform: translate(-50%, -50%) scale(0.1);
-	text-align: center;
-	padding: 30px 30px 30px;
-	color: #333;
-	visibility: hidden;
-	transition: transform 0.4s, top 0.4s;
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 1000;
 }
 
 .open-popup{
-	visibility: visible;
-	top: 50%;
-	transform: translate(-50%, -50%) scale(1);
-  position:absolute;
-  z-index:999;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 html, body, #container {
@@ -26,10 +16,20 @@ html, body, #container {
   width: 100%;
   overflow: hidden;
 }
+
+body {
+  margin: 0;
+}
+
 #map {
   width: auto;
   height: 100%;
   box-shadow: 0 0 10px rgba(0,0,0,0.5);
+}
+
+#map.map-disabled,
+.map-disabled .leaflet-control-container {
+  pointer-events: none;
 }
 
 .info {
@@ -60,12 +60,88 @@ html, body, #container {
   padding: 0px;
 }
 
+.navbar-group {
+  display: flex;
+  align-items: center;
+}
+
 .nascondiListaComuni{
   display: none;
 }
 
 .visualizzaListaComuni{
   display: block;
+}
+
+.summary-section {
+  text-align: left;
+}
+
+.summary-list {
+  padding-left: 18px;
+}
+
+.summary-list li {
+  margin-bottom: 6px;
+}
+
+.info-box {
+  height: 150px;
+  overflow: auto;
+  background-color: white;
+  color: black;
+  font-family: sans-serif;
+  padding: 10px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.value-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.value-result {
+  margin-top: 10px;
+}
+
+.pdf-status {
+  color: green;
+}
+
+.navbar button:disabled {
+  opacity: 0.7;
+}
+
+.drawer-shell {
+  position: absolute;
+  right: 20px;
+  top: 70px;
+  bottom: 20px;
+  width: min(460px, calc(100vw - 40px));
+  background-color: #efe9e4;
+  border-radius: 24px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+  padding: 24px;
+}
+
+.drawer-content {
+  height: 100%;
+  overflow: auto;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.drawer-header h2 {
+  margin: 0;
 }
 
 
@@ -104,4 +180,146 @@ html, body, #container {
 	transform: translate(-50%, -50%) scale(1);
   position:absolute;
   z-index:999;
+}
+
+.comuni-panel {
+  height: min(420px, calc(100vh - 130px));
+  width: min(320px, calc(100vw - 20px));
+  overflow: hidden;
+  position: absolute;
+  z-index: 999;
+  background-color: #333;
+  border-radius: 12px;
+  top: 74px;
+  left: 10px;
+  color: #fff;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.comuni-panel-header {
+  position: sticky;
+  top: 0;
+  background: #333;
+  padding: 16px 16px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+.comuni-panel-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.comuni-panel-count {
+  font-size: 12px;
+  color: #c6d8ef;
+  margin-bottom: 10px;
+}
+
+.comuni-list {
+  overflow-y: auto;
+  height: calc(100% - 86px);
+  padding: 12px 16px 16px;
+}
+
+.comune-item {
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.comune-item.hidden {
+  display: none;
+}
+
+.map-card {
+  position: absolute;
+  z-index: 800;
+  background: rgba(255, 250, 244, 0.94);
+  color: #222;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(8px);
+}
+
+.map-card-title {
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.status-card {
+  top: 72px;
+  left: 10px;
+  width: min(320px, calc(100vw - 20px));
+  padding: 14px 16px;
+}
+
+.legend-card {
+  right: 10px;
+  bottom: 20px;
+  width: min(340px, calc(100vw - 20px));
+  max-height: 42vh;
+  overflow: auto;
+  padding: 14px 16px;
+}
+
+.status-line {
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.legend-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.22);
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+@media (max-width: 900px) {
+  .navbar {
+    flex-wrap: wrap;
+  }
+
+  .status-card {
+    top: 124px;
+  }
+
+  .drawer-shell {
+    top: 124px;
+  }
+}
+
+@media (max-width: 680px) {
+  .legend-card {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    bottom: 10px;
+  }
+
+  .legend-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .status-card {
+    width: calc(100vw - 20px);
+  }
+
+  .comuni-panel {
+    width: calc(100vw - 20px);
+  }
 }

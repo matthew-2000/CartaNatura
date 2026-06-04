@@ -1,0 +1,124 @@
+"""Vegetation categories and shared mapping rules."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class VegetationCategory:
+    key: str
+    label: str
+    color: str
+    co2_per_hectare: float
+    codes: tuple[str, ...]
+
+
+VEGETATION_CATEGORIES: tuple[VegetationCategory, ...] = (
+    VegetationCategory(
+        key="abete_bianco",
+        label="Boschi di abete bianco",
+        color="black",
+        co2_per_hectare=0.0,
+        codes=("42.15",),
+    ),
+    VegetationCategory(
+        key="igrofili",
+        label="Boschi igrofili",
+        color="maroon",
+        co2_per_hectare=3.3,
+        codes=("44.12", "44.14", "44.513", "44.61", "44.71", "44.9", "44.d2cn"),
+    ),
+    VegetationCategory(
+        key="querceti_roverella",
+        label="Querceti di roverella",
+        color="olive",
+        co2_per_hectare=3.3,
+        codes=("41.732",),
+    ),
+    VegetationCategory(
+        key="ostrieti_carpineti",
+        label="Ostrieti e carpineti",
+        color="navy",
+        co2_per_hectare=4.4,
+        codes=("41.8",),
+    ),
+    VegetationCategory(
+        key="leccete",
+        label="Leccete",
+        color="teal",
+        co2_per_hectare=5.51,
+        codes=("45.31", "45.32"),
+    ),
+    VegetationCategory(
+        key="caducifogli",
+        label="Altri boschi caducifogli",
+        color="aqua",
+        co2_per_hectare=5.87,
+        codes=("41.4", "41.b", "41.c1"),
+    ),
+    VegetationCategory(
+        key="cerrete_farnetto",
+        label="Cerrete e boschi di farnetto",
+        color="purple",
+        co2_per_hectare=5.87,
+        codes=("41.7511", "41.7512"),
+    ),
+    VegetationCategory(
+        key="pinete_mediterranee",
+        label="Pinete di pini mediterranei",
+        color="lime",
+        co2_per_hectare=5.87,
+        codes=("42.83", "42.84"),
+    ),
+    VegetationCategory(
+        key="castagneti",
+        label="Castagneti",
+        color="blue",
+        co2_per_hectare=6.24,
+        codes=("41.9",),
+    ),
+    VegetationCategory(
+        key="sugherete",
+        label="Sugherete",
+        color="gray",
+        co2_per_hectare=8.07,
+        codes=("45.21",),
+    ),
+    VegetationCategory(
+        key="faggete",
+        label="Faggete",
+        color="orange",
+        co2_per_hectare=9.54,
+        codes=("41.18",),
+    ),
+    VegetationCategory(
+        key="conifere_miste",
+        label="Altri boschi di conifere, pure o miste",
+        color="gold",
+        co2_per_hectare=12.48,
+        codes=("41.lcn", "42.A1"),
+    ),
+)
+
+
+VEGETATION_BY_CODE = {
+    code: category
+    for category in VEGETATION_CATEGORIES
+    for code in category.codes
+}
+
+
+def serialize_categories() -> list[dict[str, object]]:
+    """Expose category config to frontend."""
+
+    return [
+        {
+            "key": category.key,
+            "label": category.label,
+            "color": category.color,
+            "co2PerHectare": category.co2_per_hectare,
+            "codes": list(category.codes),
+        }
+        for category in VEGETATION_CATEGORIES
+    ]
