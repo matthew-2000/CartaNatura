@@ -220,12 +220,63 @@ body {
 }
 
 .loading-card {
-  width: min(360px, calc(100vw - 40px));
+  width: min(380px, calc(100vw - 40px));
   text-align: center;
-  padding: 28px 24px 20px;
-  border-radius: 28px;
-  background: rgba(252, 248, 241, 0.96);
+  padding: 30px 26px 24px;
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at top, rgba(214, 197, 156, 0.18), transparent 38%),
+    rgba(252, 248, 241, 0.96);
   box-shadow: var(--shadow-lg);
+  border: 1px solid rgba(16, 35, 29, 0.08);
+}
+
+.loading-visual {
+  width: 112px;
+  height: 112px;
+  margin: 0 auto 18px;
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.loading-ring,
+.loading-core {
+  position: absolute;
+  border-radius: 999px;
+}
+
+.loading-ring {
+  border: 1px solid rgba(32, 88, 71, 0.16);
+}
+
+.loading-ring-outer {
+  width: 112px;
+  height: 112px;
+  border-top-color: rgba(32, 88, 71, 0.72);
+  animation: loadingSpin 2.6s linear infinite;
+}
+
+.loading-ring-middle {
+  width: 82px;
+  height: 82px;
+  border-right-color: rgba(148, 112, 57, 0.78);
+  animation: loadingSpinReverse 1.9s linear infinite;
+}
+
+.loading-ring-inner {
+  width: 54px;
+  height: 54px;
+  border-bottom-color: rgba(199, 59, 79, 0.72);
+  animation: loadingSpin 1.4s linear infinite;
+}
+
+.loading-core {
+  width: 16px;
+  height: 16px;
+  background: linear-gradient(135deg, #205847, #c73b4f);
+  box-shadow: 0 0 0 10px rgba(32, 88, 71, 0.08);
+  animation: loadingPulse 1.4s ease-in-out infinite;
 }
 
 .loading-title {
@@ -238,6 +289,77 @@ body {
   color: var(--text-soft);
   font-size: 14px;
   line-height: 1.5;
+}
+
+.loading-steps {
+  margin-top: 16px;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.loading-steps span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(16, 35, 29, 0.06);
+  border: 1px solid rgba(16, 35, 29, 0.08);
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  animation: loadingStepGlow 1.8s ease-in-out infinite;
+}
+
+.loading-steps span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.loading-steps span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes loadingSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes loadingSpinReverse {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes loadingPulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    box-shadow: 0 0 0 10px rgba(32, 88, 71, 0.08);
+  }
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 0 16px rgba(32, 88, 71, 0.05);
+  }
+}
+
+@keyframes loadingStepGlow {
+  0%,
+  100% {
+    opacity: 0.62;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
 }
 
 .popup {
@@ -320,16 +442,6 @@ body {
   text-align: left;
 }
 
-.summary-list {
-  padding-left: 24px;
-  margin-bottom: 18px;
-}
-
-.summary-list li {
-  margin-bottom: 8px;
-  font-size: 15px;
-}
-
 .summary-section p,
 .summary-section h4 {
   margin-bottom: 18px;
@@ -381,6 +493,157 @@ body {
 
 .pdf-status {
   color: var(--accent);
+}
+
+.analysis-empty-state {
+  padding: 28px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(16, 35, 29, 0.08);
+}
+
+.analysis-empty-state h3 {
+  font-family: "Spectral", serif;
+  font-size: 28px;
+  margin: 0 0 10px;
+}
+
+.analysis-empty-state p {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.6;
+}
+
+.analysis-summary {
+  display: grid;
+  gap: 18px;
+}
+
+.analysis-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.analysis-metric-card,
+.analysis-note-card,
+.analysis-valuation-card {
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(16, 35, 29, 0.08);
+}
+
+.analysis-metric-card {
+  padding: 16px 18px;
+}
+
+.analysis-metric-label {
+  display: block;
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.analysis-metric-value {
+  display: block;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.analysis-section {
+  padding: 20px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.48);
+  border: 1px solid rgba(16, 35, 29, 0.06);
+}
+
+.analysis-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.analysis-section-header h4 {
+  margin: 0;
+  font-family: "Spectral", serif;
+  font-size: 24px;
+}
+
+.analysis-section-meta {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.analysis-breakdown-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.analysis-breakdown-item {
+  display: grid;
+  gap: 7px;
+}
+
+.analysis-breakdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.analysis-breakdown-name {
+  font-weight: 600;
+}
+
+.analysis-breakdown-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(16, 35, 29, 0.08);
+  overflow: hidden;
+}
+
+.analysis-breakdown-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.analysis-note-card,
+.analysis-valuation-card {
+  padding: 18px 20px;
+}
+
+.analysis-note-card {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.analysis-value-total {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(31, 96, 78, 0.08);
+  border: 1px solid rgba(31, 96, 78, 0.12);
+}
+
+.analysis-value-amount {
+  display: block;
+  font-family: "Spectral", serif;
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.analysis-value-actions {
+  margin: 0;
 }
 
 .infoApp {
@@ -886,6 +1149,19 @@ body {
   .guide-content p,
   .guide-content table {
     font-size: 13px;
+  }
+
+  .analysis-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-section-header {
+    display: block;
+  }
+
+  .analysis-section-meta {
+    display: block;
+    margin-top: 6px;
   }
 
   .map-card.is-collapsed {

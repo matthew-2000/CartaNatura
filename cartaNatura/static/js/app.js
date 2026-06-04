@@ -9,6 +9,7 @@ const state = {
   clipped: null,
   intersectedMunicipalities: [],
   calculatedValue: 0,
+  analysisContext: null,
 };
 
 const elements = {
@@ -121,6 +122,8 @@ function renderLegend() {
 }
 
 function renderStatusPanel({ selectedMunicipalityCount = 0, drawnFeatureCount = 0 } = {}) {
+  const inputMunicipalities = state.analysisContext?.selectedMunicipalityCount ?? selectedMunicipalityCount;
+  const inputGeometries = state.analysisContext?.drawnFeatureCount ?? drawnFeatureCount;
   const resultText = state.summary?.hasSupportedVegetation
     ? `${state.intersectedMunicipalities.length} comuni, ${formatRoundedNumber(
         state.summary.totalCo2
@@ -131,12 +134,16 @@ function renderStatusPanel({ selectedMunicipalityCount = 0, drawnFeatureCount = 
 
   elements.statusContent.innerHTML = `
     <div class="status-chip">
-      <span class="status-label">Comuni</span>
-      <strong class="status-value">${selectedMunicipalityCount}</strong>
+      <span class="status-label">Input comuni</span>
+      <strong class="status-value">${inputMunicipalities}</strong>
     </div>
     <div class="status-chip">
-      <span class="status-label">Geometrie</span>
-      <strong class="status-value">${drawnFeatureCount}</strong>
+      <span class="status-label">Input geometrie</span>
+      <strong class="status-value">${inputGeometries}</strong>
+    </div>
+    <div class="status-chip">
+      <span class="status-label">Categorie</span>
+      <strong class="status-value">${state.summary?.items.length ?? 0}</strong>
     </div>
     <div class="status-chip status-chip-wide">
       <span class="status-label">Risultato</span>
@@ -198,46 +205,110 @@ function renderPriceOptions() {
     .join("");
 }
 
+function getDerivedSummaryMetrics() {
+  const items = state.summary?.items || [];
+  const totalHectares = items.reduce((sum, item) => sum + (Number(item.hectares) || 0), 0);
+  const topCategory = items.reduce(
+    (current, item) => ((Number(item.hectares) || 0) > (Number(current?.hectares) || 0) ? item : current),
+    null
+  );
+
+  return {
+    totalHectares,
+    topCategory,
+  };
+}
+
 function renderInfoSummary() {
   if (!state.summary) {
-    elements.infoContainer.innerHTML = "<p>Non ci sono info in questo momento.</p>";
+    elements.infoContainer.innerHTML = `
+      <div class="analysis-empty-state">
+        <h3>Nessuna analisi disponibile</h3>
+        <p>Seleziona uno o piu comuni, oppure disegna un'area sulla mappa, poi esegui l'estrazione.</p>
+      </div>
+    `;
     return;
   }
 
   if (!state.summary.hasSupportedVegetation) {
-    elements.infoContainer.innerHTML =
-      "<p>L'area selezionata non contiene vegetazione che il sistema analizza.</p>";
+    elements.infoContainer.innerHTML = `
+      <div class="analysis-empty-state">
+        <h3>Nessuna vegetazione supportata</h3>
+        <p>L'area estratta non contiene categorie forestali comprese nell'analisi corrente.</p>
+      </div>
+    `;
     return;
   }
 
+  const derivedMetrics = getDerivedSummaryMetrics();
+  const maxHectares = Math.max(...state.summary.items.map((item) => item.hectares), 1);
   const summaryRows = state.summary.items
     .map(
       (item) =>
-        `<li><strong>${escapeHtml(item.label)}</strong>: ${formatRoundedNumber(item.hectares)} ha</li>`
+        `
+          <li class="analysis-breakdown-item">
+            <div class="analysis-breakdown-header">
+              <span class="analysis-breakdown-name">${escapeHtml(item.label)}</span>
+              <strong>${formatRoundedNumber(item.hectares)} ha</strong>
+            </div>
+            <div class="analysis-breakdown-bar">
+              <span style="width:${Math.max((item.hectares / maxHectares) * 100, 6)}%; background:${item.color}"></span>
+            </div>
+          </li>
+        `
     )
     .join("");
 
   const municipalitiesHtml = state.intersectedMunicipalities.length
-    ? `<div class="info-box"><strong>I comuni interessati sono:</strong> ${escapeHtml(
+    ? `<div class="analysis-note-card"><strong>Comuni interessati:</strong> ${escapeHtml(
         state.intersectedMunicipalities.join(", ")
       )}</div>`
     : "";
 
   elements.infoContainer.innerHTML = `
-    <div class="summary-section">
-      <ul class="summary-list">${summaryRows}</ul>
-      <p><strong>Il livello di CO2 assorbita dall'area selezionata è ${formatRoundedNumber(
-        state.summary.totalCo2
-      )} t annue</strong></p>
-      ${municipalitiesHtml}
-      <h4>Seleziona valore per ogni tonnellata di CO2</h4>
-      <div class="value-row">
-        <select id="testoValore">${renderPriceOptions()}</select>
-        <button id="butcalcolavalore" type="button" class="btn btn-info btn-sm text-light">
-          Calcola valore totale
-        </button>
+    <div class="summary-section analysis-summary">
+      <div class="analysis-metrics-grid">
+        <article class="analysis-metric-card">
+          <span class="analysis-metric-label">CO2 annua</span>
+          <strong class="analysis-metric-value">${formatRoundedNumber(state.summary.totalCo2)} t</strong>
+        </article>
+        <article class="analysis-metric-card">
+          <span class="analysis-metric-label">Superficie</span>
+          <strong class="analysis-metric-value">${formatRoundedNumber(derivedMetrics.totalHectares)} ha</strong>
+        </article>
+        <article class="analysis-metric-card">
+          <span class="analysis-metric-label">Categorie rilevate</span>
+          <strong class="analysis-metric-value">${state.summary.items.length}</strong>
+        </article>
+        <article class="analysis-metric-card">
+          <span class="analysis-metric-label">Categoria prevalente</span>
+          <strong class="analysis-metric-value">${escapeHtml(derivedMetrics.topCategory?.label || "-")}</strong>
+        </article>
       </div>
-      <div id="valoreTotaleCalcolato" class="value-result"></div>
+      <div class="analysis-section">
+        <div class="analysis-section-header">
+          <h4>Ripartizione della vegetazione</h4>
+          <span class="analysis-section-meta">${formatRoundedNumber(derivedMetrics.totalHectares)} ha complessivi</span>
+        </div>
+        <ul class="analysis-breakdown-list">${summaryRows}</ul>
+      </div>
+      ${municipalitiesHtml}
+      <div class="analysis-note-card">
+        <strong>Assorbimento stimato:</strong> ${formatRoundedNumber(state.summary.totalCo2)} tonnellate di CO2 all'anno.
+      </div>
+      <div class="analysis-valuation-card">
+        <div class="analysis-section-header">
+          <h4>Valorizzazione economica</h4>
+          <span class="analysis-section-meta">Stima basata sul prezzo selezionato</span>
+        </div>
+        <div class="value-row">
+          <select id="testoValore">${renderPriceOptions()}</select>
+          <button id="butcalcolavalore" type="button" class="btn btn-info btn-sm text-light">
+            Calcola valore
+          </button>
+        </div>
+        <div id="valoreTotaleCalcolato" class="value-result"></div>
+      </div>
     </div>
   `;
 
@@ -248,8 +319,11 @@ function renderInfoSummary() {
 
     const resultRoot = document.getElementById("valoreTotaleCalcolato");
     resultRoot.innerHTML = `
-      <strong>Il valore monetario totale è di ${formatCurrency(state.calculatedValue)}</strong>
-      <p>
+      <div class="analysis-value-total">
+        <span class="analysis-metric-label">Valore economico stimato</span>
+        <strong class="analysis-value-amount">${formatCurrency(state.calculatedValue)}</strong>
+      </div>
+      <p class="analysis-value-actions">
         <button id="butstampadettagli" type="button" class="btn btn-success btn-sm text-light mt-3">
           Stampa dettagli
         </button>
@@ -316,6 +390,7 @@ function resetAnalysis(mapController) {
   state.clipped = null;
   state.intersectedMunicipalities = [];
   state.calculatedValue = 0;
+  state.analysisContext = null;
   mapController.clearResults();
   mapController.clearUserSelections();
   clearMunicipalityChecks();
@@ -334,6 +409,10 @@ async function runAnalysis(mapController) {
   closeAppInfo(mapController);
 
   const payload = buildAnalysisPayload(mapController);
+  const analysisContext = {
+    selectedMunicipalityCount: mapController.getSelectedMunicipalityCount(),
+    drawnFeatureCount: mapController.getDrawnFeatureCount(),
+  };
   if (!payload.areas.length) {
     alert("Non hai selezionato alcuna area.");
     return;
@@ -347,6 +426,7 @@ async function runAnalysis(mapController) {
     state.intersectedMunicipalities = response.intersectedMunicipalities;
     state.summary = summarizeClippedFeatures(response.clipped, categories, categoryByCode);
     state.calculatedValue = 0;
+    state.analysisContext = analysisContext;
 
     mapController.clearResults();
     mapController.renderNature(response.clipped);
@@ -359,10 +439,8 @@ async function runAnalysis(mapController) {
       selectedMunicipalityCount: mapController.getSelectedMunicipalityCount(),
       drawnFeatureCount: mapController.getDrawnFeatureCount(),
     });
-
-    if (!state.summary.hasSupportedVegetation) {
-      alert("L'area selezionata non contiene vegetazione che il sistema analizza.");
-    }
+    renderInfoSummary();
+    openPopup(mapController);
   } catch (error) {
     alert(error.message || "Errore durante analisi.");
   } finally {

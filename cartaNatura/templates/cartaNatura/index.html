@@ -50,11 +50,21 @@
     </div>
   </div>
   <div id="container">
-	<div class="loading">
+	<div class="loading" aria-live="polite" aria-hidden="true">
       <div class="loading-card">
+        <div class="loading-visual" aria-hidden="true">
+          <span class="loading-ring loading-ring-outer"></span>
+          <span class="loading-ring loading-ring-middle"></span>
+          <span class="loading-ring loading-ring-inner"></span>
+          <span class="loading-core"></span>
+        </div>
         <div class="loading-title">Analisi in corso</div>
         <div class="loading-copy">Intersezione GIS, normalizzazione geometrie, sintesi vegetazione.</div>
-		    <img src="{% static 'assets/loading.gif'%}" width="180" height="180"></img>
+        <div class="loading-steps" aria-hidden="true">
+          <span>Selezione</span>
+          <span>Estrazione</span>
+          <span>Sintesi</span>
+        </div>
       </div>
 	</div>
   <div class="popup" id="popup">
