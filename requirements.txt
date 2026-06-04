@@ -1,0 +1,4 @@
+Django
+geopandas
+pandas
+django-cors-headers

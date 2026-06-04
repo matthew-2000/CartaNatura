@@ -1,0 +1,181 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="author" content="unsorry">
+  <meta name="description" content="leaflet draw export to geojson file">
+
+  <link rel="icon" type="image/x-icon" href="{% static 'assets/favicon.png'%}">
+
+  <title>Carta della Natura</title>
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  <link rel="stylesheet" href="{% static 'css/leaflet-notifications.min.css' %}">
+
+  <style>
+  .loading {
+      position: absolute;
+      z-index: 999;
+      height: 100%;
+      width: 100%;
+      justify-content: center;
+      align-items: center;
+      background: #0000003b;
+	  display: none;
+  }
+  
+  .loading.visible {
+    display: flex;
+  }
+
+  .comune-item {
+    display: flex;
+  }
+  
+  </style>
+</head>
+<body>
+  <div class="navbar">
+    <button id="butSelezionaComune" class="btn btn-info btn-sm text-light" onclick="mostraListaComuni()" style="margin:10px">1) Seleziona comune</button>
+    <div>
+      <button id="infoApp" onclick="mostraInfoApp()" title="Visualizza info app" class="btn btn-danger btn-sm text-light fa fa-info-circle" style="margin: 10px"></button>
+      <button id="eseguiClipBut" onclick="geojsonExport()" title="Esegui clip" class="btn btn-danger btn-sm text-light" style="margin: 10px"> 2) Estrai dati</button>
+      <button id="mostraInfoBut" onclick="mostraInfo()" title="Visualizza info" class="btn btn-danger btn-sm text-light" style="margin: 10px"> 3) Elabora informazioni</button>
+    </div>
+  </div> 
+  <div id="container">
+	<div class="loading">
+		<img src="{% static 'assets/loading.gif'%}" width="300" height="300"></img>
+	</div>
+  <div class="popup" id="popup">
+    <div>
+      <nav id='navVisualizzaInfo' style="overflow: hidden scroll;height: 200px;">
+		    <h2>Informazioni sulla natura</h2>
+		    <div id="infoNatura"><p>dettagli qui</p></div>
+		    <button id="butchiudipopup" type="button" onclick="chiudiPopup()"  class="btn btn-danger btn-sm text-light mt-3">Chiudi finestra</button>
+      </nav>   
+    </div>
+  </div>
+  <div class="infoApp" id="infoApplicazione">
+    <nav style="overflow: hidden scroll;height: 500px;">		
+		  <h2>Come utilizzare l'applicazione</h2>
+		  <div>
+        <p><br>L'applicazione consente di verificare la tipologia di vegetazione presente nell'area selezionata, indicando quanti ettari (ha) di vegetazione sono presenti a seconda della tipologia.<br></p>
+        <img src="{% static 'assets/selezionacomuninav.png'%}" width="400">    
+        <p><br>Puoi selezionare i comuni cliccando sul pulsante azzurro "Seleziona comune" situato in alto a destra e andando in seguito a spuntare le caselle dei comuni desiderati.<br></p>
+        <img src="{% static 'assets/selezionacomuni.png'%}" width="400">   
+        <p><br>Una volta selezionati, sarà possibile vedere i comuni sulla mappa evidenziati in azzurro.<br></p>
+        <img src="{% static 'assets/seleziona.png'%}" width="400">   
+        <p><br>Oltre ai confini dei comuni prestabiliti, è possibile anche selezionare un'area a scelta utilizzando i pulsanti situati in basso a sinistra. Con gli appositi pulsanti si possono creare 2 tipologie di geometrie: rettangoli e poligoni.<br></p>
+        <img src="{% static 'assets/modifica.png'%}" width="400">   
+        <p><br>Sarà in seguito possibile modificare le geometrie disegnate, cambiando la posizione sulla mappa dei punti scelti precedentemente.<br></p>
+        <img src="{% static 'assets/elimina.png'%}" width="400">   
+        <p><br>Con l'ultimo pulsante invece l'utente potrà eliminare le geometrie disegnate. Basterà cliccare, una volta premuto il pulsante, sulle geometrie che si desidera elimiare. Per cancellare tutte le geometrie si può utilizare il tasto "Clear All"<br></p>
+        <img src="{% static 'assets/eseguiclip.png'%}" width="400">   
+        <p><br>Una volta selezionate le aree interessate, cliccando il pulsante rosso in alto a destra "Esegui clip", è possibile ottenere le informazioni inerenti alla vegetazione presente nelle aree selezionate.<br></p>
+        <img src="{% static 'assets/risultatoclip.png'%}" width="400">   
+        <p><br>Verranno mostrate le aree con colori differenti, ad ogni colore corrisponderà una categoria forestale. Di seguito è riportata la legenda della vegetazione<br></p>
+        <table >
+          <tbody>
+          <tr>
+          <td style="background-color:black">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td style="">&nbsp;Boschi di abete bianco&nbsp;</td>
+          <td style="background-color:aqua">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Altri boschi caducifogli&nbsp;</td><td style="background-color:blue">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Castagneti&nbsp;</td>
+          </tr>
+          <tr><td>&nbsp;</td></tr>
+          <tr>
+          <td style="background-color:gray">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Sugherete&nbsp;</td>
+          <td style="background-color:lime">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Pinete di pini mediterranei &nbsp;<p></p></td>
+          <td style="background-color:maroon">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Boschi igrofili&nbsp;</td>
+          </tr>
+          <tr><td>&nbsp;</td></tr>
+          <tr>
+          <td style="background-color:navy">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Ostrieti e carpineti&nbsp;</td>
+          <td style="background-color:olive">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Querceti di roverella&nbsp;</td>
+          <td style="background-color:purple">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Cerrete e boschi di farnetto&nbsp;</td>
+          </tr>
+          <tr><td>&nbsp;</td></tr>
+          <tr>
+          <td style="background-color:orange">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Faggete&nbsp;</td>
+          <td style="background-color:gold">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Altri boschi di conifere, pure o miste&nbsp;</td>
+          <td style="background-color:teal">&nbsp;&nbsp;&nbsp;&nbsp;
+          </td>
+          <td>&nbsp;Leccete&nbsp;</td>
+          </tr>    
+          </tbody>
+          </table>
+        <p><br><br></p>
+        <img src="{% static 'assets/infonatura.png'%}" width="400">   
+        <p><br>Dopo aver effettuato la clip, premendo il pulsante in alto a destra "Visualizza info natura" sarà possibile ottenere le informazioni inerenti alla vegetazione contenuta nell'area selezionata.<br></p>
+        <img src="{% static 'assets/valoremonetario.png'%}" width="400">   
+        <p><br>Mentre se si imposta un valore monetario per tonnelata di CO2 nell'apposita area e in seguito si preme sul pulsante azzurro "Calcola valore totale", sarà possibile visualizzare il valore monetario del totale di CO2 assorbito dalla vegetazione presente nell'area selezionata.<br></p>
+        <img src="{% static 'assets/generapdf.png'%}" width="400"> 
+        <p><br>Una volta completato il calcolo, sarà possibile generare un pdf con i dati relativi alla clip effettuata premendo il pulsante verde "Genera PDF"<br></p>
+    
+
+
+      </div>
+    </nav>  
+		  <button type="button" onclick="chiudiInfoApp()"  class="btn btn-danger btn-sm text-light mt-3">Chiudi finestra</button>
+	</div>
+	<nav id="navListaComuni" class="nascondiListaComuni" style="height:300px; width:18%; overflow:hidden; overflow-y:scroll;position:absolute;z-index:999;background-color: #333;border-radius: 2px; top:270px; left:10px;padding-top: 20px;padding-left: 20px">
+    <div id='lista-comuni'>
+    </div>
+  </nav>
+    <div id="map"></div>
+  </div>
+  <template class="comune-template">
+    <div class="comune-item">
+      <div>
+        <input type="checkbox" />
+      </div>
+      <div>
+        <span class="nome-comune" style="padding-left: 5px; color:#fff"></span>
+      </div>
+    </div>
+  </template>
+  <div id="div-finale"></div>
+  <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/geotoolbox" charset="utf-8"></script>
+  <script src="{% static 'js/leaflet-notifications.min.js' %}"></script>
+  <script src="{% static 'js/app.js' %}"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/1.5.3/jspdf.min.js"></script>
+  <script src="{% static 'js/dom-to-image.min.js' %}"></script>
+  
+</body>
+</html>
