@@ -14,68 +14,65 @@
   <link rel="icon" type="image/x-icon" href="{% static 'assets/favicon.png'%}">
 
   <title>Carta della Natura</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=Spectral:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
-
-  <style>
-  .loading {
-      position: absolute;
-      z-index: 999;
-      height: 100%;
-      width: 100%;
-      justify-content: center;
-      align-items: center;
-      background: #0000003b;
-	  display: none;
-  }
-  
-  .loading.visible {
-    display: flex;
-  }
-
-  .comune-item {
-    display: flex;
-  }
-
-  .map-disabled,
-  .map-disabled + .leaflet-control-container,
-  .map-disabled .leaflet-control-container {
-    pointer-events: none;
-  }
-  
-  </style>
 </head>
 <body>
   <div class="navbar">
-    <div class="navbar-group">
-      <button id="butSelezionaComune" class="btn btn-info btn-sm text-light" style="margin:10px">1) Seleziona comune</button>
-      <button id="resetMapState" class="btn btn-outline-light btn-sm" style="margin:10px">Reset</button>
+    <div class="navbar-brand-shell">
+      <div class="brand-badge">GIS</div>
+      <div class="brand-copy">
+        <div class="brand-eyebrow">Sistema informativo territoriale</div>
+        <div class="brand-title">Carta della Natura</div>
+        <div class="brand-subtitle">Analisi premium della vegetazione forestale in Campania</div>
+      </div>
     </div>
-    <div class="navbar-group">
-      <button id="infoApp" title="Visualizza info app" class="btn btn-danger btn-sm text-light" style="margin: 10px">Info</button>
-      <button id="eseguiClipBut" title="Esegui clip" class="btn btn-danger btn-sm text-light" style="margin: 10px"> 2) Estrai dati</button>
-      <button id="mostraInfoBut" title="Visualizza info" class="btn btn-danger btn-sm text-light" style="margin: 10px"> 3) Elabora informazioni</button>
+    <div class="navbar-actions-shell">
+      <div class="workflow-rail">
+        <span class="workflow-step">1. Selezione</span>
+        <span class="workflow-step">2. Estrazione</span>
+        <span class="workflow-step">3. Sintesi</span>
+      </div>
+      <div class="navbar-group navbar-main-actions">
+        <button id="butSelezionaComune" title="Seleziona comuni" class="btn btn-info btn-sm text-light app-btn app-btn-secondary">Comuni</button>
+        <button id="eseguiClipBut" title="Esegui clip" class="btn btn-danger btn-sm text-light app-btn app-btn-primary">Estrai</button>
+        <button id="mostraInfoBut" title="Visualizza analisi" class="btn btn-danger btn-sm text-light app-btn app-btn-primary">Analisi</button>
+      </div>
+      <div class="navbar-group navbar-utility-actions">
+        <button id="resetMapState" class="btn btn-outline-light btn-sm app-btn app-btn-ghost">Reset</button>
+        <button id="infoApp" title="Visualizza info app" class="btn btn-danger btn-sm text-light app-btn app-btn-ghost">Guida</button>
+      </div>
     </div>
-  </div> 
+  </div>
   <div id="container">
 	<div class="loading">
-		<img src="{% static 'assets/loading.gif'%}" width="300" height="300"></img>
+      <div class="loading-card">
+        <div class="loading-title">Analisi in corso</div>
+        <div class="loading-copy">Intersezione GIS, normalizzazione geometrie, sintesi vegetazione.</div>
+		    <img src="{% static 'assets/loading.gif'%}" width="180" height="180"></img>
+      </div>
 	</div>
   <div class="popup" id="popup">
     <div class="drawer-shell">
       <nav id="navVisualizzaInfo" class="drawer-content">
 		    <div class="drawer-header">
-          <h2>Informazioni sulla natura</h2>
-          <button id="butchiudipopup" type="button" class="btn btn-danger btn-sm text-light">Chiudi</button>
+          <div>
+            <div class="drawer-eyebrow">Report analitico</div>
+            <h2>Informazioni sulla natura</h2>
+          </div>
+          <button id="butchiudipopup" type="button" class="btn btn-sm app-btn app-btn-ghost app-btn-dark">Chiudi</button>
         </div>
 		    <div id="infoNatura"><p>dettagli qui</p></div>
       </nav>
     </div>
   </div>
   <div class="infoApp" id="infoApplicazione">
-    <nav style="overflow: hidden scroll;height: 500px;">		
+    <nav class="guide-content">		
 		  <h2>Come utilizzare l'applicazione</h2>
 		  <div>
         <p><br>L'applicazione consente di verificare la tipologia di vegetazione presente nell'area selezionata, indicando quanti ettari (ha) di vegetazione sono presenti a seconda della tipologia.<br></p>
@@ -155,11 +152,12 @@
 
       </div>
     </nav>  
-			  <button id="closeInfoApp" type="button" class="btn btn-danger btn-sm text-light mt-3">Chiudi finestra</button>
+			  <button id="closeInfoApp" type="button" class="btn btn-sm mt-3 app-btn app-btn-ghost app-btn-dark">Chiudi finestra</button>
 		</div>
 	<nav id="navListaComuni" class="nascondiListaComuni comuni-panel">
     <div class="comuni-panel-header">
-      <div class="comuni-panel-title">Comuni Campania</div>
+      <div class="comuni-panel-eyebrow">Selezione territoriale</div>
+      <div class="comuni-panel-title">Comuni della Campania</div>
       <div id="selectedCountLabel" class="comuni-panel-count">0 selezionati</div>
       <input id="municipalitySearch" type="search" class="form-control form-control-sm" placeholder="Cerca comune" />
     </div>
@@ -167,15 +165,28 @@
     </div>
   </nav>
     <aside id="mapStatusPanel" class="map-card status-card">
-      <div class="map-card-title">Stato analisi</div>
+      <div class="map-card-header">
+        <div>
+          <div class="map-card-kicker">Sessione corrente</div>
+          <div class="map-card-title">Stato</div>
+        </div>
+      </div>
       <div id="statusContent">
         <div class="status-line"><strong>Comuni selezionati:</strong> 0</div>
         <div class="status-line"><strong>Geometrie disegnate:</strong> 0</div>
         <div class="status-line"><strong>Risultato:</strong> nessuna analisi</div>
       </div>
     </aside>
-    <aside id="legendPanel" class="map-card legend-card">
-      <div class="map-card-title">Legenda vegetazione</div>
+    <aside id="legendPanel" class="map-card legend-card is-collapsed">
+      <div class="map-card-header">
+        <div>
+          <div class="map-card-kicker">Classificazione</div>
+          <div class="map-card-title">Legenda</div>
+        </div>
+        <button type="button" id="toggleLegendPanel" class="map-card-toggle" aria-expanded="false" aria-controls="legendContent">
+          Apri
+        </button>
+      </div>
       <div id="legendContent"></div>
     </aside>
     <div id="map"></div>
@@ -186,7 +197,7 @@
         <input type="checkbox" />
       </div>
       <div>
-        <span class="nome-comune" style="padding-left: 5px; color:#fff"></span>
+        <label class="nome-comune"></label>
       </div>
     </div>
   </template>

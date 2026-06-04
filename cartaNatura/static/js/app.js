@@ -12,6 +12,7 @@ const state = {
 };
 
 const elements = {
+  navbar: document.querySelector(".navbar"),
   selectMunicipalityButton: document.getElementById("butSelezionaComune"),
   resetButton: document.getElementById("resetMapState"),
   runAnalysisButton: document.getElementById("eseguiClipBut"),
@@ -29,8 +30,19 @@ const elements = {
   closeAppInfoButton: document.getElementById("closeInfoApp"),
   statusContent: document.getElementById("statusContent"),
   legendContent: document.getElementById("legendContent"),
+  statusPanel: document.getElementById("mapStatusPanel"),
+  legendPanel: document.getElementById("legendPanel"),
+  toggleLegendPanelButton: document.getElementById("toggleLegendPanel"),
   map: document.getElementById("map"),
 };
+
+function syncChromeOffset() {
+  const navbarHeight = elements.navbar?.getBoundingClientRect().height ?? 0;
+  const viewportWidth = window.innerWidth;
+  const extraGap = viewportWidth <= 760 ? 14 : 18;
+  const offset = Math.ceil(navbarHeight + 14 + extraGap);
+  document.documentElement.style.setProperty("--shell-offset", `${offset}px`);
+}
 
 function escapeHtml(value) {
   return value
@@ -78,6 +90,19 @@ function closeMunicipalityPanel() {
   elements.municipalityPanel.classList.remove("visualizzaListaComuni");
 }
 
+function setPanelCollapsed(panelElement, buttonElement, collapsed) {
+  if (!panelElement || !buttonElement) {
+    return;
+  }
+  panelElement.classList.toggle("is-collapsed", collapsed);
+  buttonElement.setAttribute("aria-expanded", String(!collapsed));
+  buttonElement.textContent = collapsed ? "Apri" : "Riduci";
+}
+
+function togglePanel(panelElement, buttonElement) {
+  setPanelCollapsed(panelElement, buttonElement, !panelElement.classList.contains("is-collapsed"));
+}
+
 function renderLegend() {
   elements.legendContent.innerHTML = `
     <div class="legend-grid">
@@ -105,9 +130,18 @@ function renderStatusPanel({ selectedMunicipalityCount = 0, drawnFeatureCount = 
       : "nessuna analisi";
 
   elements.statusContent.innerHTML = `
-    <div class="status-line"><strong>Comuni selezionati:</strong> ${selectedMunicipalityCount}</div>
-    <div class="status-line"><strong>Geometrie disegnate:</strong> ${drawnFeatureCount}</div>
-    <div class="status-line"><strong>Risultato:</strong> ${escapeHtml(resultText)}</div>
+    <div class="status-chip">
+      <span class="status-label">Comuni</span>
+      <strong class="status-value">${selectedMunicipalityCount}</strong>
+    </div>
+    <div class="status-chip">
+      <span class="status-label">Geometrie</span>
+      <strong class="status-value">${drawnFeatureCount}</strong>
+    </div>
+    <div class="status-chip status-chip-wide">
+      <span class="status-label">Risultato</span>
+      <strong class="status-value">${escapeHtml(resultText)}</strong>
+    </div>
   `;
 
   elements.selectedCountLabel.textContent = `${selectedMunicipalityCount} selezionati`;
@@ -337,6 +371,8 @@ async function runAnalysis(mapController) {
 }
 
 async function bootstrap() {
+  syncChromeOffset();
+
   const [municipalitySource, municipalityBoundaries] = await Promise.all([
     fetchGeoJson(appConfig.datasets.municipalitiesUrl),
     fetchGeoJson(appConfig.datasets.boundariesUrl),
@@ -395,6 +431,15 @@ async function bootstrap() {
   elements.municipalitySearch.addEventListener("input", () => {
     filterMunicipalityList();
   });
+
+  if (elements.toggleLegendPanelButton) {
+    elements.toggleLegendPanelButton.addEventListener("click", () => {
+      togglePanel(elements.legendPanel, elements.toggleLegendPanelButton);
+    });
+  }
+
+  window.addEventListener("resize", syncChromeOffset);
+  window.addEventListener("orientationchange", syncChromeOffset);
 
   document.addEventListener("click", (event) => {
     if (
