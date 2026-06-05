@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 
+from django.conf import settings
+from django.http import HttpResponseNotFound
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.templatetags.static import static
@@ -18,6 +22,8 @@ from cartaNatura.interaction import (
     build_default_orchestrator,
 )
 from cartaNatura.interaction.session import DjangoSessionStore
+
+logger = logging.getLogger(__name__)
 
 
 PRICE_OPTIONS = (
@@ -52,7 +58,14 @@ def index(request):
             "zoom": 8,
         },
         "assistant": {
+            "enabled": settings.AI_ASSISTANT_ENABLED,
             "title": "Assistente Carta Natura",
+            "providerConfigured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+            "examples": [
+                "Analizza Avellino e Benevento",
+                "Spiegami ultimo risultato",
+                "Reset sessione",
+            ],
         },
         "datasets": {
             "municipalitiesUrl": static("data/campania-municipalities-32633.geojson"),
@@ -92,6 +105,9 @@ def gis(request):
 
 @require_POST
 def interact(request):
+    if not settings.AI_ASSISTANT_ENABLED:
+        return HttpResponseNotFound()
+
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
@@ -100,11 +116,21 @@ def interact(request):
     message = str(payload.get("message") or "").strip()
     context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else {}
 
+    session_id = _ensure_session_id(request)
+    logger.info(
+        "Assistant interaction started session=%s chars=%s selected=%s",
+        session_id,
+        len(message),
+        len(context_payload.get("selectedMunicipalities", []))
+        if isinstance(context_payload.get("selectedMunicipalities"), list)
+        else 0,
+    )
+
     try:
         response = _build_request_orchestrator(request).handle(
             InteractionRequest(
                 channel=InteractionChannel.WEB_CHAT,
-                session_id=_ensure_session_id(request),
+                session_id=session_id,
                 input=InteractionInput(text=message, metadata={"source": "web_assistant"}),
                 context=InteractionContext(
                     selected_municipalities=tuple(
@@ -117,7 +143,20 @@ def interact(request):
             )
         )
     except ValueError as exc:
+        logger.warning(
+            "Assistant interaction rejected session=%s error=%s",
+            session_id,
+            str(exc),
+        )
         return JsonResponse({"error": str(exc)}, status=400)
+
+    logger.info(
+        "Assistant interaction completed session=%s mode=%s provider=%s has_analysis=%s",
+        session_id,
+        response.ui_hints.get("mode"),
+        response.ui_hints.get("providerMode", "local"),
+        bool(response.analysis_result),
+    )
 
     return JsonResponse(
         {

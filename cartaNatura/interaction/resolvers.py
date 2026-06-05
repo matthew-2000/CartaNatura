@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from cartaNatura.services.municipality_text import extract_municipality_names
+from cartaNatura.services.municipality_text import (
+    extract_municipality_names,
+    suggest_municipality_names,
+)
 
 from .models import InteractionCommand, InteractionIntent, InteractionRequest, SessionContext
 
@@ -68,6 +71,28 @@ class RuleBasedIntentResolver:
                         "source_text": request.input.primary_text(),
                     },
                 )
+            )
+
+        suggested_names = suggest_municipality_names(text)
+        if suggested_names:
+            if len(suggested_names) == 1:
+                return IntentResolution(
+                    command=InteractionCommand(
+                        intent=InteractionIntent.ANALYZE_MUNICIPALITIES,
+                        payload={
+                            "municipality_names": suggested_names,
+                            "source_text": request.input.primary_text(),
+                            "matchMode": "suggested_single",
+                        },
+                    )
+                )
+
+            return IntentResolution(
+                command=InteractionCommand(intent=InteractionIntent.UNKNOWN),
+                clarification_message=(
+                    "Ho trovato piu comuni compatibili. Intendi uno di questi: "
+                    f"{', '.join(suggested_names)}?"
+                ),
             )
 
         return IntentResolution(

@@ -7,6 +7,7 @@ if (!rawConfig) {
 export const appConfig = JSON.parse(rawConfig);
 export const categories = appConfig.categories;
 export const priceOptions = appConfig.priceOptions;
+export const assistantConfig = appConfig.assistant || {};
 
 export const categoryByCode = new Map();
 for (const category of categories) {

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 
+from .assistant_text import AssistantTextResult
 from .llm import LlmProviderUnavailableError
 from .providers import LlmProvider
+
+logger = logging.getLogger(__name__)
 
 
 def build_analysis_reply(
@@ -13,14 +17,14 @@ def build_analysis_reply(
     requested_municipalities: list[str],
     summary: dict[str, object],
     llm_provider: LlmProvider | None = None,
-) -> str:
+) -> AssistantTextResult:
     fallback = _build_analysis_reply_fallback(
         requested_municipalities=requested_municipalities,
         summary=summary,
     )
 
     if llm_provider is None:
-        return fallback
+        return AssistantTextResult(text=fallback, provider_mode="local")
 
     prompt = (
         "Sei assistente GIS di Carta della Natura. "
@@ -31,22 +35,36 @@ def build_analysis_reply(
     )
 
     try:
-        return llm_provider.complete(prompt)
-    except LlmProviderUnavailableError:
-        return fallback
+        return AssistantTextResult(
+            text=llm_provider.complete(prompt),
+            provider_mode="openai",
+        )
+    except LlmProviderUnavailableError as exc:
+        logger.warning("Assistant analysis reply fallback activated: %s", exc)
+        return AssistantTextResult(
+            text=fallback,
+            provider_mode="fallback",
+            warning="LLM non raggiungibile, uso sintesi locale.",
+        )
 
 
 def build_explanation_reply(
     *,
     analysis_summary: dict[str, object] | None,
     llm_provider: LlmProvider | None = None,
-) -> str:
+) -> AssistantTextResult:
     if not analysis_summary:
-        return "Non ho ancora un'analisi recente da spiegare. Chiedimi prima di analizzare uno o piu comuni."
+        return AssistantTextResult(
+            text=(
+                "Non ho ancora un'analisi recente da spiegare. "
+                "Chiedimi prima di analizzare uno o piu comuni."
+            ),
+            provider_mode="local",
+        )
 
     fallback = _build_explanation_reply_fallback(analysis_summary)
     if llm_provider is None:
-        return fallback
+        return AssistantTextResult(text=fallback, provider_mode="local")
 
     prompt = (
         "Sei assistente GIS di Carta della Natura. "
@@ -55,9 +73,17 @@ def build_explanation_reply(
     )
 
     try:
-        return llm_provider.complete(prompt)
-    except LlmProviderUnavailableError:
-        return fallback
+        return AssistantTextResult(
+            text=llm_provider.complete(prompt),
+            provider_mode="openai",
+        )
+    except LlmProviderUnavailableError as exc:
+        logger.warning("Assistant explanation reply fallback activated: %s", exc)
+        return AssistantTextResult(
+            text=fallback,
+            provider_mode="fallback",
+            warning="LLM non raggiungibile, uso sintesi locale.",
+        )
 
 
 def _build_analysis_reply_fallback(

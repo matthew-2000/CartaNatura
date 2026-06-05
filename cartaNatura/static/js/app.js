@@ -5,7 +5,13 @@ import {
   formatCurrency,
   formatRoundedNumber,
 } from "./modules/analysis.js";
-import { appConfig, categories, categoryByCode, priceOptions } from "./modules/config.js";
+import {
+  appConfig,
+  assistantConfig,
+  categories,
+  categoryByCode,
+  priceOptions,
+} from "./modules/config.js";
 import { MapController } from "./modules/map-controller.js";
 import { generatePdfReport } from "./modules/pdf-export.js";
 
@@ -41,6 +47,7 @@ const elements = {
   appNotice: document.getElementById("appNotice"),
   popup: document.getElementById("popup"),
   assistantPanel: document.getElementById("assistantPanel"),
+  assistantTitle: document.querySelector(".assistant-panel-title"),
   assistantStatus: document.getElementById("assistantStatus"),
   assistantMessages: document.getElementById("assistantMessages"),
   assistantForm: document.getElementById("assistantForm"),
@@ -112,6 +119,9 @@ function closeAppInfo(mapController) {
 }
 
 function openAssistantPanel() {
+  if (!assistantConfig.enabled) {
+    return;
+  }
   elements.assistantPanel.classList.add("is-open");
   elements.assistantPanel.setAttribute("aria-hidden", "false");
 }
@@ -179,11 +189,18 @@ function showNotice(message, tone = "info") {
   }, 3400);
 }
 
-function setAssistantStatus(llmConfigured) {
-  elements.assistantStatus.textContent = llmConfigured
-    ? "LLM configurato"
-    : "Fallback locale attivo";
-  elements.assistantStatus.classList.toggle("is-live", Boolean(llmConfigured));
+function setAssistantStatus(providerMode = "local", configured = false) {
+  let statusText = "Fallback locale attivo";
+  if (!assistantConfig.enabled) {
+    statusText = "Assistente disattivato";
+  } else if (providerMode === "openai") {
+    statusText = "LLM configurato";
+  } else if (configured) {
+    statusText = "Provider configurato, fallback locale attivo";
+  }
+
+  elements.assistantStatus.textContent = statusText;
+  elements.assistantStatus.classList.toggle("is-live", providerMode === "openai");
 }
 
 function setAssistantBusy(busy) {
@@ -590,6 +607,11 @@ async function runAnalysis(mapController) {
 }
 
 async function runAssistantInteraction(mapController, message) {
+  if (!assistantConfig.enabled) {
+    showNotice("Assistente disattivato dalla configurazione applicativa.", "warning");
+    return;
+  }
+
   if (state.assistantBusy) {
     return;
   }
@@ -615,7 +637,14 @@ async function runAssistantInteraction(mapController, message) {
       appendAssistantMessage(messageItem.role, messageItem.text);
     }
 
-    setAssistantStatus(response.uiHints?.llmConfigured);
+    setAssistantStatus(
+      response.uiHints?.providerMode || "local",
+      response.uiHints?.llmConfigured
+    );
+
+    if (response.uiHints?.warning) {
+      showNotice(response.uiHints.warning, "warning");
+    }
 
     if (response.uiHints?.mode === "reset") {
       resetAnalysis(mapController);
@@ -665,17 +694,25 @@ async function bootstrap() {
   renderLegend();
   renderStatusPanel();
   renderMunicipalityList(mapController, () => refreshSelectionStatus(null, mapController));
-  setAssistantStatus(false);
+  elements.assistantTitle.textContent = assistantConfig.title || "Assistente Carta Natura";
+  setAssistantStatus(assistantConfig.providerConfigured ? "local" : "local", assistantConfig.providerConfigured);
   renderAssistantMessages();
   updateActionStates(mapController);
+
+  if (!assistantConfig.enabled) {
+    elements.openAssistantButton.hidden = true;
+    elements.assistantPanel.hidden = true;
+  }
 
   elements.selectMunicipalityButton.addEventListener("click", () => {
     toggleMunicipalityPanel();
   });
 
-  elements.openAssistantButton.addEventListener("click", () => {
-    toggleAssistantPanel();
-  });
+  if (assistantConfig.enabled) {
+    elements.openAssistantButton.addEventListener("click", () => {
+      toggleAssistantPanel();
+    });
+  }
 
   elements.resetButton.addEventListener("click", () => {
     resetAnalysis(mapController);
@@ -702,21 +739,23 @@ async function bootstrap() {
     closeAppInfo(mapController);
   });
 
-  elements.closeAssistantButton.addEventListener("click", () => {
-    closeAssistantPanel();
-  });
-
-  elements.assistantForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    runAssistantInteraction(mapController, elements.assistantInput.value);
-  });
-
-  for (const chip of document.querySelectorAll(".assistant-chip")) {
-    chip.addEventListener("click", () => {
-      const prompt = chip.dataset.prompt || "";
-      elements.assistantInput.value = prompt;
-      runAssistantInteraction(mapController, prompt);
+  if (assistantConfig.enabled) {
+    elements.closeAssistantButton.addEventListener("click", () => {
+      closeAssistantPanel();
     });
+
+    elements.assistantForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      runAssistantInteraction(mapController, elements.assistantInput.value);
+    });
+
+    for (const chip of document.querySelectorAll(".assistant-chip")) {
+      chip.addEventListener("click", () => {
+        const prompt = chip.dataset.prompt || "";
+        elements.assistantInput.value = prompt;
+        runAssistantInteraction(mapController, prompt);
+      });
+    }
   }
 
   elements.municipalitySearch.addEventListener("input", () => {

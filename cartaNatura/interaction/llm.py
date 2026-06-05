@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, request
 
 from .providers import LlmProvider
+
+logger = logging.getLogger(__name__)
 
 
 class LlmProviderUnavailableError(RuntimeError):
@@ -40,6 +43,7 @@ class OpenAiResponsesLlmProvider:
             with request.urlopen(req, timeout=20) as response:
                 body: dict[str, Any] = json.loads(response.read().decode("utf-8"))
         except error.URLError as exc:
+            logger.warning("OpenAI provider request failed: %s", exc)
             raise LlmProviderUnavailableError("OpenAI provider not reachable.") from exc
 
         output_text = body.get("output_text")

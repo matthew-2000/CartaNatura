@@ -19,8 +19,20 @@ from cartaNatura.interaction.resolvers import RuleBasedIntentResolver
 from cartaNatura.interaction.session import InMemorySessionStore
 from cartaNatura.schemas import SelectionArea, SelectionRequest
 from cartaNatura.services.gis_clip import clip_selection
-from cartaNatura.services.municipality_text import extract_municipality_names
+from cartaNatura.services.municipality_text import (
+    extract_municipality_names,
+    suggest_municipality_names,
+)
 from cartaNatura.services.payloads import parse_selection_payload
+
+
+class FakeLlmProvider:
+    def __init__(self, text: str):
+        self._text = text
+
+    def complete(self, prompt: str) -> str:
+        del prompt
+        return self._text
 
 
 class PayloadParsingTests(SimpleTestCase):
@@ -198,6 +210,16 @@ class ViewSmokeTests(SimpleTestCase):
             ["Avellino", "Benevento"],
         )
 
+    @override_settings(AI_ASSISTANT_ENABLED=False)
+    def test_interact_returns_404_when_assistant_disabled(self):
+        response = Client().post(
+            "/progettoGIS/cartaNatura/interact",
+            data='{"message": "Analizza Avellino"}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
 
 class InteractionSessionContextTests(SimpleTestCase):
     def test_session_context_round_trip_is_serializable(self):
@@ -264,6 +286,46 @@ class RuleBasedIntentResolverTests(SimpleTestCase):
             ["Avellino", "Benevento"],
         )
 
+    @patch("cartaNatura.interaction.resolvers.extract_municipality_names")
+    @patch("cartaNatura.interaction.resolvers.suggest_municipality_names")
+    def test_resolver_uses_single_suggestion_as_analysis_target(
+        self,
+        suggest_names,
+        extract_names,
+    ):
+        extract_names.return_value = []
+        suggest_names.return_value = ["Avellino"]
+        request = InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="session-1",
+            input=InteractionInput(text="analizza Avell"),
+        )
+
+        resolution = RuleBasedIntentResolver().resolve(request, SessionContext())
+
+        self.assertEqual(resolution.command.intent, InteractionIntent.ANALYZE_MUNICIPALITIES)
+        self.assertEqual(resolution.command.payload["municipality_names"], ["Avellino"])
+
+    @patch("cartaNatura.interaction.resolvers.extract_municipality_names")
+    @patch("cartaNatura.interaction.resolvers.suggest_municipality_names")
+    def test_resolver_returns_clarification_for_ambiguous_suggestions(
+        self,
+        suggest_names,
+        extract_names,
+    ):
+        extract_names.return_value = []
+        suggest_names.return_value = ["San Giorgio a Cremano", "San Gennaro Vesuviano"]
+        request = InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="session-1",
+            input=InteractionInput(text="analizza san"),
+        )
+
+        resolution = RuleBasedIntentResolver().resolve(request, SessionContext())
+
+        self.assertEqual(resolution.command.intent, InteractionIntent.UNKNOWN)
+        self.assertIn("San Giorgio a Cremano", resolution.clarification_message)
+
 
 class MunicipalityTextTests(SimpleTestCase):
     @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
@@ -273,6 +335,14 @@ class MunicipalityTextTests(SimpleTestCase):
         names = extract_municipality_names("Analizza Benevento e Avellino")
 
         self.assertEqual(names, ["Benevento", "Avellino"])
+
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_suggest_municipality_names_handles_partial_matches(self, load_municipality_shapes):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+
+        names = suggest_municipality_names("Analizza Avell")
+
+        self.assertEqual(names, ["Avellino"])
 
 
 class InteractionOrchestratorTests(SimpleTestCase):
@@ -366,3 +436,36 @@ class InteractionOrchestratorTests(SimpleTestCase):
 
         self.assertEqual(response.commands[0].intent, InteractionIntent.RESET_SESSION)
         self.assertEqual(session_store.load("session-reset"), SessionContext())
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_orchestrator_uses_llm_provider_when_available(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+        session_store = InMemorySessionStore()
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            llm_provider=FakeLlmProvider("Sintesi LLM mockata."),
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="session-llm",
+                input=InteractionInput(text="analizza Avellino e Benevento"),
+            )
+        )
+
+        self.assertEqual(response.messages[0].text, "Sintesi LLM mockata.")
+        self.assertEqual(response.ui_hints["providerMode"], "openai")

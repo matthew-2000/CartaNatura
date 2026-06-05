@@ -21,6 +21,50 @@ def municipality_names() -> list[str]:
     return sorted(frame["COMUNE"].dropna().astype(str).unique().tolist())
 
 
+def suggest_municipality_names(text: str, limit: int = 5) -> list[str]:
+    normalized_text = _normalize_phrase(text)
+    if not normalized_text:
+        return []
+
+    tokens = [token for token in normalized_text.split(" ") if len(token) >= 3]
+    if not tokens:
+        return []
+
+    scored: list[tuple[int, int, str]] = []
+    for name in municipality_names():
+        normalized_name = _normalize_phrase(name)
+        if not normalized_name:
+            continue
+
+        score = 0
+        matched_tokens = 0
+        for token in tokens:
+            if normalized_name.startswith(token):
+                score += 3
+                matched_tokens += 1
+            elif f" {token}" in f" {normalized_name}":
+                score += 2
+                matched_tokens += 1
+            elif token in normalized_name:
+                score += 1
+                matched_tokens += 1
+
+        if matched_tokens:
+            scored.append((-score, -matched_tokens, name))
+
+    scored.sort()
+    suggestions: list[str] = []
+    seen: set[str] = set()
+    for _, _, name in scored:
+        if name in seen:
+            continue
+        seen.add(name)
+        suggestions.append(name)
+        if len(suggestions) >= limit:
+            break
+    return suggestions
+
+
 def extract_municipality_names(text: str) -> list[str]:
     normalized_text = f" {_normalize_phrase(text)} "
     matches: list[tuple[int, str]] = []

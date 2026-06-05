@@ -68,8 +68,9 @@ class InteractionOrchestrator:
 
 def build_default_orchestrator(
     session_store: SessionStore | None = None,
+    llm_provider=None,
 ) -> InteractionOrchestrator:
-    llm_provider = build_optional_llm_provider()
+    llm_provider = llm_provider if llm_provider is not None else build_optional_llm_provider()
     return InteractionOrchestrator(
         resolver=RuleBasedIntentResolver(),
         handlers=(
