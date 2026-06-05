@@ -11,6 +11,7 @@ from cartaNatura.services.municipality_text import build_municipality_selection_
 from cartaNatura.services.payloads import parse_selection_payload
 
 from .models import (
+    InteractionChannel,
     InteractionCommand,
     InteractionIntent,
     InteractionMessage,
@@ -32,6 +33,12 @@ class CommandHandler(Protocol):
         session_context: SessionContext,
     ) -> InteractionResponse:
         """Execute a resolved interaction command."""
+
+
+def _require_llm_provider(llm_provider: LlmProvider | None) -> LlmProvider:
+    if llm_provider is None:
+        raise ValueError("Assistente AI non configurato. Imposta OPENAI_API_KEY.")
+    return llm_provider
 
 
 class AnalyzeSelectionHandler:
@@ -60,24 +67,29 @@ class AnalyzeSelectionHandler:
             "intersectedMunicipalities": result.intersected_municipalities,
             "summary": summary,
         }
-        assistant_result = build_analysis_reply(
-            requested_municipalities=result.intersected_municipalities,
-            summary=summary,
-            llm_provider=self._llm_provider,
-        )
+        messages: tuple[InteractionMessage, ...] = ()
+        ui_hints = {
+            "channel": request.channel.value,
+            "mode": "structured_selection",
+        }
+        audio_output_text = None
+
+        if request.channel is not InteractionChannel.WEB_MAP:
+            assistant_result = build_analysis_reply(
+                requested_municipalities=result.intersected_municipalities,
+                summary=summary,
+                llm_provider=_require_llm_provider(self._llm_provider),
+            )
+            messages = (InteractionMessage(role="assistant", text=assistant_result.text),)
+            ui_hints["providerMode"] = assistant_result.provider_mode
+            audio_output_text = assistant_result.text
 
         return InteractionResponse(
-            messages=(InteractionMessage(role="assistant", text=assistant_result.text),),
+            messages=messages,
             commands=(command,),
             analysis_result=analysis_result,
-            ui_hints={
-                "channel": request.channel.value,
-                "mode": "structured_selection",
-                "llmConfigured": self._llm_provider is not None,
-                "providerMode": assistant_result.provider_mode,
-                "warning": assistant_result.warning,
-            },
-            audio_output_text=assistant_result.text,
+            ui_hints=ui_hints,
+            audio_output_text=audio_output_text,
             updated_context=SessionContext(
                 selection_payload=selection_payload,
                 last_analysis={
@@ -118,7 +130,7 @@ class AnalyzeMunicipalitiesHandler:
         assistant_result = build_analysis_reply(
             requested_municipalities=requested_municipalities,
             summary=summary,
-            llm_provider=self._llm_provider,
+            llm_provider=_require_llm_provider(self._llm_provider),
         )
         analysis_result = {
             "clipped": json.loads(result.clipped.to_json()),
@@ -134,9 +146,7 @@ class AnalyzeMunicipalitiesHandler:
             ui_hints={
                 "channel": request.channel.value,
                 "mode": "text_municipality_analysis",
-                "llmConfigured": self._llm_provider is not None,
                 "providerMode": assistant_result.provider_mode,
-                "warning": assistant_result.warning,
             },
             audio_output_text=assistant_result.text,
             updated_context=SessionContext(
@@ -168,7 +178,7 @@ class ExplainLastAnalysisHandler:
         analysis_summary = (session_context.last_analysis or {}).get("summary")
         assistant_result = build_explanation_reply(
             analysis_summary=analysis_summary,
-            llm_provider=self._llm_provider,
+            llm_provider=_require_llm_provider(self._llm_provider),
         )
 
         return InteractionResponse(
@@ -176,9 +186,7 @@ class ExplainLastAnalysisHandler:
             commands=(command,),
             ui_hints={
                 "mode": "explain_last_analysis",
-                "llmConfigured": self._llm_provider is not None,
                 "providerMode": assistant_result.provider_mode,
-                "warning": assistant_result.warning,
             },
             audio_output_text=assistant_result.text,
             updated_context=SessionContext(

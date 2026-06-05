@@ -1,7 +1,7 @@
 {% load static %}
 
 <!DOCTYPE html>
-<html>
+<html data-asset-version="{{ asset_version }}">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
@@ -18,9 +18,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=Spectral:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
-  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  <link rel="stylesheet" href="{% static 'vendor/leaflet/leaflet.css' %}?v={{ asset_version }}"/>
+  <link rel="stylesheet" href="{% static 'css/leaflet.draw.css' %}?v={{ asset_version }}"/>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}?v={{ asset_version }}">
 </head>
 <body>
   <div class="navbar">
@@ -140,7 +140,7 @@
         <div>
           <div class="assistant-panel-eyebrow">Interaction Layer</div>
           <div class="assistant-panel-title">Assistente Carta Natura</div>
-          <div id="assistantStatus" class="assistant-panel-status">Fallback locale attivo</div>
+          <div id="assistantStatus" class="assistant-panel-status">Assistente non disponibile</div>
         </div>
         <button id="closeAssistantPanel" type="button" class="btn btn-sm app-btn app-btn-ghost">Chiudi</button>
       </div>
@@ -202,12 +202,12 @@
   </template>
   <div id="div-finale"></div>
   <script id="app-config" type="application/json">{{ app_config_json|safe }}</script>
-  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-geometryutil/0.10.3/leaflet.geometryutil.min.js"></script>
+  <script src="{% static 'vendor/leaflet/leaflet.js' %}?v={{ asset_version }}"></script>
+  <script src="{% static 'vendor/leaflet-draw/leaflet.draw.js' %}?v={{ asset_version }}"></script>
+  <script src="{% static 'vendor/leaflet-geometryutil/leaflet.geometryutil.min.js' %}?v={{ asset_version }}"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/1.5.3/jspdf.min.js"></script>
-  <script src="{% static 'js/dom-to-image.min.js' %}"></script>
-  <script type="module" src="{% static 'js/app.js' %}"></script>
+  <script src="{% static 'js/dom-to-image.min.js' %}?v={{ asset_version }}"></script>
+  <script type="module" src="{% static 'js/app.js' %}?v={{ asset_version }}"></script>
   
 </body>
 </html>

@@ -25,13 +25,28 @@ async function handleJsonResponse(response) {
 }
 
 export async function fetchGeoJson(url) {
-  const response = await fetch(url, {
+  let response = await fetch(url, {
     headers: {
       Accept: "application/json",
     },
+    cache: "no-store",
   });
 
-  return handleJsonResponse(response);
+  if (response.status === 304) {
+    const cacheBustedUrl = `${url}${url.includes("?") ? "&" : "?"}v=${Date.now()}`;
+    response = await fetch(cacheBustedUrl, {
+      headers: {
+        Accept: "application/json",
+      },
+      cache: "reload",
+    });
+  }
+
+  if (!response.ok) {
+    throw new Error(`Dataset request failed (${response.status}).`);
+  }
+
+  return response.json();
 }
 
 export async function requestNatureClip(apiUrl, payload) {

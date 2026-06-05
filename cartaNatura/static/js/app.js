@@ -1,19 +1,39 @@
-import { requestNatureClip, fetchGeoJson, sendInteractionMessage } from "./modules/api.js";
-import {
-  deriveSummaryMetrics,
-  summarizeClippedFeatures,
-  formatCurrency,
-  formatRoundedNumber,
-} from "./modules/analysis.js";
-import {
-  appConfig,
-  assistantConfig,
-  categories,
-  categoryByCode,
-  priceOptions,
-} from "./modules/config.js";
-import { MapController } from "./modules/map-controller.js";
-import { generatePdfReport } from "./modules/pdf-export.js";
+const assetVersion = document.documentElement.dataset.assetVersion || "dev";
+const versionedPath = (path) =>
+  `${path}${path.includes("?") ? "&" : "?"}v=${encodeURIComponent(assetVersion)}`;
+
+let requestNatureClip;
+let fetchGeoJson;
+let sendInteractionMessage;
+let deriveSummaryMetrics;
+let summarizeClippedFeatures;
+let formatCurrency;
+let formatRoundedNumber;
+let appConfig;
+let assistantConfig;
+let categories;
+let categoryByCode;
+let priceOptions;
+let MapController;
+let generatePdfReport;
+
+async function loadModules() {
+  const [apiModule, analysisModule, configModule, mapControllerModule, pdfExportModule] =
+    await Promise.all([
+      import(versionedPath("./modules/api.js")),
+      import(versionedPath("./modules/analysis.js")),
+      import(versionedPath("./modules/config.js")),
+      import(versionedPath("./modules/map-controller.js")),
+      import(versionedPath("./modules/pdf-export.js")),
+    ]);
+
+  ({ requestNatureClip, fetchGeoJson, sendInteractionMessage } = apiModule);
+  ({ deriveSummaryMetrics, summarizeClippedFeatures, formatCurrency, formatRoundedNumber } =
+    analysisModule);
+  ({ appConfig, assistantConfig, categories, categoryByCode, priceOptions } = configModule);
+  ({ MapController } = mapControllerModule);
+  ({ generatePdfReport } = pdfExportModule);
+}
 
 const state = {
   summary: null,
@@ -25,7 +45,7 @@ const state = {
   assistantMessages: [
     {
       role: "assistant",
-      text: "Assistente pronto. Posso gia analizzare comuni citati nel testo, per esempio: analizza Avellino e Benevento.",
+      text: "Assistente AI pronto.",
     },
   ],
   assistantBusy: false,
@@ -189,14 +209,12 @@ function showNotice(message, tone = "info") {
   }, 3400);
 }
 
-function setAssistantStatus(providerMode = "local", configured = false) {
-  let statusText = "Fallback locale attivo";
+function setAssistantStatus(providerMode = null, configured = false) {
+  let statusText = "Assistente non disponibile";
   if (!assistantConfig.enabled) {
-    statusText = "Assistente disattivato";
+    statusText = configured ? "Configura e ricarica per usare l'assistente" : "Assistente non disponibile";
   } else if (providerMode === "openai") {
     statusText = "LLM configurato";
-  } else if (configured) {
-    statusText = "Provider configurato, fallback locale attivo";
   }
 
   elements.assistantStatus.textContent = statusText;
@@ -637,14 +655,7 @@ async function runAssistantInteraction(mapController, message) {
       appendAssistantMessage(messageItem.role, messageItem.text);
     }
 
-    setAssistantStatus(
-      response.uiHints?.providerMode || "local",
-      response.uiHints?.llmConfigured
-    );
-
-    if (response.uiHints?.warning) {
-      showNotice(response.uiHints.warning, "warning");
-    }
+    setAssistantStatus(response.uiHints?.providerMode || null, assistantConfig.providerConfigured);
 
     if (response.uiHints?.mode === "reset") {
       resetAnalysis(mapController);
@@ -695,13 +706,14 @@ async function bootstrap() {
   renderStatusPanel();
   renderMunicipalityList(mapController, () => refreshSelectionStatus(null, mapController));
   elements.assistantTitle.textContent = assistantConfig.title || "Assistente Carta Natura";
-  setAssistantStatus(assistantConfig.providerConfigured ? "local" : "local", assistantConfig.providerConfigured);
+  setAssistantStatus(null, assistantConfig.providerConfigured);
   renderAssistantMessages();
   updateActionStates(mapController);
 
   if (!assistantConfig.enabled) {
     elements.openAssistantButton.hidden = true;
     elements.assistantPanel.hidden = true;
+    state.assistantMessages = [];
   }
 
   elements.selectMunicipalityButton.addEventListener("click", () => {
@@ -804,6 +816,9 @@ async function bootstrap() {
   });
 }
 
-bootstrap().catch((error) => {
+loadModules()
+  .then(() => bootstrap())
+  .catch((error) => {
+  console.error("Application bootstrap failed", error);
   showNotice(error.message || "Errore durante inizializzazione applicazione.", "error");
-});
+  });

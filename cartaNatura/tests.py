@@ -184,12 +184,15 @@ class ViewSmokeTests(SimpleTestCase):
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
     @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    @patch("cartaNatura.interaction.orchestrator.build_optional_llm_provider")
     def test_interact_analyzes_named_municipalities(
         self,
+        build_optional_llm_provider,
         load_municipality_shapes,
         load_nature_shapes,
         load_campania_boundaries,
     ):
+        build_optional_llm_provider.return_value = FakeLlmProvider("Sintesi LLM mockata.")
         load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
         load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
         load_campania_boundaries.return_value = geopandas.GeoDataFrame(
@@ -197,18 +200,19 @@ class ViewSmokeTests(SimpleTestCase):
             geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
             crs="EPSG:4326",
         )
-
-        response = Client().post(
-            "/progettoGIS/cartaNatura/interact",
-            data='{"message": "Analizza Avellino e Benevento"}',
-            content_type="application/json",
-        )
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            response = Client().post(
+                "/progettoGIS/cartaNatura/interact",
+                data='{"message": "Analizza Avellino e Benevento"}',
+                content_type="application/json",
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.json()["analysisResult"]["requestedMunicipalities"],
             ["Avellino", "Benevento"],
         )
+        self.assertEqual(response.json()["uiHints"]["providerMode"], "openai")
 
     @override_settings(AI_ASSISTANT_ENABLED=False)
     def test_interact_returns_404_when_assistant_disabled(self):
@@ -219,6 +223,15 @@ class ViewSmokeTests(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, 404)
+
+    def test_interact_returns_503_without_openai_key(self):
+        response = Client().post(
+            "/progettoGIS/cartaNatura/interact",
+            data='{"message": "Analizza Avellino"}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 503)
 
 
 class InteractionSessionContextTests(SimpleTestCase):
@@ -398,7 +411,10 @@ class InteractionOrchestratorTests(SimpleTestCase):
             crs="EPSG:4326",
         )
         session_store = InMemorySessionStore()
-        orchestrator = build_default_orchestrator(session_store=session_store)
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            llm_provider=FakeLlmProvider("Sintesi LLM mockata."),
+        )
 
         response = orchestrator.handle(
             InteractionRequest(
@@ -469,3 +485,33 @@ class InteractionOrchestratorTests(SimpleTestCase):
 
         self.assertEqual(response.messages[0].text, "Sintesi LLM mockata.")
         self.assertEqual(response.ui_hints["providerMode"], "openai")
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_orchestrator_rejects_text_analysis_without_llm_provider(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=None,
+        )
+
+        with self.assertRaisesMessage(ValueError, "Assistente AI non configurato"):
+            orchestrator.handle(
+                InteractionRequest(
+                    channel=InteractionChannel.WEB_CHAT,
+                    session_id="session-no-llm",
+                    input=InteractionInput(text="analizza Avellino e Benevento"),
+                )
+            )
