@@ -1151,6 +1151,155 @@ body {
   border-radius: 10px 0 0 0;
 }
 
+.assistant-panel {
+  position: absolute;
+  top: calc(var(--shell-offset) + 8px);
+  right: 18px;
+  z-index: 950;
+  width: min(390px, calc(100vw - 44px));
+  height: min(620px, calc(100vh - var(--shell-offset) - 34px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(252, 248, 242, 0.98), rgba(245, 241, 232, 0.95));
+  border: 1px solid rgba(16, 35, 29, 0.08);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(16px);
+  transform: translateX(calc(100% + 24px));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 220ms ease, opacity 220ms ease;
+}
+
+.assistant-panel.is-open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.assistant-panel-header,
+.assistant-form-actions,
+.assistant-quick-actions {
+  display: flex;
+  align-items: center;
+}
+
+.assistant-panel-header {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.assistant-panel-eyebrow,
+.assistant-message-role {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.assistant-panel-title {
+  font-family: "Spectral", serif;
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.assistant-panel-status {
+  margin-top: 4px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.assistant-panel-status.is-live {
+  color: var(--accent);
+}
+
+.assistant-quick-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.assistant-chip {
+  border: 0;
+  border-radius: 999px;
+  background: rgba(32, 88, 71, 0.1);
+  color: var(--accent);
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.assistant-messages {
+  flex: 1 1 auto;
+  min-height: 180px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.assistant-message {
+  max-width: 88%;
+  padding: 12px 13px;
+  border-radius: 18px;
+  box-shadow: 0 10px 22px rgba(12, 25, 21, 0.06);
+}
+
+.assistant-message p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.assistant-message-assistant {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(16, 35, 29, 0.08);
+}
+
+.assistant-message-user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, rgba(32, 88, 71, 0.9), rgba(53, 120, 100, 0.9));
+  color: #f8f3e8;
+}
+
+.assistant-message-user .assistant-message-role {
+  color: rgba(248, 243, 232, 0.78);
+}
+
+.assistant-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assistant-form-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-soft);
+}
+
+.assistant-input {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  border: 1px solid rgba(16, 35, 29, 0.1);
+  border-radius: 16px;
+  padding: 12px 13px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--text-main);
+  font: inherit;
+  box-shadow: inset 0 1px 2px rgba(16, 35, 29, 0.04);
+}
+
+.assistant-form-actions {
+  justify-content: flex-end;
+}
+
 @media (max-width: 900px) {
   .navbar {
     align-items: flex-start;
@@ -1177,6 +1326,10 @@ body {
 
   .guide-grid {
     grid-template-columns: 1fr;
+  }
+
+  .assistant-panel {
+    width: min(360px, calc(100vw - 42px));
   }
 }
 
@@ -1231,7 +1384,8 @@ body {
 
   .status-card,
   .comuni-panel,
-  .legend-card {
+  .legend-card,
+  .assistant-panel {
     width: calc(100vw - 36px);
   }
 
@@ -1350,6 +1504,32 @@ body {
   .guide-content p,
   .guide-content table {
     font-size: 13px;
+  }
+
+  .assistant-panel {
+    top: auto;
+    bottom: 18px;
+    left: 18px;
+    right: 18px;
+    height: min(460px, calc(100vh - var(--shell-offset) - 56px));
+    transform: translateY(calc(100% + 18px));
+  }
+
+  .assistant-panel.is-open {
+    transform: translateY(0);
+  }
+
+  .assistant-panel-title {
+    font-size: 20px;
+  }
+
+  .assistant-quick-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .assistant-chip {
+    text-align: left;
   }
 
   .analysis-metrics-grid {

@@ -1,4 +1,4 @@
-import { requestNatureClip, fetchGeoJson } from "./modules/api.js";
+import { requestNatureClip, fetchGeoJson, sendInteractionMessage } from "./modules/api.js";
 import {
   deriveSummaryMetrics,
   summarizeClippedFeatures,
@@ -16,12 +16,20 @@ const state = {
   calculatedValue: 0,
   analysisContext: null,
   noticeTimer: null,
+  assistantMessages: [
+    {
+      role: "assistant",
+      text: "Assistente pronto. Posso gia analizzare comuni citati nel testo, per esempio: analizza Avellino e Benevento.",
+    },
+  ],
+  assistantBusy: false,
 };
 
 const elements = {
   navbar: document.querySelector(".navbar"),
   selectMunicipalityButton: document.getElementById("butSelezionaComune"),
   resetButton: document.getElementById("resetMapState"),
+  openAssistantButton: document.getElementById("openAssistantPanel"),
   runAnalysisButton: document.getElementById("eseguiClipBut"),
   infoButton: document.getElementById("mostraInfoBut"),
   appInfoButton: document.getElementById("infoApp"),
@@ -32,6 +40,13 @@ const elements = {
   loadingOverlay: document.querySelector(".loading"),
   appNotice: document.getElementById("appNotice"),
   popup: document.getElementById("popup"),
+  assistantPanel: document.getElementById("assistantPanel"),
+  assistantStatus: document.getElementById("assistantStatus"),
+  assistantMessages: document.getElementById("assistantMessages"),
+  assistantForm: document.getElementById("assistantForm"),
+  assistantInput: document.getElementById("assistantInput"),
+  assistantSendButton: document.getElementById("assistantSendButton"),
+  closeAssistantButton: document.getElementById("closeAssistantPanel"),
   infoContainer: document.getElementById("infoNatura"),
   closePopupButton: document.getElementById("butchiudipopup"),
   appInfoModal: document.getElementById("infoApplicazione"),
@@ -96,6 +111,25 @@ function closeAppInfo(mapController) {
   mapController.setInteractionDisabled(false);
 }
 
+function openAssistantPanel() {
+  elements.assistantPanel.classList.add("is-open");
+  elements.assistantPanel.setAttribute("aria-hidden", "false");
+}
+
+function closeAssistantPanel() {
+  elements.assistantPanel.classList.remove("is-open");
+  elements.assistantPanel.setAttribute("aria-hidden", "true");
+}
+
+function toggleAssistantPanel() {
+  if (elements.assistantPanel.classList.contains("is-open")) {
+    closeAssistantPanel();
+    return;
+  }
+
+  openAssistantPanel();
+}
+
 function syncMunicipalityPanelState() {
   document.body.classList.toggle(
     "municipality-panel-open",
@@ -143,6 +177,79 @@ function showNotice(message, tone = "info") {
     elements.appNotice.className = "app-notice";
     elements.appNotice.hidden = true;
   }, 3400);
+}
+
+function setAssistantStatus(llmConfigured) {
+  elements.assistantStatus.textContent = llmConfigured
+    ? "LLM configurato"
+    : "Fallback locale attivo";
+  elements.assistantStatus.classList.toggle("is-live", Boolean(llmConfigured));
+}
+
+function setAssistantBusy(busy) {
+  state.assistantBusy = busy;
+  elements.assistantSendButton.disabled = busy;
+  elements.assistantInput.disabled = busy;
+  elements.assistantSendButton.textContent = busy ? "Invio..." : "Invia";
+}
+
+function appendAssistantMessage(role, text) {
+  if (!text) {
+    return;
+  }
+
+  state.assistantMessages.push({ role, text });
+  renderAssistantMessages();
+}
+
+function renderAssistantMessages() {
+  elements.assistantMessages.innerHTML = state.assistantMessages
+    .map(
+      (message) => `
+        <article class="assistant-message assistant-message-${message.role}">
+          <div class="assistant-message-role">${message.role === "user" ? "Tu" : "Assistente"}</div>
+          <p>${escapeHtml(message.text)}</p>
+        </article>
+      `
+    )
+    .join("");
+  elements.assistantMessages.scrollTop = elements.assistantMessages.scrollHeight;
+}
+
+function buildInteractionContext(mapController) {
+  return {
+    selectedMunicipalities: mapController.getSelectedMunicipalityNames(),
+    mapExtent: mapController.getMapExtent(),
+  };
+}
+
+function applyAnalysisResult(mapController, analysisResult, analysisContext = null) {
+  state.clipped = analysisResult.clipped;
+  state.intersectedMunicipalities = analysisResult.intersectedMunicipalities || [];
+  state.summary =
+    analysisResult.summary ||
+    summarizeClippedFeatures(analysisResult.clipped, categories, categoryByCode);
+  state.calculatedValue = 0;
+  state.analysisContext =
+    analysisContext ||
+    {
+      selectedMunicipalityCount: analysisResult.requestedMunicipalities?.length || 0,
+      drawnFeatureCount: 0,
+    };
+
+  mapController.clearResults();
+  mapController.renderNature(analysisResult.clipped);
+  mapController.renderIntersectedMunicipalities(state.intersectedMunicipalities);
+  mapController.clearUserSelections();
+  clearMunicipalityChecks();
+  elements.municipalitySearch.value = "";
+  filterMunicipalityList();
+  renderStatusPanel({
+    selectedMunicipalityCount: mapController.getSelectedMunicipalityCount(),
+    drawnFeatureCount: mapController.getDrawnFeatureCount(),
+  });
+  updateActionStates(mapController);
+  renderInfoSummary();
 }
 
 function updateActionStates(mapController) {
@@ -458,25 +565,15 @@ async function runAnalysis(mapController) {
 
   try {
     const response = await requestNatureClip(appConfig.apiUrl, payload);
-    state.clipped = response.clipped;
-    state.intersectedMunicipalities = response.intersectedMunicipalities;
-    state.summary = summarizeClippedFeatures(response.clipped, categories, categoryByCode);
-    state.calculatedValue = 0;
-    state.analysisContext = analysisContext;
-
-    mapController.clearResults();
-    mapController.renderNature(response.clipped);
-    mapController.renderIntersectedMunicipalities(state.intersectedMunicipalities);
-    mapController.clearUserSelections();
-    clearMunicipalityChecks();
-    elements.municipalitySearch.value = "";
-    filterMunicipalityList();
-    renderStatusPanel({
-      selectedMunicipalityCount: mapController.getSelectedMunicipalityCount(),
-      drawnFeatureCount: mapController.getDrawnFeatureCount(),
-    });
-    updateActionStates(mapController);
-    renderInfoSummary();
+    applyAnalysisResult(
+      mapController,
+      {
+        clipped: response.clipped,
+        intersectedMunicipalities: response.intersectedMunicipalities,
+        summary: response.summary,
+      },
+      analysisContext
+    );
     openPopup(mapController);
     showNotice(
       state.summary.hasSupportedVegetation
@@ -488,6 +585,53 @@ async function runAnalysis(mapController) {
     showNotice(error.message || "Errore durante l'analisi.", "error");
   } finally {
     setBusy(mapController, false);
+    updateActionStates(mapController);
+  }
+}
+
+async function runAssistantInteraction(mapController, message) {
+  if (state.assistantBusy) {
+    return;
+  }
+
+  const trimmedMessage = message.trim();
+  if (!trimmedMessage) {
+    showNotice("Scrivi un messaggio prima di inviare.", "warning");
+    return;
+  }
+
+  appendAssistantMessage("user", trimmedMessage);
+  elements.assistantInput.value = "";
+  openAssistantPanel();
+  setAssistantBusy(true);
+
+  try {
+    const response = await sendInteractionMessage(appConfig.interactionUrl, {
+      message: trimmedMessage,
+      context: buildInteractionContext(mapController),
+    });
+
+    for (const messageItem of response.messages || []) {
+      appendAssistantMessage(messageItem.role, messageItem.text);
+    }
+
+    setAssistantStatus(response.uiHints?.llmConfigured);
+
+    if (response.uiHints?.mode === "reset") {
+      resetAnalysis(mapController);
+      showNotice("Sessione assistente e risultati locali azzerati.", "success");
+    } else if (response.analysisResult) {
+      applyAnalysisResult(mapController, response.analysisResult);
+      showNotice("Analisi testuale completata e mappa aggiornata.", "success");
+    }
+  } catch (error) {
+    appendAssistantMessage(
+      "assistant",
+      error.message || "Errore durante l'interazione testuale."
+    );
+    showNotice(error.message || "Errore durante l'interazione testuale.", "error");
+  } finally {
+    setAssistantBusy(false);
     updateActionStates(mapController);
   }
 }
@@ -521,10 +665,16 @@ async function bootstrap() {
   renderLegend();
   renderStatusPanel();
   renderMunicipalityList(mapController, () => refreshSelectionStatus(null, mapController));
+  setAssistantStatus(false);
+  renderAssistantMessages();
   updateActionStates(mapController);
 
   elements.selectMunicipalityButton.addEventListener("click", () => {
     toggleMunicipalityPanel();
+  });
+
+  elements.openAssistantButton.addEventListener("click", () => {
+    toggleAssistantPanel();
   });
 
   elements.resetButton.addEventListener("click", () => {
@@ -551,6 +701,23 @@ async function bootstrap() {
   elements.closeAppInfoButton.addEventListener("click", () => {
     closeAppInfo(mapController);
   });
+
+  elements.closeAssistantButton.addEventListener("click", () => {
+    closeAssistantPanel();
+  });
+
+  elements.assistantForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runAssistantInteraction(mapController, elements.assistantInput.value);
+  });
+
+  for (const chip of document.querySelectorAll(".assistant-chip")) {
+    chip.addEventListener("click", () => {
+      const prompt = chip.dataset.prompt || "";
+      elements.assistantInput.value = prompt;
+      runAssistantInteraction(mapController, prompt);
+    });
+  }
 
   elements.municipalitySearch.addEventListener("input", () => {
     filterMunicipalityList();
@@ -586,6 +753,11 @@ async function bootstrap() {
 
     if (elements.appInfoModal.classList.contains("open-infoApp")) {
       closeAppInfo(mapController);
+      return;
+    }
+
+    if (elements.assistantPanel.classList.contains("is-open")) {
+      closeAssistantPanel();
       return;
     }
 

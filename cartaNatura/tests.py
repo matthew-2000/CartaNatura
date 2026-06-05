@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import geopandas
-from django.test import Client, SimpleTestCase
+from django.test import Client, SimpleTestCase, override_settings
 from shapely.geometry import box
 
 from cartaNatura.interaction import (
@@ -19,6 +19,7 @@ from cartaNatura.interaction.resolvers import RuleBasedIntentResolver
 from cartaNatura.interaction.session import InMemorySessionStore
 from cartaNatura.schemas import SelectionArea, SelectionRequest
 from cartaNatura.services.gis_clip import clip_selection
+from cartaNatura.services.municipality_text import extract_municipality_names
 from cartaNatura.services.payloads import parse_selection_payload
 
 
@@ -117,6 +118,14 @@ class GisClipServiceTests(SimpleTestCase):
             crs="EPSG:4326",
         )
 
+    @staticmethod
+    def _municipality_shapes_catalog():
+        return geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        ).to_crs(epsg=32633)
+
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
     def test_clip_selection_filters_municipalities_without_nature(
@@ -143,6 +152,7 @@ class GisClipServiceTests(SimpleTestCase):
         self.assertFalse(result.clipped.empty)
 
 
+@override_settings(SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies")
 class ViewSmokeTests(SimpleTestCase):
     def test_index_renders(self):
         response = Client().get("/progettoGIS/cartaNatura/")
@@ -158,6 +168,35 @@ class ViewSmokeTests(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_interact_analyzes_named_municipalities(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+
+        response = Client().post(
+            "/progettoGIS/cartaNatura/interact",
+            data='{"message": "Analizza Avellino e Benevento"}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["analysisResult"]["requestedMunicipalities"],
+            ["Avellino", "Benevento"],
+        )
 
 
 class InteractionSessionContextTests(SimpleTestCase):
@@ -208,6 +247,33 @@ class RuleBasedIntentResolverTests(SimpleTestCase):
 
         self.assertEqual(resolution.command.intent, InteractionIntent.RESET_SESSION)
 
+    @patch("cartaNatura.interaction.resolvers.extract_municipality_names")
+    def test_resolver_detects_municipality_analysis_requests(self, extract_names):
+        extract_names.return_value = ["Avellino", "Benevento"]
+        request = InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="session-1",
+            input=InteractionInput(text="analizza Avellino e Benevento"),
+        )
+
+        resolution = RuleBasedIntentResolver().resolve(request, SessionContext())
+
+        self.assertEqual(resolution.command.intent, InteractionIntent.ANALYZE_MUNICIPALITIES)
+        self.assertEqual(
+            resolution.command.payload["municipality_names"],
+            ["Avellino", "Benevento"],
+        )
+
+
+class MunicipalityTextTests(SimpleTestCase):
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_extract_municipality_names_preserves_text_order(self, load_municipality_shapes):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+
+        names = extract_municipality_names("Analizza Benevento e Avellino")
+
+        self.assertEqual(names, ["Benevento", "Avellino"])
+
 
 class InteractionOrchestratorTests(SimpleTestCase):
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
@@ -243,6 +309,39 @@ class InteractionOrchestratorTests(SimpleTestCase):
         self.assertEqual(
             session_store.load("session-42").last_intent,
             InteractionIntent.ANALYZE_SELECTION,
+        )
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_orchestrator_runs_text_municipality_analysis(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+        session_store = InMemorySessionStore()
+        orchestrator = build_default_orchestrator(session_store=session_store)
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="session-text",
+                input=InteractionInput(text="analizza Avellino e Benevento"),
+            )
+        )
+
+        self.assertEqual(response.commands[0].intent, InteractionIntent.ANALYZE_MUNICIPALITIES)
+        self.assertEqual(
+            response.analysis_result["requestedMunicipalities"],
+            ["Avellino", "Benevento"],
         )
 
     def test_orchestrator_clears_session_on_reset(self):

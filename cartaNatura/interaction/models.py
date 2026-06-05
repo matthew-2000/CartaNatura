@@ -17,6 +17,8 @@ class InteractionChannel(StrEnum):
 
 class InteractionIntent(StrEnum):
     ANALYZE_SELECTION = "analyze_selection"
+    ANALYZE_MUNICIPALITIES = "analyze_municipalities"
+    EXPLAIN_LAST_ANALYSIS = "explain_last_analysis"
     RESET_SESSION = "reset_session"
     UNKNOWN = "unknown"
 

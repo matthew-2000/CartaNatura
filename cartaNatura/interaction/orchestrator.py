@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from .handlers import AnalyzeSelectionHandler, CommandHandler, ResetSessionHandler
+from .handlers import (
+    AnalyzeMunicipalitiesHandler,
+    AnalyzeSelectionHandler,
+    CommandHandler,
+    ExplainLastAnalysisHandler,
+    ResetSessionHandler,
+)
+from .llm import build_optional_llm_provider
 from .models import (
     InteractionIntent,
     InteractionMessage,
@@ -62,8 +69,14 @@ class InteractionOrchestrator:
 def build_default_orchestrator(
     session_store: SessionStore | None = None,
 ) -> InteractionOrchestrator:
+    llm_provider = build_optional_llm_provider()
     return InteractionOrchestrator(
         resolver=RuleBasedIntentResolver(),
-        handlers=(AnalyzeSelectionHandler(), ResetSessionHandler()),
+        handlers=(
+            AnalyzeSelectionHandler(llm_provider=llm_provider),
+            AnalyzeMunicipalitiesHandler(llm_provider=llm_provider),
+            ExplainLastAnalysisHandler(llm_provider=llm_provider),
+            ResetSessionHandler(),
+        ),
         session_store=session_store or NullSessionStore(),
     )

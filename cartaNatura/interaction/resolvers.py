@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from cartaNatura.services.municipality_text import extract_municipality_names
+
 from .models import InteractionCommand, InteractionIntent, InteractionRequest, SessionContext
 
 
@@ -51,10 +53,27 @@ class RuleBasedIntentResolver:
                 command=InteractionCommand(intent=InteractionIntent.RESET_SESSION)
             )
 
+        if any(keyword in text for keyword in ("spiega", "riepiloga", "riassumi", "ultimo risultato")):
+            return IntentResolution(
+                command=InteractionCommand(intent=InteractionIntent.EXPLAIN_LAST_ANALYSIS)
+            )
+
+        municipality_names = extract_municipality_names(text)
+        if municipality_names:
+            return IntentResolution(
+                command=InteractionCommand(
+                    intent=InteractionIntent.ANALYZE_MUNICIPALITIES,
+                    payload={
+                        "municipality_names": municipality_names,
+                        "source_text": request.input.primary_text(),
+                    },
+                )
+            )
+
         return IntentResolution(
             command=InteractionCommand(intent=InteractionIntent.UNKNOWN),
             clarification_message=(
-                "Input testuale ricevuto, ma interpretazione linguaggio naturale "
-                "arrivera nella fase successiva."
+                "Posso gia analizzare comuni nominati nel messaggio, per esempio: "
+                "'analizza Avellino e Benevento'."
             ),
         )

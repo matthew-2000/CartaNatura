@@ -11,6 +11,7 @@ import geopandas
 APP_DIR = Path(__file__).resolve().parents[1]
 NATURE_SHAPEFILE_PATH = APP_DIR / "shapeCN" / "CNPulita.shp"
 CAMPANIA_BOUNDARIES_PATH = APP_DIR / "static" / "util" / "moddedCampania.geojson"
+MUNICIPALITY_SHAPES_PATH = APP_DIR / "static" / "data" / "campania-municipalities-32633.geojson"
 
 
 @lru_cache(maxsize=1)
@@ -25,3 +26,13 @@ def load_campania_boundaries() -> geopandas.GeoDataFrame:
     """Load municipal boundaries used for polygon intersection lookup."""
 
     return geopandas.read_file(CAMPANIA_BOUNDARIES_PATH).to_crs(epsg=4326)
+
+
+@lru_cache(maxsize=1)
+def load_municipality_shapes() -> geopandas.GeoDataFrame:
+    """Load municipality geometries used for text-driven selections."""
+
+    return geopandas.read_file(MUNICIPALITY_SHAPES_PATH).set_crs(
+        epsg=32633,
+        allow_override=True,
+    )

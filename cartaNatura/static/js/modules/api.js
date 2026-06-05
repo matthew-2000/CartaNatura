@@ -46,3 +46,16 @@ export async function requestNatureClip(apiUrl, payload) {
 
   return handleJsonResponse(response);
 }
+
+export async function sendInteractionMessage(interactionUrl, payload) {
+  const response = await fetch(interactionUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCookie("csrftoken") || "",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return handleJsonResponse(response);
+}
