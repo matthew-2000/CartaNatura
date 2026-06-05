@@ -6,6 +6,17 @@ import geopandas
 from django.test import Client, SimpleTestCase
 from shapely.geometry import box
 
+from cartaNatura.interaction import (
+    InteractionChannel,
+    InteractionContext,
+    InteractionInput,
+    InteractionIntent,
+    InteractionRequest,
+    SessionContext,
+)
+from cartaNatura.interaction.orchestrator import build_default_orchestrator
+from cartaNatura.interaction.resolvers import RuleBasedIntentResolver
+from cartaNatura.interaction.session import InMemorySessionStore
 from cartaNatura.schemas import SelectionArea, SelectionRequest
 from cartaNatura.services.gis_clip import clip_selection
 from cartaNatura.services.payloads import parse_selection_payload
@@ -147,3 +158,112 @@ class ViewSmokeTests(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+
+class InteractionSessionContextTests(SimpleTestCase):
+    def test_session_context_round_trip_is_serializable(self):
+        context = SessionContext(
+            selection_payload={"areas": [{"kind": "drawn"}]},
+            last_analysis={"intersectedMunicipalities": ["Avellino"]},
+            last_intent=InteractionIntent.ANALYZE_SELECTION,
+            metadata={"channel": "web_map"},
+        )
+
+        restored = SessionContext.from_dict(context.to_dict())
+
+        self.assertEqual(restored, context)
+
+
+class RuleBasedIntentResolverTests(SimpleTestCase):
+    def test_resolver_routes_structured_selection_to_analysis(self):
+        request = InteractionRequest(
+            channel=InteractionChannel.WEB_MAP,
+            session_id="session-1",
+            input=InteractionInput(
+                geo_selection={
+                    "areas": [
+                        {
+                            "kind": "drawn",
+                            "geojson": GisClipServiceTests._drawn_geojson(),
+                        }
+                    ]
+                }
+            ),
+            context=InteractionContext(),
+        )
+
+        resolution = RuleBasedIntentResolver().resolve(request, SessionContext())
+
+        self.assertEqual(resolution.command.intent, InteractionIntent.ANALYZE_SELECTION)
+        self.assertIsNone(resolution.clarification_message)
+
+    def test_resolver_detects_reset_requests(self):
+        request = InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="session-1",
+            input=InteractionInput(text="pulisci sessione"),
+        )
+
+        resolution = RuleBasedIntentResolver().resolve(request, SessionContext())
+
+        self.assertEqual(resolution.command.intent, InteractionIntent.RESET_SESSION)
+
+
+class InteractionOrchestratorTests(SimpleTestCase):
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_orchestrator_runs_structured_selection_analysis(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+        session_store = InMemorySessionStore()
+        orchestrator = build_default_orchestrator(session_store=session_store)
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_MAP,
+                session_id="session-42",
+                input=InteractionInput(
+                    geo_selection={
+                        "areas": [
+                            {
+                                "kind": "drawn",
+                                "geojson": GisClipServiceTests._drawn_geojson(),
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+
+        self.assertIsNotNone(response.analysis_result)
+        self.assertEqual(
+            session_store.load("session-42").last_intent,
+            InteractionIntent.ANALYZE_SELECTION,
+        )
+
+    def test_orchestrator_clears_session_on_reset(self):
+        session_store = InMemorySessionStore()
+        session_store.save(
+            "session-reset",
+            SessionContext(
+                selection_payload={"areas": [{"kind": "drawn"}]},
+                last_analysis={"status": "done"},
+                last_intent=InteractionIntent.ANALYZE_SELECTION,
+            ),
+        )
+        orchestrator = build_default_orchestrator(session_store=session_store)
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="session-reset",
+                input=InteractionInput(text="reset"),
+            )
+        )
+
+        self.assertEqual(response.commands[0].intent, InteractionIntent.RESET_SESSION)
+        self.assertEqual(session_store.load("session-reset"), SessionContext())

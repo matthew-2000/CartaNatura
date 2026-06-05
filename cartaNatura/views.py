@@ -10,8 +10,12 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_POST
 
 from cartaNatura.domain.vegetation import serialize_categories
-from cartaNatura.services.gis_clip import clip_selection
-from cartaNatura.services.payloads import parse_selection_payload
+from cartaNatura.interaction import (
+    InteractionChannel,
+    InteractionInput,
+    InteractionRequest,
+    build_default_orchestrator,
+)
 
 
 PRICE_OPTIONS = (
@@ -20,6 +24,9 @@ PRICE_OPTIONS = (
     {"label": "Prezzo nel mercato regolamentato - 82 EUR", "value": 82},
     {"label": "Prezzo nel mercato volontario - 20 EUR", "value": 20},
 )
+
+
+interaction_orchestrator = build_default_orchestrator()
 
 
 @ensure_csrf_cookie
@@ -52,14 +59,17 @@ def gis(request):
         return JsonResponse({"error": "Invalid JSON payload."}, status=400)
 
     try:
-        selection = parse_selection_payload(payload)
-        result = clip_selection(selection)
+        response = interaction_orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_MAP,
+                session_id=request.headers.get("X-Session-Id") or "web-map",
+                input=InteractionInput(geo_selection=payload),
+            )
+        )
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
 
-    return JsonResponse(
-        {
-            "clipped": json.loads(result.clipped.to_json()),
-            "intersectedMunicipalities": result.intersected_municipalities,
-        }
-    )
+    if response.analysis_result is None:
+        return JsonResponse({"error": "Missing analysis result."}, status=500)
+
+    return JsonResponse(response.analysis_result)
