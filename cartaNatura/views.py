@@ -8,6 +8,7 @@ from pathlib import Path
 from django.conf import settings
 from django.http import HttpResponseNotFound
 from django.http import JsonResponse
+from django.http import StreamingHttpResponse
 from django.shortcuts import render
 from django.middleware.csrf import get_token
 from django.templatetags.static import static
@@ -64,12 +65,51 @@ def _build_request_orchestrator(request):
     )
 
 
+def _build_text_interaction_request(request, payload: dict[str, object]) -> InteractionRequest:
+    message = str(payload.get("message") or "").strip()
+    context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    return InteractionRequest(
+        channel=InteractionChannel.WEB_CHAT,
+        session_id=_ensure_session_id(request),
+        input=InteractionInput(text=message, metadata={"source": "web_assistant"}),
+        context=build_interaction_context(context_payload),
+    )
+
+
+def _serialize_interaction_response(response) -> dict[str, object]:
+    return {
+        "messages": [
+            {
+                "role": message_item.role,
+                "text": message_item.text,
+            }
+            for message_item in response.messages
+        ],
+        "analysisResult": response.analysis_result,
+        "uiHints": response.ui_hints,
+    }
+
+
+def _encode_sse(event_type: str, payload: dict[str, object]) -> bytes:
+    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n".encode("utf-8")
+
+
+def _save_stream_session_if_needed(request) -> None:
+    if not getattr(request.session, "modified", False):
+        return
+
+    save = getattr(request.session, "save", None)
+    if callable(save):
+        save()
+
+
 @ensure_csrf_cookie
 def index(request):
     asset_version = _build_asset_version()
     app_config = {
         "apiUrl": reverse("gis"),
         "interactionUrl": reverse("interact"),
+        "interactionStreamUrl": reverse("interact_stream"),
         "csrfToken": get_token(request),
         "priceOptions": PRICE_OPTIONS,
         "categories": serialize_categories(),
@@ -142,28 +182,20 @@ def interact(request):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON payload."}, status=400)
 
-    message = str(payload.get("message") or "").strip()
-    context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-
-    session_id = _ensure_session_id(request)
+    interaction_request = _build_text_interaction_request(request, payload)
+    session_id = interaction_request.session_id
     logger.info(
         "Assistant interaction started session=%s chars=%s selected=%s",
         session_id,
-        len(message),
-        len(context_payload.get("selectedMunicipalities", []))
-        if isinstance(context_payload.get("selectedMunicipalities"), list)
+        len(interaction_request.input.primary_text()),
+        len(payload.get("context", {}).get("selectedMunicipalities", []))
+        if isinstance(payload.get("context"), dict)
+        and isinstance(payload.get("context", {}).get("selectedMunicipalities"), list)
         else 0,
     )
 
     try:
-        response = _build_request_orchestrator(request).handle(
-            InteractionRequest(
-                channel=InteractionChannel.WEB_CHAT,
-                session_id=session_id,
-                input=InteractionInput(text=message, metadata={"source": "web_assistant"}),
-                context=build_interaction_context(context_payload),
-            )
-        )
+        response = _build_request_orchestrator(request).handle(interaction_request)
     except ValueError as exc:
         logger.warning(
             "Assistant interaction rejected session=%s error=%s",
@@ -187,16 +219,76 @@ def interact(request):
         bool(response.analysis_result),
     )
 
-    return JsonResponse(
-        {
-            "messages": [
-                {
-                    "role": message_item.role,
-                    "text": message_item.text,
-                }
-                for message_item in response.messages
-            ],
-            "analysisResult": response.analysis_result,
-            "uiHints": response.ui_hints,
-        }
+    return JsonResponse(_serialize_interaction_response(response))
+
+
+@require_POST
+def interact_stream(request):
+    if not settings.AI_ASSISTANT_ENABLED:
+        return HttpResponseNotFound()
+
+    if not os.getenv("OPENAI_API_KEY", "").strip():
+        return JsonResponse(
+            {"error": "Assistente AI non configurato. Imposta OPENAI_API_KEY."},
+            status=503,
+        )
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    interaction_request = _build_text_interaction_request(request, payload)
+    session_id = interaction_request.session_id
+    logger.info(
+        "Assistant stream started session=%s chars=%s",
+        session_id,
+        len(interaction_request.input.primary_text()),
     )
+
+    orchestrator = _build_request_orchestrator(request)
+
+    def event_stream():
+        final_response = None
+        try:
+            stream = orchestrator.handle_stream(interaction_request)
+            while True:
+                try:
+                    event = next(stream)
+                except StopIteration as stop:
+                    final_response = stop.value
+                    break
+                event_type = str(event.get("type") or "message")
+                yield _encode_sse(event_type, event)
+        except ValueError as exc:
+            logger.warning(
+                "Assistant stream rejected session=%s error=%s",
+                session_id,
+                str(exc),
+            )
+            yield _encode_sse("error", {"type": "error", "message": str(exc)})
+        except LlmProviderUnavailableError as exc:
+            logger.warning(
+                "Assistant stream provider failure session=%s error=%s",
+                session_id,
+                str(exc),
+            )
+            yield _encode_sse("error", {"type": "error", "message": str(exc)})
+        except Exception as exc:
+            logger.exception("Assistant stream failed session=%s", session_id)
+            yield _encode_sse("error", {"type": "error", "message": str(exc)})
+        finally:
+            _save_stream_session_if_needed(request)
+            if final_response is not None:
+                logger.info(
+                    "Assistant stream completed session=%s mode=%s provider=%s has_analysis=%s",
+                    session_id,
+                    final_response.ui_hints.get("mode"),
+                    final_response.ui_hints.get("providerMode", "local"),
+                    bool(final_response.analysis_result),
+                )
+
+    response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response

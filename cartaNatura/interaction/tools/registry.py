@@ -6,10 +6,16 @@ from typing import Any, Callable
 
 from cartaNatura.interaction.analysis_store import AnalysisStore
 
-from .analysis_history import compare_analyses, get_last_analysis, reset_analysis_context
+from .analysis_history import (
+    compare_analyses,
+    compare_recent_analyses,
+    get_last_analysis,
+    reset_analysis_context,
+)
 from .contracts import ToolName
 from .gis_analysis import analyze_municipalities, analyze_selection
 from .methodology import get_methodology
+from .municipality_lookup import search_municipalities
 
 
 ToolHandler = Callable[..., dict[str, Any]]
@@ -38,6 +44,10 @@ def build_default_tool_registry(analysis_store: AnalysisStore) -> ToolRegistry:
         lambda **kwargs: compare_analyses(analysis_store=analysis_store, **kwargs),
     )
     registry.register(
+        ToolName.COMPARE_RECENT_ANALYSES,
+        lambda **kwargs: compare_recent_analyses(analysis_store=analysis_store, **kwargs),
+    )
+    registry.register(
         ToolName.GET_LAST_ANALYSIS,
         lambda **kwargs: get_last_analysis(analysis_store=analysis_store, **kwargs),
     )
@@ -46,4 +56,5 @@ def build_default_tool_registry(analysis_store: AnalysisStore) -> ToolRegistry:
         lambda **kwargs: reset_analysis_context(analysis_store=analysis_store, **kwargs),
     )
     registry.register(ToolName.GET_METHODOLOGY, get_methodology)
+    registry.register(ToolName.SEARCH_MUNICIPALITIES, search_municipalities)
     return registry

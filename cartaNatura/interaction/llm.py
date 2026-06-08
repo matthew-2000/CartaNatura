@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
 from typing import Any
-from urllib import error, request
+
+from openai import OpenAI
+from openai import OpenAIError
 
 from .providers import LlmProvider
 
@@ -24,28 +25,18 @@ class OpenAiResponsesLlmProvider:
     model: str = "gpt-5-mini"
     base_url: str = "https://api.openai.com/v1"
 
-    def complete(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "input": prompt,
-        }
-        req = request.Request(
-            f"{self.base_url.rstrip('/')}/responses",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_client",
+            OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+            ),
         )
 
-        try:
-            with request.urlopen(req, timeout=20) as response:
-                body: dict[str, Any] = json.loads(response.read().decode("utf-8"))
-        except error.URLError as exc:
-            logger.warning("OpenAI provider request failed: %s", exc)
-            raise LlmProviderUnavailableError("OpenAI provider not reachable.") from exc
-
+    def complete(self, prompt: str) -> str:
+        body = self.create_response(input=prompt)
         output_text = body.get("output_text")
         if isinstance(output_text, str) and output_text.strip():
             return output_text.strip()
@@ -59,6 +50,24 @@ class OpenAiResponsesLlmProvider:
                     return text.strip()
 
         raise LlmProviderUnavailableError("OpenAI provider returned empty text output.")
+
+    def create_response(self, **payload: Any) -> dict[str, Any]:
+        try:
+            response = self._client.responses.create(
+                model=self.model,
+                **payload,
+            )
+        except OpenAIError as exc:
+            logger.warning("OpenAI provider request failed: %s", exc)
+            raise LlmProviderUnavailableError("OpenAI provider not reachable.") from exc
+
+        return response.model_dump(mode="python")
+
+    def stream_response(self, **payload: Any):
+        return self._client.responses.stream(
+            model=self.model,
+            **payload,
+        )
 
 
 def build_optional_llm_provider() -> LlmProvider | None:

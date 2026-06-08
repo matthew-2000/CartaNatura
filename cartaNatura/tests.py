@@ -45,6 +45,111 @@ class FakeLlmProvider:
         return self._text
 
 
+class FakeResponsesProvider:
+    def __init__(self, responses: list[dict[str, object]]):
+        self._responses = list(responses)
+        self.calls: list[dict[str, object]] = []
+
+    def create_response(self, **payload):
+        self.calls.append(payload)
+        if not self._responses:
+            raise AssertionError("No scripted Responses payload left.")
+        return self._responses.pop(0)
+
+    def complete(self, prompt: str) -> str:
+        del prompt
+        raise AssertionError("complete() should not be used in runtime tests.")
+
+
+class FakeHybridProvider:
+    def __init__(self, text: str, responses: list[dict[str, object]] | None = None):
+        self._text = text
+        self._responses = list(responses or [])
+        self.complete_calls: list[str] = []
+        self.response_calls: list[dict[str, object]] = []
+
+    def complete(self, prompt: str) -> str:
+        self.complete_calls.append(prompt)
+        return self._text
+
+    def create_response(self, **payload):
+        self.response_calls.append(payload)
+        if not self._responses:
+            raise AssertionError("No scripted Responses payload left.")
+        return self._responses.pop(0)
+
+
+class FakeStreamEvent:
+    def __init__(self, event_type: str, **payload):
+        self.type = event_type
+        for key, value in payload.items():
+            setattr(self, key, value)
+
+
+class FakeStreamItem:
+    def __init__(self, item_type: str, **payload):
+        self.type = item_type
+        for key, value in payload.items():
+            setattr(self, key, value)
+
+
+class FakeStreamResponseRef:
+    def __init__(self, response_id: str):
+        self.id = response_id
+
+
+class FakeFinalResponse:
+    def __init__(self, payload: dict[str, object]):
+        self._payload = payload
+
+    def model_dump(self, mode: str = "python"):
+        del mode
+        return self._payload
+
+
+class FakeResponseStreamManager:
+    def __init__(self, events: list[FakeStreamEvent], final_payload: dict[str, object]):
+        self._events = list(events)
+        self._final_response = FakeFinalResponse(final_payload)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        del exc_type, exc, tb
+        return False
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_response(self):
+        return self._final_response
+
+
+class FakeStreamingProvider:
+    def __init__(self, streams: list[dict[str, object]]):
+        self._streams = list(streams)
+        self.stream_calls: list[dict[str, object]] = []
+
+    def create_response(self, **payload):
+        del payload
+        raise AssertionError("create_response() should not be used in streaming runtime tests.")
+
+    def stream_response(self, **payload):
+        self.stream_calls.append(payload)
+        if not self._streams:
+            raise AssertionError("No scripted stream payload left.")
+        scripted = self._streams.pop(0)
+        return FakeResponseStreamManager(
+            scripted["events"],
+            scripted["final_payload"],
+        )
+
+    def complete(self, prompt: str) -> str:
+        del prompt
+        raise AssertionError("complete() should not be used in streaming runtime tests.")
+
+
 class PayloadParsingTests(SimpleTestCase):
     def test_parse_selection_payload_accepts_named_areas(self):
         payload = {
@@ -243,6 +348,53 @@ class ViewSmokeTests(SimpleTestCase):
             )
 
         self.assertEqual(response.status_code, 503)
+
+    @patch("cartaNatura.interaction.orchestrator.build_optional_llm_provider")
+    def test_interact_stream_returns_sse_events(self, build_optional_llm_provider):
+        build_optional_llm_provider.return_value = FakeStreamingProvider(
+            [
+                {
+                    "events": [
+                        FakeStreamEvent(
+                            "response.created",
+                            response=FakeStreamResponseRef("resp_stream_1"),
+                        ),
+                        FakeStreamEvent(
+                            "response.output_text.delta",
+                            delta=(
+                                '{"intent":"unknown","assistant_text":"Streaming ok.",'
+                                '"needs_clarification":false,"clarification_question":"",'
+                                '"ui_actions":[],"citations_internal":[],"follow_up_suggestions":[]}'
+                            ),
+                        ),
+                    ],
+                    "final_payload": {
+                        "id": "resp_stream_1",
+                        "output_text": (
+                            '{"intent":"unknown","assistant_text":"Streaming ok.",'
+                            '"needs_clarification":false,"clarification_question":"",'
+                            '"ui_actions":[],"citations_internal":[],"follow_up_suggestions":[]}'
+                        ),
+                        "output": [],
+                    },
+                }
+            ]
+        )
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            response = Client().post(
+                "/progettoGIS/cartaNatura/interact/stream",
+                data='{"message": "ciao"}',
+                content_type="application/json",
+            )
+
+        body = b"".join(response.streaming_content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/event-stream")
+        self.assertIn(b"event: message_delta", body)
+        self.assertIn(b"event: done", body)
+        self.assertIn(b"Streaming ok.", body)
 
 
 class InteractionSessionContextTests(SimpleTestCase):
@@ -642,6 +794,42 @@ class InteractionOrchestratorTests(SimpleTestCase):
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
     @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_orchestrator_uses_rule_based_fast_path_for_simple_text_requests(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+        provider = FakeHybridProvider("Sintesi LLM mockata.")
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=provider,
+            analysis_store=InMemoryAnalysisStore(),
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="session-fast-path",
+                input=InteractionInput(text="analizza Avellino e Benevento"),
+            )
+        )
+
+        self.assertEqual(response.commands[0].intent, InteractionIntent.ANALYZE_MUNICIPALITIES)
+        self.assertEqual(response.messages[0].text, "Sintesi LLM mockata.")
+        self.assertEqual(provider.response_calls, [])
+        self.assertEqual(len(provider.complete_calls), 1)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
     def test_orchestrator_rejects_text_analysis_without_llm_provider(
         self,
         load_municipality_shapes,
@@ -668,6 +856,304 @@ class InteractionOrchestratorTests(SimpleTestCase):
                         input=InteractionInput(text="analizza Avellino e Benevento"),
                     )
                 )
+
+
+class OpenAiAssistantRuntimeTests(SimpleTestCase):
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_runtime_streams_events_and_persists_follow_up_context(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+        provider = FakeStreamingProvider(
+            [
+                {
+                    "events": [
+                        FakeStreamEvent(
+                            "response.created",
+                            response=FakeStreamResponseRef("resp_stream_tool_1"),
+                        ),
+                        FakeStreamEvent(
+                            "response.output_item.added",
+                            item=FakeStreamItem(
+                                "function_call",
+                                name="analyze_municipalities",
+                            ),
+                        ),
+                    ],
+                    "final_payload": {
+                        "id": "resp_stream_tool_1",
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call_stream_1",
+                                "name": "analyze_municipalities",
+                                "arguments": '{"municipality_names":["Avellino","Benevento"]}',
+                            }
+                        ],
+                    },
+                },
+                {
+                    "events": [
+                        FakeStreamEvent(
+                            "response.created",
+                            response=FakeStreamResponseRef("resp_stream_final_1"),
+                        ),
+                        FakeStreamEvent(
+                            "response.output_text.delta",
+                            delta=(
+                                '{"intent":"analyze_municipalities","assistant_text":"Avellino e '
+                                'Benevento dominano.","needs_clarification":false,'
+                                '"clarification_question":"","ui_actions":["show_last_analysis"],'
+                                '"citations_internal":["analysis_latest"],'
+                                '"follow_up_suggestions":["Perche dominano?"]}'
+                            ),
+                        ),
+                    ],
+                    "final_payload": {
+                        "id": "resp_stream_final_1",
+                        "output_text": (
+                            '{"intent":"analyze_municipalities","assistant_text":"Avellino e '
+                            'Benevento dominano.","needs_clarification":false,'
+                            '"clarification_question":"","ui_actions":["show_last_analysis"],'
+                            '"citations_internal":["analysis_latest"],'
+                            '"follow_up_suggestions":["Perche dominano?"]}'
+                        ),
+                        "output": [],
+                    },
+                },
+            ]
+        )
+        session_store = InMemorySessionStore()
+        analysis_store = InMemoryAnalysisStore()
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            llm_provider=provider,
+            analysis_store=analysis_store,
+        )
+
+        events = list(
+            orchestrator.handle_stream(
+                InteractionRequest(
+                    channel=InteractionChannel.WEB_CHAT,
+                    session_id="runtime-stream-session-1",
+                    input=InteractionInput(text="analizza Avellino e Benevento"),
+                )
+            )
+        )
+
+        event_types = [event["type"] for event in events]
+        self.assertIn("tool_pending", event_types)
+        self.assertIn("tool_start", event_types)
+        self.assertIn("analysis_result", event_types)
+        self.assertIn("message_delta", event_types)
+        self.assertEqual(event_types[-1], "done")
+        self.assertEqual(
+            events[-1]["response"]["messages"][0]["text"],
+            "Avellino e Benevento dominano.",
+        )
+        self.assertEqual(
+            events[-1]["response"]["analysisResult"]["requestedMunicipalities"],
+            ["Avellino", "Benevento"],
+        )
+        self.assertEqual(
+            session_store.load("runtime-stream-session-1").metadata["openai_previous_response_id"],
+            "resp_stream_final_1",
+        )
+        self.assertNotIn("clipped", provider.stream_calls[1]["input"][0]["output"])
+        self.assertIsNotNone(analysis_store.get_last())
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_runtime_runs_responses_tool_loop_for_municipality_analysis(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_tool_1",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "search_municipalities",
+                            "arguments": '{"query":"Avell","limit":5}',
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_tool_2",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_2",
+                            "name": "analyze_municipalities",
+                            "arguments": '{"municipality_names":["Avellino"]}',
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_final_1",
+                    "output_text": (
+                        '{"intent":"analyze_municipalities","assistant_text":"Analisi pronta.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":["show_last_analysis"],'
+                        '"citations_internal":["analysis_latest"],"follow_up_suggestions":["Confronta ultime due analisi"]}'
+                    ),
+                    "output": [],
+                },
+            ]
+        )
+        session_store = InMemorySessionStore()
+        analysis_store = InMemoryAnalysisStore()
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            llm_provider=provider,
+            analysis_store=analysis_store,
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="runtime-session-1",
+                input=InteractionInput(text="analizza Avell"),
+            )
+        )
+
+        self.assertEqual(response.commands[0].intent, InteractionIntent.ANALYZE_MUNICIPALITIES)
+        self.assertEqual(response.messages[0].text, "Analisi pronta.")
+        self.assertEqual(
+            response.analysis_result["requestedMunicipalities"],
+            ["Avellino"],
+        )
+        self.assertEqual(response.ui_hints["runtime"], "responses_api")
+        self.assertEqual(
+            session_store.load("runtime-session-1").metadata["openai_previous_response_id"],
+            "resp_final_1",
+        )
+        self.assertEqual(provider.calls[1]["previous_response_id"], "resp_tool_1")
+        self.assertEqual(provider.calls[2]["previous_response_id"], "resp_tool_2")
+        self.assertNotIn("clipped", provider.calls[2]["input"][0]["output"])
+        grounded_prompt = provider.calls[0]["input"][0]["content"][0]["text"]
+        self.assertIn('"vegetationCategories"', grounded_prompt)
+        self.assertIn('"Castagneti"', grounded_prompt)
+        self.assertIn('"availableTools"', grounded_prompt)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_runtime_reuses_previous_response_id_on_follow_up(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino"]},
+            geometry=[box(0, 0, 1, 1)],
+            crs="EPSG:4326",
+        )
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_tool_1",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "search_municipalities",
+                            "arguments": '{"query":"Avell","limit":5}',
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_tool_2",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_2",
+                            "name": "analyze_municipalities",
+                            "arguments": '{"municipality_names":["Avellino"]}',
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_final_1",
+                    "output_text": (
+                        '{"intent":"analyze_municipalities","assistant_text":"Prima analisi pronta.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],"citations_internal":[],"follow_up_suggestions":[]}'
+                    ),
+                    "output": [],
+                },
+                {
+                    "id": "resp_tool_3",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_3",
+                            "name": "get_last_analysis",
+                            "arguments": "{}",
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_final_2",
+                    "output_text": (
+                        '{"intent":"explain_last_analysis","assistant_text":"Ultimo risultato spiegato.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],"citations_internal":["analysis_latest"],"follow_up_suggestions":[]}'
+                    ),
+                    "output": [],
+                },
+            ]
+        )
+        session_store = InMemorySessionStore()
+        analysis_store = InMemoryAnalysisStore()
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            llm_provider=provider,
+            analysis_store=analysis_store,
+        )
+
+        orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="runtime-session-2",
+                input=InteractionInput(text="analizza Avell"),
+            )
+        )
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="runtime-session-2",
+                input=InteractionInput(text="perche dominano?"),
+            )
+        )
+
+        self.assertEqual(response.commands[0].intent, InteractionIntent.EXPLAIN_LAST_ANALYSIS)
+        self.assertEqual(response.messages[0].text, "Ultimo risultato spiegato.")
+        self.assertEqual(provider.calls[3]["previous_response_id"], "resp_final_1")
 
 
 class AnalysisStoreAndToolsTests(SimpleTestCase):
@@ -749,3 +1235,34 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
 
         self.assertEqual(comparison["delta"]["totalCo2"], 5)
         self.assertEqual(comparison["delta"]["totalHectares"], 4)
+
+    def test_compare_recent_analyses_uses_latest_two_items(self):
+        store = InMemoryAnalysisStore()
+        store.save(
+            new_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 10, "totalHectares": 20, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+        latest = store.save(
+            new_stored_analysis(
+                source="selection",
+                summary={"items": [], "totalCo2": 15, "totalHectares": 24, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+        registry = build_default_tool_registry(store)
+
+        comparison = registry.execute(ToolName.COMPARE_RECENT_ANALYSES)
+
+        self.assertEqual(comparison["right"]["analysisId"], latest.analysis_id)
+        self.assertEqual(comparison["delta"]["totalCo2"], 5)
+
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_search_municipalities_returns_exact_and_suggested_matches(self, load_municipality_shapes):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        registry = build_default_tool_registry(InMemoryAnalysisStore())
+
+        payload = registry.execute(ToolName.SEARCH_MUNICIPALITIES, query="Avell", limit=5)
+
+        self.assertEqual(payload["suggestions"], ["Avellino"])
+        self.assertIn("Avellino", payload["matches"])

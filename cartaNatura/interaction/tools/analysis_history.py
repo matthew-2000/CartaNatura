@@ -50,6 +50,18 @@ def compare_analyses(
     }
 
 
+def compare_recent_analyses(*, analysis_store: AnalysisStore) -> dict[str, Any]:
+    recent = analysis_store.list_recent(limit=2)
+    if len(recent) < 2:
+        raise ValueError("Servono almeno due analisi recenti per eseguire un confronto.")
+
+    return compare_analyses(
+        analysis_store=analysis_store,
+        left_analysis_id=recent[1].analysis_id,
+        right_analysis_id=recent[0].analysis_id,
+    )
+
+
 def reset_analysis_context(*, analysis_store: AnalysisStore) -> dict[str, Any]:
     analysis_store.clear()
     return {"cleared": True}

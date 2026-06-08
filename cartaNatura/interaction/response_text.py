@@ -16,6 +16,7 @@ def build_analysis_reply(
     prompt = (
         "Sei assistente GIS di Carta della Natura. "
         "Rispondi in italiano, max 4 frasi, tono chiaro e operativo. "
+        "Formatta i numeri in stile italiano e arrotonda a massimo 2 decimali. "
         "Descrivi solo risultato dell'analisi senza inventare dati.\n"
         f"Comuni richiesti: {', '.join(requested_municipalities) or 'non specificati'}\n"
         f"Summary JSON: {json.dumps(summary, ensure_ascii=True)}"
@@ -40,7 +41,8 @@ def build_explanation_reply(
 
     prompt = (
         "Sei assistente GIS di Carta della Natura. "
-        "Spiega in italiano, max 4 frasi, ultimo risultato analitico usando solo dati forniti.\n"
+        "Spiega in italiano, max 4 frasi, ultimo risultato analitico usando solo dati forniti. "
+        "Formatta i numeri in stile italiano e arrotonda a massimo 2 decimali.\n"
         f"Summary JSON: {json.dumps(analysis_summary, ensure_ascii=True)}"
     )
 
@@ -58,7 +60,8 @@ def build_comparison_reply(
     prompt = (
         "Sei assistente GIS di Carta della Natura. "
         "Confronta in italiano, max 4 frasi, due analisi usando solo dati forniti. "
-        "Evidenzia differenze di superficie, CO2 e categoria dominante senza inventare dati.\n"
+        "Evidenzia differenze di superficie, CO2 e categoria dominante senza inventare dati. "
+        "Formatta i numeri in stile italiano e arrotonda a massimo 2 decimali.\n"
         f"Comparison JSON: {json.dumps(comparison_summary, ensure_ascii=True)}"
     )
 

@@ -5,6 +5,7 @@ const versionedPath = (path) =>
 let requestNatureClip;
 let fetchGeoJson;
 let sendInteractionMessage;
+let sendInteractionMessageStream;
 let deriveSummaryMetrics;
 let summarizeClippedFeatures;
 let formatCurrency;
@@ -27,7 +28,8 @@ async function loadModules() {
       import(versionedPath("./modules/pdf-export.js")),
     ]);
 
-  ({ requestNatureClip, fetchGeoJson, sendInteractionMessage } = apiModule);
+  ({ requestNatureClip, fetchGeoJson, sendInteractionMessage, sendInteractionMessageStream } =
+    apiModule);
   ({ deriveSummaryMetrics, summarizeClippedFeatures, formatCurrency, formatRoundedNumber } =
     analysisModule);
   ({ appConfig, assistantConfig, categories, categoryByCode, priceOptions } = configModule);
@@ -240,13 +242,65 @@ function appendAssistantMessage(role, text) {
   renderAssistantMessages();
 }
 
+function startAssistantStreamingMessage() {
+  state.assistantMessages.push({
+    role: "assistant",
+    text: "",
+    streaming: true,
+  });
+  renderAssistantMessages();
+  return state.assistantMessages.length - 1;
+}
+
+function appendAssistantStreamingDelta(messageIndex, delta) {
+  if (!delta) {
+    return;
+  }
+
+  const message = state.assistantMessages[messageIndex];
+  if (!message) {
+    return;
+  }
+
+  message.text += delta;
+  renderAssistantMessages();
+}
+
+function finalizeAssistantStreamingMessage(messageIndex, fallbackText = "") {
+  const message = state.assistantMessages[messageIndex];
+  if (!message) {
+    return;
+  }
+
+  if (!message.text && fallbackText) {
+    message.text = fallbackText;
+  }
+
+  delete message.streaming;
+  renderAssistantMessages();
+}
+
+function removeAssistantMessage(messageIndex) {
+  if (messageIndex < 0 || messageIndex >= state.assistantMessages.length) {
+    return;
+  }
+
+  state.assistantMessages.splice(messageIndex, 1);
+  renderAssistantMessages();
+}
+
+function extractAssistantResponseText(response) {
+  const assistantMessage = (response.messages || []).find((message) => message.role === "assistant");
+  return assistantMessage?.text || "";
+}
+
 function renderAssistantMessages() {
   elements.assistantMessages.innerHTML = state.assistantMessages
     .map(
       (message) => `
         <article class="assistant-message assistant-message-${message.role}">
           <div class="assistant-message-role">${message.role === "user" ? "Tu" : "Assistente"}</div>
-          <p>${escapeHtml(message.text)}</p>
+          <p>${escapeHtml(message.text || (message.streaming ? "..." : ""))}</p>
         </article>
       `
     )
@@ -650,13 +704,47 @@ async function runAssistantInteraction(mapController, message) {
   setAssistantBusy(true);
 
   try {
-    const response = await sendInteractionMessage(appConfig.interactionUrl, {
+    const payload = {
       message: trimmedMessage,
       context: buildInteractionContext(mapController),
-    });
+    };
+    let response;
 
-    for (const messageItem of response.messages || []) {
-      appendAssistantMessage(messageItem.role, messageItem.text);
+    if (appConfig.interactionStreamUrl) {
+      const streamingMessageIndex = startAssistantStreamingMessage();
+      let analysisApplied = false;
+
+      try {
+        response = await sendInteractionMessageStream(appConfig.interactionStreamUrl, payload, {
+          onMessageDelta: (event) => {
+            appendAssistantStreamingDelta(streamingMessageIndex, event.delta || "");
+          },
+          onAnalysisResult: (event) => {
+            if (event.analysisResult?.clipped) {
+              applyAnalysisResult(mapController, event.analysisResult);
+              analysisApplied = true;
+            }
+          },
+        });
+      } catch (error) {
+        removeAssistantMessage(streamingMessageIndex);
+        throw error;
+      }
+
+      finalizeAssistantStreamingMessage(
+        streamingMessageIndex,
+        extractAssistantResponseText(response)
+      );
+
+      if (!analysisApplied && response.analysisResult?.clipped) {
+        applyAnalysisResult(mapController, response.analysisResult);
+      }
+    } else {
+      response = await sendInteractionMessage(appConfig.interactionUrl, payload);
+
+      for (const messageItem of response.messages || []) {
+        appendAssistantMessage(messageItem.role, messageItem.text);
+      }
     }
 
     setAssistantStatus(response.uiHints?.providerMode || null, assistantConfig.providerConfigured);
@@ -669,6 +757,10 @@ async function runAssistantInteraction(mapController, message) {
       showNotice("Analisi testuale completata e mappa aggiornata.", "success");
     } else if (response.uiHints?.mode === "compare_analyses") {
       showNotice("Confronto analisi completato.", "success");
+    } else if (response.uiHints?.needsClarification) {
+      showNotice("Assistente richiede un chiarimento per proseguire.", "warning");
+    } else if ((response.messages || []).length > 0) {
+      showNotice("Risposta assistente completata.", "success");
     }
   } catch (error) {
     appendAssistantMessage(

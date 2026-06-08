@@ -10,9 +10,11 @@ class ToolName(StrEnum):
     ANALYZE_MUNICIPALITIES = "analyze_municipalities"
     ANALYZE_SELECTION = "analyze_selection"
     COMPARE_ANALYSES = "compare_analyses"
+    COMPARE_RECENT_ANALYSES = "compare_recent_analyses"
     GET_LAST_ANALYSIS = "get_last_analysis"
     RESET_ANALYSIS_CONTEXT = "reset_analysis_context"
     GET_METHODOLOGY = "get_methodology"
+    SEARCH_MUNICIPALITIES = "search_municipalities"
 
 
 def require_summary(summary: dict[str, Any]) -> dict[str, Any]:
