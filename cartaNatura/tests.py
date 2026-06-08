@@ -7,6 +7,7 @@ from django.test import Client, SimpleTestCase, override_settings
 from shapely.geometry import box
 
 from cartaNatura.interaction import (
+    InMemoryAnalysisStore,
     InteractionChannel,
     InteractionContext,
     InteractionInput,
@@ -14,9 +15,18 @@ from cartaNatura.interaction import (
     InteractionRequest,
     SessionContext,
 )
+from cartaNatura.interaction.analysis_store import StoredAnalysis, new_stored_analysis
 from cartaNatura.interaction.orchestrator import build_default_orchestrator
 from cartaNatura.interaction.resolvers import RuleBasedIntentResolver
 from cartaNatura.interaction.session import InMemorySessionStore
+from cartaNatura.interaction.tools import build_default_tool_registry
+from cartaNatura.interaction.tools.analysis_history import (
+    compare_analyses,
+    get_last_analysis,
+    get_recent_analyses,
+)
+from cartaNatura.interaction.ui_context import build_interaction_context
+from cartaNatura.interaction.tools.contracts import ToolName
 from cartaNatura.schemas import SelectionArea, SelectionRequest
 from cartaNatura.services.gis_clip import clip_selection
 from cartaNatura.services.municipality_text import (
@@ -225,11 +235,12 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_interact_returns_503_without_openai_key(self):
-        response = Client().post(
-            "/progettoGIS/cartaNatura/interact",
-            data='{"message": "Analizza Avellino"}',
-            content_type="application/json",
-        )
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+            response = Client().post(
+                "/progettoGIS/cartaNatura/interact",
+                data='{"message": "Analizza Avellino"}',
+                content_type="application/json",
+            )
 
         self.assertEqual(response.status_code, 503)
 
@@ -247,6 +258,17 @@ class InteractionSessionContextTests(SimpleTestCase):
 
         self.assertEqual(restored, context)
 
+    def test_build_interaction_context_ignores_empty_selection_payload(self):
+        context = build_interaction_context(
+            {
+                "selectedMunicipalities": [],
+                "mapExtent": {"south": 0, "west": 0, "north": 1, "east": 1},
+                "selectionPayload": {"areas": []},
+            }
+        )
+
+        self.assertIsNone(context.current_selection_payload)
+
 
 class RuleBasedIntentResolverTests(SimpleTestCase):
     def test_resolver_routes_structured_selection_to_analysis(self):
@@ -263,7 +285,6 @@ class RuleBasedIntentResolverTests(SimpleTestCase):
                     ]
                 }
             ),
-            context=InteractionContext(),
         )
 
         resolution = RuleBasedIntentResolver().resolve(request, SessionContext())
@@ -339,6 +360,28 @@ class RuleBasedIntentResolverTests(SimpleTestCase):
         self.assertEqual(resolution.command.intent, InteractionIntent.UNKNOWN)
         self.assertIn("San Giorgio a Cremano", resolution.clarification_message)
 
+    def test_resolver_routes_current_selection_analysis_from_context(self):
+        request = InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="session-ctx",
+            input=InteractionInput(text="analizza selezione corrente"),
+            context=InteractionContext(
+                current_selection_payload={
+                    "areas": [
+                        {
+                            "kind": "drawn",
+                            "geojson": GisClipServiceTests._drawn_geojson(),
+                        }
+                    ]
+                }
+            ),
+        )
+
+        resolution = RuleBasedIntentResolver().resolve(request, SessionContext())
+
+        self.assertEqual(resolution.command.intent, InteractionIntent.ANALYZE_SELECTION)
+        self.assertEqual(resolution.command.payload["areas"][0]["kind"], "drawn")
+
 
 class MunicipalityTextTests(SimpleTestCase):
     @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
@@ -369,7 +412,11 @@ class InteractionOrchestratorTests(SimpleTestCase):
         load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
         load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
         session_store = InMemorySessionStore()
-        orchestrator = build_default_orchestrator(session_store=session_store)
+        analysis_store = InMemoryAnalysisStore()
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            analysis_store=analysis_store,
+        )
 
         response = orchestrator.handle(
             InteractionRequest(
@@ -393,6 +440,7 @@ class InteractionOrchestratorTests(SimpleTestCase):
             session_store.load("session-42").last_intent,
             InteractionIntent.ANALYZE_SELECTION,
         )
+        self.assertIsNotNone(analysis_store.get_last())
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -411,9 +459,11 @@ class InteractionOrchestratorTests(SimpleTestCase):
             crs="EPSG:4326",
         )
         session_store = InMemorySessionStore()
+        analysis_store = InMemoryAnalysisStore()
         orchestrator = build_default_orchestrator(
             session_store=session_store,
             llm_provider=FakeLlmProvider("Sintesi LLM mockata."),
+            analysis_store=analysis_store,
         )
 
         response = orchestrator.handle(
@@ -429,9 +479,11 @@ class InteractionOrchestratorTests(SimpleTestCase):
             response.analysis_result["requestedMunicipalities"],
             ["Avellino", "Benevento"],
         )
+        self.assertEqual(analysis_store.get_last().requested_municipalities, ("Avellino", "Benevento"))
 
     def test_orchestrator_clears_session_on_reset(self):
         session_store = InMemorySessionStore()
+        analysis_store = InMemoryAnalysisStore()
         session_store.save(
             "session-reset",
             SessionContext(
@@ -440,7 +492,16 @@ class InteractionOrchestratorTests(SimpleTestCase):
                 last_intent=InteractionIntent.ANALYZE_SELECTION,
             ),
         )
-        orchestrator = build_default_orchestrator(session_store=session_store)
+        analysis_store.save(
+            new_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 0, "totalHectares": 0, "hasSupportedVegetation": False, "topCategory": None},
+            )
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            analysis_store=analysis_store,
+        )
 
         response = orchestrator.handle(
             InteractionRequest(
@@ -452,6 +513,7 @@ class InteractionOrchestratorTests(SimpleTestCase):
 
         self.assertEqual(response.commands[0].intent, InteractionIntent.RESET_SESSION)
         self.assertEqual(session_store.load("session-reset"), SessionContext())
+        self.assertIsNone(analysis_store.get_last())
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -470,9 +532,11 @@ class InteractionOrchestratorTests(SimpleTestCase):
             crs="EPSG:4326",
         )
         session_store = InMemorySessionStore()
+        analysis_store = InMemoryAnalysisStore()
         orchestrator = build_default_orchestrator(
             session_store=session_store,
             llm_provider=FakeLlmProvider("Sintesi LLM mockata."),
+            analysis_store=analysis_store,
         )
 
         response = orchestrator.handle(
@@ -485,6 +549,95 @@ class InteractionOrchestratorTests(SimpleTestCase):
 
         self.assertEqual(response.messages[0].text, "Sintesi LLM mockata.")
         self.assertEqual(response.ui_hints["providerMode"], "openai")
+        self.assertIsNotNone(analysis_store.get_last())
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_orchestrator_runs_current_selection_analysis_from_context(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+        analysis_store = InMemoryAnalysisStore()
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=FakeLlmProvider("Sintesi LLM mockata."),
+            analysis_store=analysis_store,
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="session-current-selection",
+                input=InteractionInput(text="analizza selezione corrente"),
+                context=InteractionContext(
+                    current_selection_payload={
+                        "areas": [
+                            {
+                                "kind": "drawn",
+                                "geojson": GisClipServiceTests._drawn_geojson(),
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(response.commands[0].intent, InteractionIntent.ANALYZE_SELECTION)
+        self.assertIsNotNone(response.analysis_result["analysisId"])
+        self.assertEqual(analysis_store.get_last().source, "selection")
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    def test_orchestrator_compares_recent_analyses(
+        self,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+        analysis_store = InMemoryAnalysisStore()
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=FakeLlmProvider("Confronto LLM mockato."),
+            analysis_store=analysis_store,
+        )
+
+        orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="session-a",
+                input=InteractionInput(text="analizza Avellino"),
+            )
+        )
+        orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="session-b",
+                input=InteractionInput(text="analizza Benevento"),
+            )
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="session-compare",
+                input=InteractionInput(text="confronta ultime due analisi"),
+            )
+        )
+
+        self.assertEqual(response.commands[0].intent, InteractionIntent.COMPARE_ANALYSES)
+        self.assertEqual(response.messages[0].text, "Confronto LLM mockato.")
+        self.assertIn("delta", response.analysis_result)
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -502,16 +655,97 @@ class InteractionOrchestratorTests(SimpleTestCase):
             geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
             crs="EPSG:4326",
         )
-        orchestrator = build_default_orchestrator(
-            session_store=InMemorySessionStore(),
-            llm_provider=None,
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+            orchestrator = build_default_orchestrator(
+                session_store=InMemorySessionStore(),
+                llm_provider=None,
+            )
+            with self.assertRaisesMessage(ValueError, "Assistente AI non configurato"):
+                orchestrator.handle(
+                    InteractionRequest(
+                        channel=InteractionChannel.WEB_CHAT,
+                        session_id="session-no-llm",
+                        input=InteractionInput(text="analizza Avellino e Benevento"),
+                    )
+                )
+
+
+class AnalysisStoreAndToolsTests(SimpleTestCase):
+    def test_inmemory_analysis_store_returns_last_saved_item(self):
+        store = InMemoryAnalysisStore()
+        first = store.save(
+            new_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 1, "totalHectares": 2, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+        second = store.save(
+            new_stored_analysis(
+                source="selection",
+                summary={"items": [], "totalCo2": 3, "totalHectares": 4, "hasSupportedVegetation": True, "topCategory": None},
+            )
         )
 
-        with self.assertRaisesMessage(ValueError, "Assistente AI non configurato"):
-            orchestrator.handle(
-                InteractionRequest(
-                    channel=InteractionChannel.WEB_CHAT,
-                    session_id="session-no-llm",
-                    input=InteractionInput(text="analizza Avellino e Benevento"),
-                )
+        self.assertEqual(store.get(first.analysis_id), first)
+        self.assertEqual(store.get_last(), second)
+
+    def test_tool_registry_returns_last_analysis(self):
+        store = InMemoryAnalysisStore()
+        saved = store.save(
+            new_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 3, "totalHectares": 4, "hasSupportedVegetation": True, "topCategory": None},
+                requested_municipalities=["Avellino"],
+                intersected_municipalities=["Avellino"],
             )
+        )
+        registry = build_default_tool_registry(store)
+
+        payload = registry.execute(ToolName.GET_LAST_ANALYSIS)
+
+        self.assertEqual(payload["analysisId"], saved.analysis_id)
+        self.assertEqual(payload["requestedMunicipalities"], ["Avellino"])
+
+    def test_get_recent_analyses_returns_newest_first(self):
+        store = InMemoryAnalysisStore()
+        first = store.save(
+            new_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 1, "totalHectares": 2, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+        second = store.save(
+            new_stored_analysis(
+                source="selection",
+                summary={"items": [], "totalCo2": 3, "totalHectares": 4, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+
+        payload = get_recent_analyses(analysis_store=store, limit=2)
+
+        self.assertEqual(payload["items"][0]["analysisId"], second.analysis_id)
+        self.assertEqual(payload["items"][1]["analysisId"], first.analysis_id)
+
+    def test_compare_analyses_returns_numeric_delta(self):
+        store = InMemoryAnalysisStore()
+        left = store.save(
+            new_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 10, "totalHectares": 20, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+        right = store.save(
+            new_stored_analysis(
+                source="selection",
+                summary={"items": [], "totalCo2": 15, "totalHectares": 24, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+
+        comparison = compare_analyses(
+            analysis_store=store,
+            left_analysis_id=left.analysis_id,
+            right_analysis_id=right.analysis_id,
+        )
+
+        self.assertEqual(comparison["delta"]["totalCo2"], 5)
+        self.assertEqual(comparison["delta"]["totalHectares"], 4)

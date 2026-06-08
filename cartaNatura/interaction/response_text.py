@@ -48,3 +48,21 @@ def build_explanation_reply(
         text=llm_provider.complete(prompt),
         provider_mode="openai",
     )
+
+
+def build_comparison_reply(
+    *,
+    comparison_summary: dict[str, object],
+    llm_provider: LlmProvider,
+) -> AssistantTextResult:
+    prompt = (
+        "Sei assistente GIS di Carta della Natura. "
+        "Confronta in italiano, max 4 frasi, due analisi usando solo dati forniti. "
+        "Evidenzia differenze di superficie, CO2 e categoria dominante senza inventare dati.\n"
+        f"Comparison JSON: {json.dumps(comparison_summary, ensure_ascii=True)}"
+    )
+
+    return AssistantTextResult(
+        text=llm_provider.complete(prompt),
+        provider_mode="openai",
+    )

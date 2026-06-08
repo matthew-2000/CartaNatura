@@ -9,6 +9,7 @@ from django.conf import settings
 from django.http import HttpResponseNotFound
 from django.http import JsonResponse
 from django.shortcuts import render
+from django.middleware.csrf import get_token
 from django.templatetags.static import static
 from django.urls import reverse
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -16,6 +17,7 @@ from django.views.decorators.http import require_POST
 
 from cartaNatura.domain.vegetation import serialize_categories
 from cartaNatura.interaction import (
+    DjangoSessionAnalysisStore,
     InteractionChannel,
     InteractionContext,
     InteractionInput,
@@ -24,6 +26,7 @@ from cartaNatura.interaction import (
 )
 from cartaNatura.interaction.llm import LlmProviderUnavailableError
 from cartaNatura.interaction.session import DjangoSessionStore
+from cartaNatura.interaction.ui_context import build_interaction_context
 
 logger = logging.getLogger(__name__)
 APP_DIR = Path(__file__).resolve().parent
@@ -57,6 +60,7 @@ def _ensure_session_id(request) -> str:
 def _build_request_orchestrator(request):
     return build_default_orchestrator(
         session_store=DjangoSessionStore(request.session),
+        analysis_store=DjangoSessionAnalysisStore(request.session),
     )
 
 
@@ -66,6 +70,7 @@ def index(request):
     app_config = {
         "apiUrl": reverse("gis"),
         "interactionUrl": reverse("interact"),
+        "csrfToken": get_token(request),
         "priceOptions": PRICE_OPTIONS,
         "categories": serialize_categories(),
         "map": {
@@ -156,14 +161,7 @@ def interact(request):
                 channel=InteractionChannel.WEB_CHAT,
                 session_id=session_id,
                 input=InteractionInput(text=message, metadata={"source": "web_assistant"}),
-                context=InteractionContext(
-                    selected_municipalities=tuple(
-                        str(name)
-                        for name in context_payload.get("selectedMunicipalities", [])
-                        if str(name).strip()
-                    ),
-                    current_map_extent=context_payload.get("mapExtent"),
-                ),
+                context=build_interaction_context(context_payload),
             )
         )
     except ValueError as exc:

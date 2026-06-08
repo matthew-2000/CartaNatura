@@ -1,5 +1,6 @@
 """Interaction-layer contracts and orchestration."""
 
+from .analysis_store import DjangoSessionAnalysisStore, InMemoryAnalysisStore
 from .models import (
     InteractionChannel,
     InteractionCommand,
@@ -14,6 +15,8 @@ from .models import (
 from .orchestrator import InteractionOrchestrator, build_default_orchestrator
 
 __all__ = [
+    "DjangoSessionAnalysisStore",
+    "InMemoryAnalysisStore",
     "InteractionChannel",
     "InteractionCommand",
     "InteractionContext",

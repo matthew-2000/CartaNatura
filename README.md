@@ -99,6 +99,9 @@ Documentazione consigliata:
 - [docs/architecture.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/architecture.md:1)
 - [docs/development.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/development.md:1)
 - [docs/refactoring-plan.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/refactoring-plan.md:1)
+- [docs/ai-interaction-research.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/ai-interaction-research.md:1)
+- [docs/assistant-product-contract.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-product-contract.md:1)
+- [docs/assistant-phase-1-backlog.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-1-backlog.md:1)
 
 ## Flusso applicativo
 

@@ -212,13 +212,16 @@ function showNotice(message, tone = "info") {
 function setAssistantStatus(providerMode = null, configured = false) {
   let statusText = "Assistente non disponibile";
   if (!assistantConfig.enabled) {
-    statusText = configured ? "Configura e ricarica per usare l'assistente" : "Assistente non disponibile";
-  } else if (providerMode === "openai") {
+    statusText = configured ? "Assistente disattivato" : "Assistente non configurato";
+  } else if (providerMode === "openai" || configured) {
     statusText = "LLM configurato";
   }
 
   elements.assistantStatus.textContent = statusText;
-  elements.assistantStatus.classList.toggle("is-live", providerMode === "openai");
+  elements.assistantStatus.classList.toggle(
+    "is-live",
+    assistantConfig.enabled && (providerMode === "openai" || configured)
+  );
 }
 
 function setAssistantBusy(busy) {
@@ -255,6 +258,7 @@ function buildInteractionContext(mapController) {
   return {
     selectedMunicipalities: mapController.getSelectedMunicipalityNames(),
     mapExtent: mapController.getMapExtent(),
+    selectionPayload: buildAnalysisPayload(mapController),
   };
 }
 
@@ -660,9 +664,11 @@ async function runAssistantInteraction(mapController, message) {
     if (response.uiHints?.mode === "reset") {
       resetAnalysis(mapController);
       showNotice("Sessione assistente e risultati locali azzerati.", "success");
-    } else if (response.analysisResult) {
+    } else if (response.analysisResult?.clipped) {
       applyAnalysisResult(mapController, response.analysisResult);
       showNotice("Analisi testuale completata e mappa aggiornata.", "success");
+    } else if (response.uiHints?.mode === "compare_analyses") {
+      showNotice("Confronto analisi completato.", "success");
     }
   } catch (error) {
     appendAssistantMessage(

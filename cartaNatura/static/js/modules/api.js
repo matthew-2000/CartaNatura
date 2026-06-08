@@ -14,14 +14,54 @@ function getCookie(name) {
   return null;
 }
 
-async function handleJsonResponse(response) {
-  const data = await response.json();
+let cachedAppConfig = null;
 
-  if (!response.ok) {
-    throw new Error(data.error || "Request failed.");
+function getAppConfig() {
+  if (cachedAppConfig !== null) {
+    return cachedAppConfig;
   }
 
-  return data;
+  const rawConfig = document.getElementById("app-config")?.textContent;
+  if (!rawConfig) {
+    cachedAppConfig = {};
+    return cachedAppConfig;
+  }
+
+  try {
+    cachedAppConfig = JSON.parse(rawConfig);
+  } catch (error) {
+    cachedAppConfig = {};
+  }
+
+  return cachedAppConfig;
+}
+
+function getCsrfToken() {
+  return getCookie("csrftoken") || getAppConfig().csrfToken || "";
+}
+
+async function handleJsonResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Request failed.");
+    }
+
+    return data;
+  }
+
+  await response.text();
+  if (response.status === 403) {
+    throw new Error("Richiesta rifiutata dal server. Ricarica la pagina e riprova.");
+  }
+
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status}).`);
+  }
+
+  throw new Error("Il server ha restituito una risposta non valida.");
 }
 
 export async function fetchGeoJson(url) {
@@ -54,7 +94,7 @@ export async function requestNatureClip(apiUrl, payload) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-CSRFToken": getCookie("csrftoken") || "",
+      "X-CSRFToken": getCsrfToken(),
     },
     body: JSON.stringify(payload),
   });
@@ -67,7 +107,7 @@ export async function sendInteractionMessage(interactionUrl, payload) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-CSRFToken": getCookie("csrftoken") || "",
+      "X-CSRFToken": getCsrfToken(),
     },
     body: JSON.stringify(payload),
   });

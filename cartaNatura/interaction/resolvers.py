@@ -56,9 +56,26 @@ class RuleBasedIntentResolver:
                 command=InteractionCommand(intent=InteractionIntent.RESET_SESSION)
             )
 
+        if any(keyword in text for keyword in ("confronta", "confronto", "compara", "comparazione")):
+            return IntentResolution(
+                command=InteractionCommand(intent=InteractionIntent.COMPARE_ANALYSES)
+            )
+
         if any(keyword in text for keyword in ("spiega", "riepiloga", "riassumi", "ultimo risultato")):
             return IntentResolution(
                 command=InteractionCommand(intent=InteractionIntent.EXPLAIN_LAST_ANALYSIS)
+            )
+
+        analyze_keywords = ("analizza", "analisi", "estrai", "selezione corrente", "selezione attuale")
+        if (
+            any(keyword in text for keyword in analyze_keywords)
+            and request.context.current_selection_payload
+        ):
+            return IntentResolution(
+                command=InteractionCommand(
+                    intent=InteractionIntent.ANALYZE_SELECTION,
+                    payload=request.context.current_selection_payload,
+                )
             )
 
         municipality_names = extract_municipality_names(text)

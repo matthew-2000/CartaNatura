@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from typing import Protocol
 
-from cartaNatura.services.analysis_summary import summarize_clipped_features
-from cartaNatura.services.gis_clip import clip_selection
-from cartaNatura.services.municipality_text import build_municipality_selection_payload_dict
-from cartaNatura.services.payloads import parse_selection_payload
-
+from .analysis_store import AnalysisStore, NullAnalysisStore, new_stored_analysis
 from .models import (
     InteractionChannel,
     InteractionCommand,
@@ -20,7 +15,9 @@ from .models import (
     SessionContext,
 )
 from .providers import LlmProvider
-from .response_text import build_analysis_reply, build_explanation_reply
+from .response_text import build_analysis_reply, build_comparison_reply, build_explanation_reply
+from .tools.contracts import ToolName
+from .tools.registry import ToolRegistry
 
 
 class CommandHandler(Protocol):
@@ -42,8 +39,15 @@ def _require_llm_provider(llm_provider: LlmProvider | None) -> LlmProvider:
 
 
 class AnalyzeSelectionHandler:
-    def __init__(self, llm_provider: LlmProvider | None = None):
+    def __init__(
+        self,
+        llm_provider: LlmProvider | None = None,
+        tool_registry: ToolRegistry | None = None,
+        analysis_store: AnalysisStore | None = None,
+    ):
         self._llm_provider = llm_provider
+        self._tool_registry = tool_registry
+        self._analysis_store = analysis_store or NullAnalysisStore()
 
     intent = InteractionIntent.ANALYZE_SELECTION
 
@@ -59,14 +63,24 @@ class AnalyzeSelectionHandler:
         if not selection_payload:
             raise ValueError("Missing structured selection payload.")
 
-        selection = parse_selection_payload(selection_payload)
-        result = clip_selection(selection)
-        summary = summarize_clipped_features(result.clipped)
-        analysis_result = {
-            "clipped": json.loads(result.clipped.to_json()),
-            "intersectedMunicipalities": result.intersected_municipalities,
-            "summary": summary,
-        }
+        if self._tool_registry is None:
+            raise ValueError("Tool registry not configured.")
+
+        analysis_result = self._tool_registry.execute(
+            ToolName.ANALYZE_SELECTION,
+            selection_payload=selection_payload,
+        )
+        stored_analysis = self._analysis_store.save(
+            new_stored_analysis(
+                source=str(analysis_result.get("source") or "selection"),
+                summary=analysis_result["summary"],
+                intersected_municipalities=analysis_result.get("intersectedMunicipalities", []),
+                selection_payload=selection_payload,
+                metadata={"channel": request.channel.value},
+            )
+        )
+        analysis_result["analysisId"] = stored_analysis.analysis_id
+        summary = analysis_result["summary"]
         messages: tuple[InteractionMessage, ...] = ()
         ui_hints = {
             "channel": request.channel.value,
@@ -76,7 +90,7 @@ class AnalyzeSelectionHandler:
 
         if request.channel is not InteractionChannel.WEB_MAP:
             assistant_result = build_analysis_reply(
-                requested_municipalities=result.intersected_municipalities,
+                requested_municipalities=analysis_result.get("intersectedMunicipalities", []),
                 summary=summary,
                 llm_provider=_require_llm_provider(self._llm_provider),
             )
@@ -93,8 +107,9 @@ class AnalyzeSelectionHandler:
             updated_context=SessionContext(
                 selection_payload=selection_payload,
                 last_analysis={
+                    "analysisId": stored_analysis.analysis_id,
                     "summary": summary,
-                    "intersectedMunicipalities": result.intersected_municipalities,
+                    "intersectedMunicipalities": analysis_result.get("intersectedMunicipalities", []),
                 },
                 last_intent=command.intent,
             ),
@@ -102,8 +117,15 @@ class AnalyzeSelectionHandler:
 
 
 class AnalyzeMunicipalitiesHandler:
-    def __init__(self, llm_provider: LlmProvider | None = None):
+    def __init__(
+        self,
+        llm_provider: LlmProvider | None = None,
+        tool_registry: ToolRegistry | None = None,
+        analysis_store: AnalysisStore | None = None,
+    ):
         self._llm_provider = llm_provider
+        self._tool_registry = tool_registry
+        self._analysis_store = analysis_store or NullAnalysisStore()
 
     intent = InteractionIntent.ANALYZE_MUNICIPALITIES
 
@@ -123,21 +145,30 @@ class AnalyzeMunicipalitiesHandler:
         if not requested_municipalities:
             raise ValueError("Nessun comune riconosciuto nel messaggio.")
 
-        selection_payload = build_municipality_selection_payload_dict(requested_municipalities)
-        selection = parse_selection_payload(selection_payload)
-        result = clip_selection(selection)
-        summary = summarize_clipped_features(result.clipped)
+        if self._tool_registry is None:
+            raise ValueError("Tool registry not configured.")
+
+        analysis_result = self._tool_registry.execute(
+            ToolName.ANALYZE_MUNICIPALITIES,
+            municipality_names=requested_municipalities,
+        )
+        stored_analysis = self._analysis_store.save(
+            new_stored_analysis(
+                source=str(analysis_result.get("source") or "municipalities"),
+                summary=analysis_result["summary"],
+                requested_municipalities=requested_municipalities,
+                intersected_municipalities=analysis_result.get("intersectedMunicipalities", []),
+                selection_payload=analysis_result.get("selectionPayload"),
+                metadata={"channel": request.channel.value},
+            )
+        )
+        analysis_result["analysisId"] = stored_analysis.analysis_id
+        summary = analysis_result["summary"]
         assistant_result = build_analysis_reply(
             requested_municipalities=requested_municipalities,
             summary=summary,
             llm_provider=_require_llm_provider(self._llm_provider),
         )
-        analysis_result = {
-            "clipped": json.loads(result.clipped.to_json()),
-            "intersectedMunicipalities": result.intersected_municipalities,
-            "requestedMunicipalities": requested_municipalities,
-            "summary": summary,
-        }
 
         return InteractionResponse(
             messages=(InteractionMessage(role="assistant", text=assistant_result.text),),
@@ -150,10 +181,11 @@ class AnalyzeMunicipalitiesHandler:
             },
             audio_output_text=assistant_result.text,
             updated_context=SessionContext(
-                selection_payload=selection_payload,
+                selection_payload=analysis_result.get("selectionPayload"),
                 last_analysis={
+                    "analysisId": stored_analysis.analysis_id,
                     "summary": summary,
-                    "intersectedMunicipalities": result.intersected_municipalities,
+                    "intersectedMunicipalities": analysis_result.get("intersectedMunicipalities", []),
                     "requestedMunicipalities": requested_municipalities,
                 },
                 last_intent=command.intent,
@@ -162,8 +194,13 @@ class AnalyzeMunicipalitiesHandler:
 
 
 class ExplainLastAnalysisHandler:
-    def __init__(self, llm_provider: LlmProvider | None = None):
+    def __init__(
+        self,
+        llm_provider: LlmProvider | None = None,
+        analysis_store: AnalysisStore | None = None,
+    ):
         self._llm_provider = llm_provider
+        self._analysis_store = analysis_store or NullAnalysisStore()
 
     intent = InteractionIntent.EXPLAIN_LAST_ANALYSIS
 
@@ -175,7 +212,12 @@ class ExplainLastAnalysisHandler:
     ) -> InteractionResponse:
         del request
 
-        analysis_summary = (session_context.last_analysis or {}).get("summary")
+        last_analysis = self._analysis_store.get_last()
+        analysis_summary = (
+            last_analysis.summary
+            if last_analysis is not None
+            else (session_context.last_analysis or {}).get("summary")
+        )
         assistant_result = build_explanation_reply(
             analysis_summary=analysis_summary,
             llm_provider=_require_llm_provider(self._llm_provider),
@@ -198,7 +240,65 @@ class ExplainLastAnalysisHandler:
         )
 
 
+class CompareAnalysesHandler:
+    def __init__(
+        self,
+        llm_provider: LlmProvider | None = None,
+        tool_registry: ToolRegistry | None = None,
+        analysis_store: AnalysisStore | None = None,
+    ):
+        self._llm_provider = llm_provider
+        self._tool_registry = tool_registry
+        self._analysis_store = analysis_store or NullAnalysisStore()
+
+    intent = InteractionIntent.COMPARE_ANALYSES
+
+    def handle(
+        self,
+        request: InteractionRequest,
+        command: InteractionCommand,
+        session_context: SessionContext,
+    ) -> InteractionResponse:
+        del request, command
+        if self._tool_registry is None:
+            raise ValueError("Tool registry not configured.")
+
+        recent = self._analysis_store.list_recent(limit=2)
+        if len(recent) < 2:
+            raise ValueError("Servono almeno due analisi recenti per eseguire un confronto.")
+
+        comparison = self._tool_registry.execute(
+            ToolName.COMPARE_ANALYSES,
+            left_analysis_id=recent[1].analysis_id,
+            right_analysis_id=recent[0].analysis_id,
+        )
+        assistant_result = build_comparison_reply(
+            comparison_summary=comparison,
+            llm_provider=_require_llm_provider(self._llm_provider),
+        )
+
+        return InteractionResponse(
+            messages=(InteractionMessage(role="assistant", text=assistant_result.text),),
+            commands=(InteractionCommand(intent=self.intent),),
+            analysis_result=comparison,
+            ui_hints={
+                "mode": "compare_analyses",
+                "providerMode": assistant_result.provider_mode,
+            },
+            audio_output_text=assistant_result.text,
+            updated_context=SessionContext(
+                selection_payload=session_context.selection_payload,
+                last_analysis=session_context.last_analysis,
+                last_intent=self.intent,
+                metadata=session_context.metadata,
+            ),
+        )
+
+
 class ResetSessionHandler:
+    def __init__(self, tool_registry: ToolRegistry | None = None):
+        self._tool_registry = tool_registry
+
     intent = InteractionIntent.RESET_SESSION
 
     def handle(
@@ -208,6 +308,8 @@ class ResetSessionHandler:
         session_context: SessionContext,
     ) -> InteractionResponse:
         del request, session_context
+        if self._tool_registry is not None:
+            self._tool_registry.execute(ToolName.RESET_ANALYSIS_CONTEXT)
 
         return InteractionResponse(
             messages=(InteractionMessage(role="assistant", text="Sessione azzerata."),),

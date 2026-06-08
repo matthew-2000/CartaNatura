@@ -1,0 +1,49 @@
+"""Tool registry for interaction runtime."""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from cartaNatura.interaction.analysis_store import AnalysisStore
+
+from .analysis_history import compare_analyses, get_last_analysis, reset_analysis_context
+from .contracts import ToolName
+from .gis_analysis import analyze_municipalities, analyze_selection
+from .methodology import get_methodology
+
+
+ToolHandler = Callable[..., dict[str, Any]]
+
+
+class ToolRegistry:
+    def __init__(self):
+        self._handlers: dict[ToolName, ToolHandler] = {}
+
+    def register(self, tool_name: ToolName, handler: ToolHandler) -> None:
+        self._handlers[tool_name] = handler
+
+    def execute(self, tool_name: ToolName, **kwargs: Any) -> dict[str, Any]:
+        handler = self._handlers.get(tool_name)
+        if handler is None:
+            raise ValueError(f"No tool registered for {tool_name.value!r}.")
+        return handler(**kwargs)
+
+
+def build_default_tool_registry(analysis_store: AnalysisStore) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(ToolName.ANALYZE_MUNICIPALITIES, analyze_municipalities)
+    registry.register(ToolName.ANALYZE_SELECTION, analyze_selection)
+    registry.register(
+        ToolName.COMPARE_ANALYSES,
+        lambda **kwargs: compare_analyses(analysis_store=analysis_store, **kwargs),
+    )
+    registry.register(
+        ToolName.GET_LAST_ANALYSIS,
+        lambda **kwargs: get_last_analysis(analysis_store=analysis_store, **kwargs),
+    )
+    registry.register(
+        ToolName.RESET_ANALYSIS_CONTEXT,
+        lambda **kwargs: reset_analysis_context(analysis_store=analysis_store, **kwargs),
+    )
+    registry.register(ToolName.GET_METHODOLOGY, get_methodology)
+    return registry

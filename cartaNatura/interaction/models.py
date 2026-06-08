@@ -18,6 +18,7 @@ class InteractionChannel(StrEnum):
 class InteractionIntent(StrEnum):
     ANALYZE_SELECTION = "analyze_selection"
     ANALYZE_MUNICIPALITIES = "analyze_municipalities"
+    COMPARE_ANALYSES = "compare_analyses"
     EXPLAIN_LAST_ANALYSIS = "explain_last_analysis"
     RESET_SESSION = "reset_session"
     UNKNOWN = "unknown"
@@ -42,6 +43,7 @@ class InteractionInput:
 class InteractionContext:
     selected_municipalities: tuple[str, ...] = ()
     current_map_extent: dict[str, Any] | None = None
+    current_selection_payload: dict[str, Any] | None = None
     previous_result: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
