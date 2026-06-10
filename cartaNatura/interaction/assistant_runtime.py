@@ -18,9 +18,11 @@ from .models import (
     InteractionResponse,
     SessionContext,
 )
+from .observability import elapsed_ms, log_provider_call, log_tool_call, start_timer
 from .tools import ToolName
 from .tools.methodology import get_methodology
 from .tools.registry import ToolRegistry
+from .ui_actions import ALLOWED_UI_ACTIONS, filter_ui_actions
 
 MODEL_TOOL_SEARCH_MUNICIPALITIES = "search_municipalities"
 MODEL_TOOL_ANALYZE_MUNICIPALITIES = "analyze_municipalities"
@@ -295,6 +297,7 @@ class OpenAiAssistantRuntime:
             "message": "Richiesta ricevuta.",
         }
         response_body = yield from self._stream_response_body_events(
+            request=request,
             payload=self._build_openai_request_payload(
                 request=request,
                 session_context=session_context,
@@ -322,9 +325,8 @@ class OpenAiAssistantRuntime:
                     "type": "tool_start",
                     "toolName": tool_call["name"],
                 }
-                outcome = self._tool_executor.execute(
-                    tool_name=tool_call["name"],
-                    arguments=tool_call["arguments"],
+                outcome = self._execute_tool_call(
+                    tool_call=tool_call,
                     request=request,
                     session_context=session_context,
                 )
@@ -360,6 +362,7 @@ class OpenAiAssistantRuntime:
                 )
 
             response_body = yield from self._stream_response_body_events(
+                request=request,
                 payload=self._build_openai_request_payload(
                     request=request,
                     session_context=session_context,
@@ -449,9 +452,8 @@ class OpenAiAssistantRuntime:
                         "toolName": tool_call["name"],
                     },
                 )
-                outcome = self._tool_executor.execute(
-                    tool_name=tool_call["name"],
-                    arguments=tool_call["arguments"],
+                outcome = self._execute_tool_call(
+                    tool_call=tool_call,
                     request=request,
                     session_context=session_context,
                 )
@@ -525,16 +527,79 @@ class OpenAiAssistantRuntime:
             previous_response_id=previous_response_id,
         )
         if event_callback is None:
-            return self._llm_provider.create_response(**payload)
-        return self._stream_response_body(payload=payload, event_callback=event_callback)
+            started_at = start_timer()
+            try:
+                response_body = self._llm_provider.create_response(**payload)
+            except Exception as exc:
+                log_provider_call(
+                    session_id=request.session_id,
+                    response_body=None,
+                    previous_response_id=previous_response_id,
+                    streaming=False,
+                    duration_ms=elapsed_ms(started_at),
+                    status="error",
+                    error=str(exc),
+                )
+                raise
+            log_provider_call(
+                session_id=request.session_id,
+                response_body=response_body,
+                previous_response_id=previous_response_id,
+                streaming=False,
+                duration_ms=elapsed_ms(started_at),
+                status="ok",
+            )
+            return response_body
+        return self._stream_response_body(
+            request=request,
+            payload=payload,
+            event_callback=event_callback,
+        )
+
+    def _execute_tool_call(
+        self,
+        *,
+        tool_call: dict[str, Any],
+        request: InteractionRequest,
+        session_context: SessionContext,
+    ) -> ToolExecutionOutcome:
+        started_at = start_timer()
+        try:
+            outcome = self._tool_executor.execute(
+                tool_name=tool_call["name"],
+                arguments=tool_call["arguments"],
+                request=request,
+                session_context=session_context,
+            )
+        except Exception as exc:
+            log_tool_call(
+                session_id=request.session_id,
+                tool_name=tool_call["name"],
+                duration_ms=elapsed_ms(started_at),
+                status="error",
+                error=str(exc),
+            )
+            raise
+
+        log_tool_call(
+            session_id=request.session_id,
+            tool_name=tool_call["name"],
+            duration_ms=elapsed_ms(started_at),
+            status="ok",
+            has_analysis=outcome.analysis_result is not None,
+        )
+        return outcome
 
     def _stream_response_body(
         self,
         *,
+        request: InteractionRequest,
         payload: dict[str, Any],
         event_callback: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
         extractor = AssistantTextDeltaExtractor()
+        started_at = start_timer()
+        final_payload: dict[str, Any] | None = None
         with self._llm_provider.stream_response(**payload) as stream:
             for event in stream:
                 event_type = str(getattr(event, "type", ""))
@@ -570,15 +635,27 @@ class OpenAiAssistantRuntime:
                         )
 
             final_response = stream.get_final_response()
+            final_payload = final_response.model_dump(mode="python")
 
-        return final_response.model_dump(mode="python")
+        log_provider_call(
+            session_id=request.session_id,
+            response_body=final_payload,
+            previous_response_id=payload.get("previous_response_id"),
+            streaming=True,
+            duration_ms=elapsed_ms(started_at),
+            status="ok",
+        )
+        return final_payload
 
     def _stream_response_body_events(
         self,
         *,
+        request: InteractionRequest,
         payload: dict[str, Any],
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         extractor = AssistantTextDeltaExtractor()
+        started_at = start_timer()
+        final_payload: dict[str, Any] | None = None
         with self._llm_provider.stream_response(**payload) as stream:
             for event in stream:
                 event_type = str(getattr(event, "type", ""))
@@ -605,8 +682,17 @@ class OpenAiAssistantRuntime:
                         }
 
             final_response = stream.get_final_response()
+            final_payload = final_response.model_dump(mode="python")
 
-        return final_response.model_dump(mode="python")
+        log_provider_call(
+            session_id=request.session_id,
+            response_body=final_payload,
+            previous_response_id=payload.get("previous_response_id"),
+            streaming=True,
+            duration_ms=elapsed_ms(started_at),
+            status="ok",
+        )
+        return final_payload
 
     def _build_openai_input(
         self,
@@ -659,6 +745,7 @@ class OpenAiAssistantRuntime:
         loop_result: RuntimeLoopResult,
     ) -> InteractionResponse:
         final_payload = self._parse_final_payload(loop_result.response_body)
+        ui_actions = filter_ui_actions(final_payload.get("ui_actions"))
         final_intent = self._resolve_final_intent(
             raw_intent=final_payload.get("intent"),
             fallback=loop_result.derived_intent,
@@ -689,7 +776,7 @@ class OpenAiAssistantRuntime:
                 "needsClarification": bool(final_payload.get("needs_clarification")),
                 "followUpSuggestions": final_payload.get("follow_up_suggestions", []),
                 "citationsInternal": final_payload.get("citations_internal", []),
-                "uiActions": final_payload.get("ui_actions", []),
+                "uiActions": ui_actions,
             },
             audio_output_text=message_text,
             updated_context=updated_context,
@@ -860,6 +947,8 @@ class OpenAiAssistantRuntime:
             "Se utente chiede spiegazioni o confronto di risultati recenti, usa get_last_analysis o compare_recent_analyses. "
             "Per richieste metodologiche usa get_methodology prima di spiegare. "
             "Se manca contesto sufficiente, non improvvisare: chiedi chiarimento. "
+            "Azioni UI consentite: show_last_analysis, open_report_panel, show_legend, focus_map_results. "
+            "Non emettere altre ui_actions. "
             "Mantieni risposte brevi: massimo 4 frasi operative. "
             "Dopo aver usato i tool, restituisci solo JSON conforme allo schema finale."
         )
@@ -891,7 +980,6 @@ class OpenAiAssistantRuntime:
                         "key": item["key"],
                         "label": item["label"],
                         "co2PerHectare": item["co2PerHectare"],
-                        "codes": item["codes"],
                     }
                     for item in serialize_categories()
                 ],
@@ -923,7 +1011,10 @@ class OpenAiAssistantRuntime:
                     "clarification_question": {"type": "string"},
                     "ui_actions": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {
+                            "type": "string",
+                            "enum": list(ALLOWED_UI_ACTIONS),
+                        },
                     },
                     "citations_internal": {
                         "type": "array",

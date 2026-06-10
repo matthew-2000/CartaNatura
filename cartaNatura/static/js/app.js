@@ -21,6 +21,12 @@ let generatePdfReport;
 const ASSISTANT_PANEL_WIDTH_KEY = "cartaNatura.assistantPanelWidth";
 const ASSISTANT_PANEL_MIN_WIDTH = 320;
 const ASSISTANT_PANEL_MAX_WIDTH = 560;
+const ALLOWED_ASSISTANT_UI_ACTIONS = new Set([
+  "show_last_analysis",
+  "open_report_panel",
+  "show_legend",
+  "focus_map_results",
+]);
 
 async function loadModules() {
   const [apiModule, analysisModule, configModule, mapControllerModule, pdfExportModule] =
@@ -376,11 +382,12 @@ function setAssistantBusy(busy) {
 
 function appendAssistantMessage(role, text) {
   if (!text) {
-    return;
+    return -1;
   }
 
   state.assistantMessages.push({ role, text });
   renderAssistantMessages();
+  return state.assistantMessages.length - 1;
 }
 
 function startAssistantStreamingMessage() {
@@ -443,6 +450,50 @@ function removeAssistantMessage(messageIndex) {
   renderAssistantMessages();
 }
 
+function normalizeAssistantList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function normalizeAssistantUiActions(value) {
+  return normalizeAssistantList(value).filter((action) => ALLOWED_ASSISTANT_UI_ACTIONS.has(action));
+}
+
+function attachAssistantHints(messageIndex, uiHints = {}) {
+  const message = state.assistantMessages[messageIndex];
+  if (!message || message.role !== "assistant") {
+    return;
+  }
+
+  message.followUpSuggestions = normalizeAssistantList(uiHints.followUpSuggestions);
+  message.uiActions = normalizeAssistantUiActions(uiHints.uiActions);
+  renderAssistantMessages();
+}
+
+function applyAssistantUiActions(mapController, uiActions = []) {
+  const actions = normalizeAssistantUiActions(uiActions);
+  if (!actions.length) {
+    return;
+  }
+
+  for (const action of actions) {
+    if (action === "show_last_analysis" || action === "open_report_panel") {
+      renderInfoSummary();
+      openPopup(mapController);
+    } else if (action === "show_legend") {
+      setPanelCollapsed(elements.legendPanel, elements.toggleLegendPanelButton, false);
+    } else if (action === "focus_map_results") {
+      mapController.syncLayout();
+    }
+  }
+}
+
 function extractAssistantResponseText(response) {
   const assistantMessage = (response.messages || []).find((message) => message.role === "assistant");
   return assistantMessage?.text || "";
@@ -487,11 +538,39 @@ function renderAssistantMessages() {
         <article class="assistant-message assistant-message-${message.role}">
           <div class="assistant-message-role">${message.role === "user" ? "Tu" : "Assistente"}</div>
           <p>${escapeHtml(message.text || message.progressText || (message.streaming ? "..." : ""))}</p>
+          ${renderAssistantHintList(message)}
         </article>
       `
     )
     .join("");
   elements.assistantMessages.scrollTop = elements.assistantMessages.scrollHeight;
+}
+
+function renderAssistantHintList(message) {
+  const followUps = normalizeAssistantList(message.followUpSuggestions);
+  const uiActions = normalizeAssistantUiActions(message.uiActions);
+  if (!followUps.length && !uiActions.length) {
+    return "";
+  }
+
+  const followUpButtons = followUps
+    .map(
+      (item) =>
+        `<button type="button" class="assistant-suggestion" data-assistant-prompt="${escapeHtml(
+          item
+        )}">${escapeHtml(item)}</button>`
+    )
+    .join("");
+  const actionItems = uiActions
+    .map((item) => `<span class="assistant-ui-action">${escapeHtml(item)}</span>`)
+    .join("");
+
+  return `
+    <div class="assistant-message-hints">
+      ${followUpButtons}
+      ${actionItems}
+    </div>
+  `;
 }
 
 function buildInteractionContext(mapController) {
@@ -944,19 +1023,27 @@ async function runAssistantInteraction(mapController, message) {
         streamingMessageIndex,
         extractAssistantResponseText(response)
       );
+      attachAssistantHints(streamingMessageIndex, response.uiHints);
 
       if (!analysisApplied && response.analysisResult?.clipped) {
         applyAnalysisResult(mapController, response.analysisResult);
       }
     } else {
       response = await sendInteractionMessage(appConfig.interactionUrl, payload);
+      let lastAssistantMessageIndex = -1;
 
       for (const messageItem of response.messages || []) {
-        appendAssistantMessage(messageItem.role, messageItem.text);
+        const messageIndex = appendAssistantMessage(messageItem.role, messageItem.text);
+        if (messageItem.role === "assistant") {
+          lastAssistantMessageIndex = messageIndex;
+        }
       }
+
+      attachAssistantHints(lastAssistantMessageIndex, response.uiHints);
     }
 
     setAssistantStatus(response.uiHints?.providerMode || null, assistantConfig.providerConfigured);
+    applyAssistantUiActions(mapController, response.uiHints?.uiActions);
 
     if (response.uiHints?.mode === "reset") {
       resetAnalysis(mapController);
@@ -1086,6 +1173,17 @@ async function bootstrap() {
         runAssistantInteraction(mapController, prompt);
       });
     }
+
+    elements.assistantMessages.addEventListener("click", (event) => {
+      const suggestion = event.target.closest("[data-assistant-prompt]");
+      if (!suggestion) {
+        return;
+      }
+
+      const prompt = suggestion.dataset.assistantPrompt || "";
+      elements.assistantInput.value = prompt;
+      runAssistantInteraction(mapController, prompt);
+    });
   }
 
   elements.municipalitySearch.addEventListener("input", () => {

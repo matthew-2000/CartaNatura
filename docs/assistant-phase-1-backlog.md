@@ -1,5 +1,13 @@
 # Backlog Fase 1
 
+## Stato corrente
+
+- stato: implementata nel codice
+- verifica: `python manage.py test cartaNatura`
+- copertura attuale: tool GIS, registry, analysis store, UI context, orchestrator, runtime Responses API, SSE streaming, test unit/integration
+
+Nota: questo documento resta come storico del piano fase 1. Il lavoro successivo vive in [assistant-phase-2-hardening.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-2-hardening.md:1).
+
 ## Obiettivo
 
 Costruire tool layer GIS serio per assistente LLM.
@@ -19,12 +27,14 @@ Dentro fase 1:
 - persistenza minima stato analitico
 - test unit e integration per tool
 
-Fuori fase 1:
+Fuori fase 1 nel piano originale:
 
 - streaming UI
 - runtime completo Responses API
 - memoria conversazionale estesa
 - redesign completo pannello chat
+
+Stato reale: streaming UI e runtime Responses API sono gia presenti. Memoria conversazionale resta minima e volutamente server-side via sessione.
 
 ## Deliverable tecnici
 

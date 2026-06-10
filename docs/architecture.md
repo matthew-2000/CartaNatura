@@ -99,6 +99,33 @@ flowchart TD
   H --> I["Frontend aggrega categorie, CO2 e report"]
 ```
 
+## Interaction layer assistente
+
+Il progetto include anche un layer assistente sopra il GIS deterministico:
+
+```text
+Browser chat / mappa
+  -> POST /progettoGIS/cartaNatura/interact
+  -> POST /progettoGIS/cartaNatura/interact/stream
+
+Django interaction layer
+  -> InteractionOrchestrator
+  -> RuleBasedIntentResolver per fast-path deterministici
+  -> OpenAiAssistantRuntime per Responses API e tool use
+  -> ToolRegistry
+  -> AnalysisStore e SessionStore in sessione Django
+
+GIS tools
+  -> analyze_municipalities
+  -> analyze_selection
+  -> compare_recent_analyses
+  -> get_last_analysis
+  -> get_methodology
+```
+
+Regola architetturale: LLM interpreta e sintetizza, ma numeri GIS e confronti arrivano solo da tool backend.
+Le `uiActions` sono una allowlist server/client: il backend accetta solo azioni note nello schema structured output e il frontend filtra di nuovo prima di eseguire handler locali.
+
 ## Coordinate systems
 
 Il progetto usa CRS diversi a seconda della sorgente:
@@ -137,6 +164,6 @@ Dataset client-side ottimizzati per la UI:
 ## Debito tecnico residuo
 
 - separare ulteriormente il report PDF dal bootstrap applicativo
-- coprire più edge-case GIS nei test
+- estendere QA browser in CI quando esiste pipeline e2e dedicata
 - alleggerire ulteriormente gli asset statici residui
 - introdurre eventualmente un formato dati più efficiente per alcuni layer grandi

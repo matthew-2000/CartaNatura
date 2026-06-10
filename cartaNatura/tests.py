@@ -16,6 +16,7 @@ from cartaNatura.interaction import (
     SessionContext,
 )
 from cartaNatura.interaction.analysis_store import StoredAnalysis, new_stored_analysis
+from cartaNatura.interaction.observability import summarize_openai_usage
 from cartaNatura.interaction.orchestrator import build_default_orchestrator
 from cartaNatura.interaction.resolvers import RuleBasedIntentResolver
 from cartaNatura.interaction.session import InMemorySessionStore
@@ -25,6 +26,7 @@ from cartaNatura.interaction.tools.analysis_history import (
     get_last_analysis,
     get_recent_analyses,
 )
+from cartaNatura.interaction.tools.gis_analysis import analyze_selection
 from cartaNatura.interaction.ui_context import build_interaction_context
 from cartaNatura.interaction.tools.contracts import ToolName
 from cartaNatura.schemas import SelectionArea, SelectionRequest
@@ -192,6 +194,66 @@ class PayloadParsingTests(SimpleTestCase):
         with self.assertRaisesMessage(ValueError, "Area duplicata"):
             parse_selection_payload(payload)
 
+    def test_parse_selection_payload_rejects_empty_feature_collection(self):
+        payload = {
+            "areas": [
+                {
+                    "kind": "drawn",
+                    "geojson": {"type": "FeatureCollection", "features": []},
+                }
+            ]
+        }
+
+        with self.assertRaisesMessage(ValueError, "non contiene geometrie"):
+            parse_selection_payload(payload)
+
+    def test_parse_selection_payload_rejects_wrong_declared_crs(self):
+        payload = {
+            "areas": [
+                {
+                    "kind": "drawn",
+                    "geojson": {
+                        "type": "FeatureCollection",
+                        "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {},
+                                "geometry": box(0, 0, 1, 1).__geo_interface__,
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        with self.assertRaisesMessage(ValueError, "CRS non supportato"):
+            parse_selection_payload(payload)
+
+    def test_parse_selection_payload_accepts_urn_epsg_crs(self):
+        payload = {
+            "areas": [
+                {
+                    "kind": "drawn",
+                    "geojson": {
+                        "type": "FeatureCollection",
+                        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::4326"}},
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {},
+                                "geometry": box(0, 0, 1, 1).__geo_interface__,
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        selection = parse_selection_payload(payload)
+
+        self.assertEqual(selection.areas[0].kind, "drawn")
+
 
 class GisClipServiceTests(SimpleTestCase):
     @staticmethod
@@ -277,6 +339,38 @@ class GisClipServiceTests(SimpleTestCase):
 
         self.assertEqual(result.intersected_municipalities, ["Comune Uno"])
         self.assertFalse(result.clipped.empty)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_clip_selection_allows_area_without_nature_results(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = self._nature_shapes()
+        load_campania_boundaries.return_value = self._campania_boundaries()
+        selection = SelectionRequest(
+            areas=(
+                SelectionArea(
+                    kind="drawn",
+                    geojson={
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {},
+                                "geometry": box(10, 10, 11, 11).__geo_interface__,
+                            }
+                        ],
+                    },
+                ),
+            )
+        )
+
+        result = clip_selection(selection)
+
+        self.assertTrue(result.clipped.empty)
+        self.assertEqual(result.intersected_municipalities, [])
 
 
 @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies")
@@ -790,6 +884,8 @@ class InteractionOrchestratorTests(SimpleTestCase):
         self.assertEqual(response.commands[0].intent, InteractionIntent.COMPARE_ANALYSES)
         self.assertEqual(response.messages[0].text, "Confronto LLM mockato.")
         self.assertIn("delta", response.analysis_result)
+        self.assertEqual(response.analysis_result["left"]["requestedMunicipalities"], ["Avellino"])
+        self.assertEqual(response.analysis_result["right"]["requestedMunicipalities"], ["Benevento"])
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -1017,7 +1113,7 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
                     "id": "resp_final_1",
                     "output_text": (
                         '{"intent":"analyze_municipalities","assistant_text":"Analisi pronta.",'
-                        '"needs_clarification":false,"clarification_question":"","ui_actions":["show_last_analysis"],'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":["show_last_analysis","delete_everything"],'
                         '"citations_internal":["analysis_latest"],"follow_up_suggestions":["Confronta ultime due analisi"]}'
                     ),
                     "output": [],
@@ -1054,9 +1150,12 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
         self.assertEqual(provider.calls[1]["previous_response_id"], "resp_tool_1")
         self.assertEqual(provider.calls[2]["previous_response_id"], "resp_tool_2")
         self.assertNotIn("clipped", provider.calls[2]["input"][0]["output"])
+        self.assertNotIn("selectionPayload", provider.calls[2]["input"][0]["output"])
+        self.assertEqual(response.ui_hints["uiActions"], ["show_last_analysis"])
         grounded_prompt = provider.calls[0]["input"][0]["content"][0]["text"]
         self.assertIn('"vegetationCategories"', grounded_prompt)
         self.assertIn('"Castagneti"', grounded_prompt)
+        self.assertNotIn('"codes"', grounded_prompt)
         self.assertIn('"availableTools"', grounded_prompt)
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
@@ -1266,3 +1365,98 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
 
         self.assertEqual(payload["suggestions"], ["Avellino"])
         self.assertIn("Avellino", payload["matches"])
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_analyze_selection_returns_empty_supported_summary_for_area_without_nature(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+
+        payload = analyze_selection(
+            selection_payload={
+                "areas": [
+                    {
+                        "kind": "drawn",
+                        "geojson": {
+                            "type": "FeatureCollection",
+                            "features": [
+                                {
+                                    "type": "Feature",
+                                    "properties": {},
+                                    "geometry": box(10, 10, 11, 11).__geo_interface__,
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertFalse(payload["summary"]["hasSupportedVegetation"])
+        self.assertEqual(payload["summary"]["items"], [])
+        self.assertEqual(payload["intersectedMunicipalities"], [])
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_analyze_selection_handles_mixed_municipality_and_drawn_payload(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+
+        payload = analyze_selection(
+            selection_payload={
+                "areas": [
+                    {
+                        "kind": "municipalities",
+                        "geojson": GisClipServiceTests._municipality_geojson("Comune Uno"),
+                    },
+                    {
+                        "kind": "drawn",
+                        "geojson": GisClipServiceTests._drawn_geojson(),
+                    },
+                ]
+            }
+        )
+
+        self.assertTrue(payload["summary"]["hasSupportedVegetation"])
+        self.assertEqual(payload["intersectedMunicipalities"], ["Comune Uno"])
+
+
+class ObservabilityTests(SimpleTestCase):
+    def test_summarize_openai_usage_accepts_responses_usage_shape(self):
+        usage = summarize_openai_usage(
+            {
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20,
+                }
+            }
+        )
+
+        self.assertEqual(
+            usage,
+            {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+        )
+
+    def test_summarize_openai_usage_falls_back_to_legacy_token_names(self):
+        usage = summarize_openai_usage(
+            {
+                "usage": {
+                    "prompt_tokens": "7",
+                    "completion_tokens": "3",
+                }
+            }
+        )
+
+        self.assertEqual(
+            usage,
+            {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+        )

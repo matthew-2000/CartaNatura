@@ -253,4 +253,5 @@ Fase 0 finisce quando team puo iniziare implementazione senza altre scelte archi
 
 Step successivo:
 
-- costruzione tool layer GIS e contratti strutturati
+- fase 1 completata nel codice: tool layer GIS, contratti strutturati, analysis store, orchestrator e runtime Responses API
+- prossimo step: hardening fase 2, con validazione reale, osservabilita, QA GIS edge-case e rifinitura UI actions
