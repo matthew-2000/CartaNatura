@@ -1,5 +1,13 @@
 # AI Interaction Research
 
+## Stato documento
+
+- stato: storico
+- data riferimento: fase research precedente all'implementazione dell'assistente
+- stato attuale codice: vedere [assistant-phase-3-demo-readiness.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-3-demo-readiness.md:1)
+
+Le sezioni sotto descrivono il punto di partenza e le decisioni architetturali iniziali. Non rappresentano piu lo stato runtime corrente.
+
 ## Obiettivo della feature
 
 Preparare `CartaNatura` a una nuova modalita di interazione indipendente dal canale di input, capace di supportare:

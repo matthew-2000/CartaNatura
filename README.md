@@ -8,7 +8,9 @@ Web GIS Django + Leaflet per analizzare la vegetazione forestale in Campania a p
 - Frontend modularizzato in ES modules
 - UI desktop e mobile rifinita
 - Dataset locali inclusi nella repository
-- Test automatici minimi presenti su parsing payload, servizio GIS e smoke view
+- Assistente WebGIS con OpenAI Responses API, tool GIS deterministici, SSE streaming e stato sessione server-side
+- `uiActions` validate con allowlist server/client
+- Test automatici su parsing payload, edge-case GIS, orchestrator, runtime assistant, tool registry e smoke view
 
 ## Stack
 
@@ -51,6 +53,10 @@ Le variabili supportate sono:
 - `DJANGO_DEBUG`
 - `DJANGO_ALLOWED_HOSTS`
 - `DJANGO_CORS_ALLOWED_ORIGINS`
+- `AI_ASSISTANT_ENABLED`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `OPENAI_BASE_URL`
 
 Vedi [.env.example](/Users/matteoercolino/IdeaProjects/CartaNatura/.env.example:1).
 
@@ -102,6 +108,8 @@ Documentazione consigliata:
 - [docs/ai-interaction-research.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/ai-interaction-research.md:1)
 - [docs/assistant-product-contract.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-product-contract.md:1)
 - [docs/assistant-phase-1-backlog.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-1-backlog.md:1)
+- [docs/assistant-phase-2-hardening.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-2-hardening.md:1)
+- [docs/assistant-phase-3-demo-readiness.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-3-demo-readiness.md:1)
 
 ## Flusso applicativo
 
@@ -110,6 +118,7 @@ Documentazione consigliata:
 3. Django valida il payload, costruisce la maschera di analisi e fa il clip sul dataset Carta della Natura.
 4. Il frontend renderizza i risultati, aggrega le categorie vegetazionali e produce il report analitico.
 5. L'utente può stimare un valore economico ed esportare il report in PDF.
+6. L'utente può usare l'assistente per analizzare comuni, analizzare la selezione corrente, spiegare l'ultimo risultato e confrontare analisi recenti.
 
 ## Datasets inclusi
 
@@ -124,7 +133,7 @@ Questo rende il repository pesante. Se il progetto evolve, una direzione sensata
 ## Limiti noti
 
 - Il progetto usa SQLite per sviluppo locale.
-- I test non coprono ancora in profondità tutti i casi GIS edge-case.
+- Alcuni edge-case GIS sono coperti, ma non esiste ancora una pipeline e2e browser in CI.
 - Gli asset statici sono ancora più pesanti del necessario.
 - Il Docker setup è orientato a sviluppo, non a produzione.
 

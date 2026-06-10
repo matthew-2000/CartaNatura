@@ -2,9 +2,11 @@
 
 ## Stato documento
 
-- stato: approvato per sviluppo
-- ambito: fase 0 del programma assistente LLM
+- stato: storico, implementato fino a fase 3 demo readiness
+- ambito originale: fase 0 del programma assistente LLM
 - target: assistente WebGIS reale, non rule-based, non mockato
+
+Nota 2026-06-10: i limiti descritti nella sezione "Problema da risolvere" sono il punto di partenza storico. Il codice attuale include Responses API, tool use, stato server-side, SSE streaming, osservabilita minima e `uiActions` validate.
 
 ## Obiettivo
 
@@ -251,7 +253,12 @@ Fase 0 chiusa solo se esistono:
 
 Fase 0 finisce quando team puo iniziare implementazione senza altre scelte architetturali bloccanti.
 
-Step successivo:
+Stato implementazione:
 
 - fase 1 completata nel codice: tool layer GIS, contratti strutturati, analysis store, orchestrator e runtime Responses API
-- prossimo step: hardening fase 2, con validazione reale, osservabilita, QA GIS edge-case e rifinitura UI actions
+- fase 2 completata: osservabilita minima, validazione reale, QA GIS edge-case e documentazione
+- fase 3 completata: demo readiness, `uiActions` allowlist, payload/costi alleggeriti e QA browser desktop/mobile
+
+Step successivo:
+
+- aprire PR/merge verso branch principale oppure procedere a staging/deploy

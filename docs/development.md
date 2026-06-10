@@ -34,6 +34,10 @@ DJANGO_SECRET_KEY=change-me
 DJANGO_DEBUG=true
 DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost
 DJANGO_CORS_ALLOWED_ORIGINS=
+AI_ASSISTANT_ENABLED=true
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 ## Comandi standard
@@ -95,11 +99,23 @@ Non è ancora un setup production-grade.
 
 1. Aprire la home.
 2. Selezionare almeno un comune.
-3. Eseguire `Estrai`.
-4. Aprire `Analisi`.
+3. Eseguire `Analizza`.
+4. Aprire `Report`.
 5. Calcolare un valore economico.
 6. Verificare export PDF.
 7. Verificare layout desktop e mobile.
+
+## Testing assistente consigliato
+
+Richiede `OPENAI_API_KEY` configurata.
+
+1. Aprire `Assistente`.
+2. Inviare `analizza Avellino`.
+3. Verificare che mappa e report si aggiornino.
+4. Inviare un follow-up, ad esempio `spiega ultimo risultato`.
+5. Eseguire una seconda analisi e poi `confronta ultime due analisi`.
+6. Provare una richiesta ambigua, ad esempio `analizza san`, e verificare che venga chiesto chiarimento.
+7. Verificare console browser senza errori o warning rilevanti.
 
 ## Troubleshooting
 
