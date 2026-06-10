@@ -71,6 +71,7 @@ const elements = {
   assistantPanel: document.getElementById("assistantPanel"),
   assistantTitle: document.querySelector(".assistant-panel-title"),
   assistantStatus: document.getElementById("assistantStatus"),
+  assistantRailToggle: document.getElementById("assistantRailToggle"),
   assistantMessages: document.getElementById("assistantMessages"),
   assistantForm: document.getElementById("assistantForm"),
   assistantInput: document.getElementById("assistantInput"),
@@ -116,50 +117,82 @@ function setBusy(mapController, busy) {
   mapController.setInteractionDisabled(busy);
 }
 
+function revealPanel(element) {
+  if (!element) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    element.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+}
+
 function openPopup(mapController) {
   elements.popup.classList.add("open-popup");
   elements.popup.setAttribute("aria-hidden", "false");
-  mapController.setInteractionDisabled(true);
+  revealPanel(elements.popup);
 }
 
 function closePopup(mapController) {
   elements.popup.classList.remove("open-popup");
   elements.popup.setAttribute("aria-hidden", "true");
-  mapController.setInteractionDisabled(false);
 }
 
 function openAppInfo(mapController) {
   elements.appInfoModal.classList.add("open-infoApp");
   elements.appInfoModal.setAttribute("aria-hidden", "false");
-  mapController.setInteractionDisabled(true);
+  document.body.classList.add("guide-modal-open");
+  revealPanel(elements.appInfoModal);
 }
 
 function closeAppInfo(mapController) {
   elements.appInfoModal.classList.remove("open-infoApp");
   elements.appInfoModal.setAttribute("aria-hidden", "true");
-  mapController.setInteractionDisabled(false);
+  document.body.classList.remove("guide-modal-open");
 }
 
-function openAssistantPanel() {
+function syncAssistantLayout(mapController = null) {
+  if (!mapController) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    mapController.syncLayout();
+    window.setTimeout(() => {
+      mapController.syncLayout();
+    }, 260);
+  });
+}
+
+function openAssistantPanel(mapController = null) {
   if (!assistantConfig.enabled) {
     return;
   }
   elements.assistantPanel.classList.add("is-open");
   elements.assistantPanel.setAttribute("aria-hidden", "false");
+  document.body.classList.add("assistant-panel-open");
+  elements.openAssistantButton?.setAttribute("aria-expanded", "true");
+  elements.assistantRailToggle?.setAttribute("aria-expanded", "true");
+  revealPanel(elements.assistantPanel);
+  syncAssistantLayout(mapController);
 }
 
-function closeAssistantPanel() {
+function closeAssistantPanel(mapController = null) {
   elements.assistantPanel.classList.remove("is-open");
   elements.assistantPanel.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("assistant-panel-open");
+  elements.openAssistantButton?.setAttribute("aria-expanded", "false");
+  elements.assistantRailToggle?.setAttribute("aria-expanded", "false");
+  syncAssistantLayout(mapController);
 }
 
-function toggleAssistantPanel() {
+function toggleAssistantPanel(mapController = null) {
   if (elements.assistantPanel.classList.contains("is-open")) {
-    closeAssistantPanel();
+    closeAssistantPanel(mapController);
     return;
   }
 
-  openAssistantPanel();
+  openAssistantPanel(mapController);
 }
 
 function syncMunicipalityPanelState() {
@@ -172,6 +205,9 @@ function syncMunicipalityPanelState() {
 function toggleMunicipalityPanel() {
   elements.municipalityPanel.classList.toggle("visualizzaListaComuni");
   syncMunicipalityPanelState();
+  if (elements.municipalityPanel.classList.contains("visualizzaListaComuni")) {
+    revealPanel(elements.municipalityPanel);
+  }
 }
 
 function closeMunicipalityPanel() {
@@ -186,6 +222,9 @@ function setPanelCollapsed(panelElement, buttonElement, collapsed) {
   panelElement.classList.toggle("is-collapsed", collapsed);
   buttonElement.setAttribute("aria-expanded", String(!collapsed));
   buttonElement.textContent = collapsed ? "Apri" : "Riduci";
+  if (panelElement === elements.legendPanel) {
+    document.body.classList.toggle("legend-modal-open", !collapsed);
+  }
 }
 
 function togglePanel(panelElement, buttonElement) {
@@ -246,6 +285,7 @@ function startAssistantStreamingMessage() {
   state.assistantMessages.push({
     role: "assistant",
     text: "",
+    progressText: "Richiesta ricevuta...",
     streaming: true,
   });
   renderAssistantMessages();
@@ -262,7 +302,18 @@ function appendAssistantStreamingDelta(messageIndex, delta) {
     return;
   }
 
+  message.progressText = "";
   message.text += delta;
+  renderAssistantMessages();
+}
+
+function setAssistantStreamingProgress(messageIndex, progressText) {
+  const message = state.assistantMessages[messageIndex];
+  if (!message || message.text) {
+    return;
+  }
+
+  message.progressText = progressText;
   renderAssistantMessages();
 }
 
@@ -276,6 +327,7 @@ function finalizeAssistantStreamingMessage(messageIndex, fallbackText = "") {
     message.text = fallbackText;
   }
 
+  delete message.progressText;
   delete message.streaming;
   renderAssistantMessages();
 }
@@ -294,13 +346,45 @@ function extractAssistantResponseText(response) {
   return assistantMessage?.text || "";
 }
 
+function describeAssistantToolProgress(toolName) {
+  if (toolName === "search_municipalities") {
+    return "Sto cercando i comuni corretti...";
+  }
+
+  if (toolName === "analyze_municipalities") {
+    return "Sto analizzando i comuni richiesti sulla mappa...";
+  }
+
+  if (toolName === "analyze_current_selection") {
+    return "Sto analizzando la selezione corrente...";
+  }
+
+  if (toolName === "get_last_analysis") {
+    return "Sto recuperando l'ultima analisi...";
+  }
+
+  if (toolName === "compare_recent_analyses") {
+    return "Sto confrontando le ultime analisi...";
+  }
+
+  if (toolName === "get_methodology") {
+    return "Sto recuperando la metodologia...";
+  }
+
+  if (toolName === "reset_analysis_context") {
+    return "Sto azzerando il contesto di sessione...";
+  }
+
+  return "Sto elaborando la richiesta...";
+}
+
 function renderAssistantMessages() {
   elements.assistantMessages.innerHTML = state.assistantMessages
     .map(
       (message) => `
         <article class="assistant-message assistant-message-${message.role}">
           <div class="assistant-message-role">${message.role === "user" ? "Tu" : "Assistente"}</div>
-          <p>${escapeHtml(message.text || (message.streaming ? "..." : ""))}</p>
+          <p>${escapeHtml(message.text || message.progressText || (message.streaming ? "..." : ""))}</p>
         </article>
       `
     )
@@ -700,7 +784,7 @@ async function runAssistantInteraction(mapController, message) {
 
   appendAssistantMessage("user", trimmedMessage);
   elements.assistantInput.value = "";
-  openAssistantPanel();
+  openAssistantPanel(mapController);
   setAssistantBusy(true);
 
   try {
@@ -716,6 +800,25 @@ async function runAssistantInteraction(mapController, message) {
 
       try {
         response = await sendInteractionMessageStream(appConfig.interactionStreamUrl, payload, {
+          onStatus: (event) => {
+            if (event.phase === "started") {
+              setAssistantStreamingProgress(streamingMessageIndex, "Richiesta ricevuta...");
+            } else if (event.phase === "model_created") {
+              setAssistantStreamingProgress(streamingMessageIndex, "Sto preparando la risposta...");
+            }
+          },
+          onToolPending: (event) => {
+            setAssistantStreamingProgress(
+              streamingMessageIndex,
+              describeAssistantToolProgress(event.toolName)
+            );
+          },
+          onToolStart: (event) => {
+            setAssistantStreamingProgress(
+              streamingMessageIndex,
+              describeAssistantToolProgress(event.toolName)
+            );
+          },
           onMessageDelta: (event) => {
             appendAssistantStreamingDelta(streamingMessageIndex, event.delta || "");
           },
@@ -724,6 +827,10 @@ async function runAssistantInteraction(mapController, message) {
               applyAnalysisResult(mapController, event.analysisResult);
               analysisApplied = true;
             }
+            setAssistantStreamingProgress(
+              streamingMessageIndex,
+              "Analisi completata. Sto scrivendo la risposta..."
+            );
           },
         });
       } catch (error) {
@@ -777,6 +884,10 @@ async function runAssistantInteraction(mapController, message) {
 async function bootstrap() {
   syncChromeOffset();
 
+  if (elements.appInfoModal?.parentElement !== document.body) {
+    document.body.appendChild(elements.appInfoModal);
+  }
+
   const [municipalitySource, municipalityBoundaries] = await Promise.all([
     fetchGeoJson(appConfig.datasets.municipalitiesUrl),
     fetchGeoJson(appConfig.datasets.boundariesUrl),
@@ -820,7 +931,11 @@ async function bootstrap() {
 
   if (assistantConfig.enabled) {
     elements.openAssistantButton.addEventListener("click", () => {
-      toggleAssistantPanel();
+      toggleAssistantPanel(mapController);
+    });
+
+    elements.assistantRailToggle?.addEventListener("click", () => {
+      toggleAssistantPanel(mapController);
     });
   }
 
@@ -851,7 +966,7 @@ async function bootstrap() {
 
   if (assistantConfig.enabled) {
     elements.closeAssistantButton.addEventListener("click", () => {
-      closeAssistantPanel();
+      closeAssistantPanel(mapController);
     });
 
     elements.assistantForm.addEventListener("submit", (event) => {
@@ -882,6 +997,10 @@ async function bootstrap() {
   window.addEventListener("orientationchange", syncChromeOffset);
 
   document.addEventListener("click", (event) => {
+    if (window.innerWidth > 920) {
+      return;
+    }
+
     if (
       !elements.municipalityPanel.contains(event.target) &&
       event.target !== elements.selectMunicipalityButton
@@ -906,7 +1025,7 @@ async function bootstrap() {
     }
 
     if (elements.assistantPanel.classList.contains("is-open")) {
-      closeAssistantPanel();
+      closeAssistantPanel(mapController);
       return;
     }
 

@@ -267,6 +267,10 @@ export class MapController {
     container.classList.toggle("map-disabled", disabled);
   }
 
+  syncLayout() {
+    this.map.invalidateSize({ pan: false, debounceMoveend: true });
+  }
+
   _fitToUserInputs() {
     const group = new L.FeatureGroup();
 
