@@ -18,6 +18,10 @@ let priceOptions;
 let MapController;
 let generatePdfReport;
 
+const ASSISTANT_PANEL_WIDTH_KEY = "cartaNatura.assistantPanelWidth";
+const ASSISTANT_PANEL_MIN_WIDTH = 320;
+const ASSISTANT_PANEL_MAX_WIDTH = 560;
+
 async function loadModules() {
   const [apiModule, analysisModule, configModule, mapControllerModule, pdfExportModule] =
     await Promise.all([
@@ -71,7 +75,7 @@ const elements = {
   assistantPanel: document.getElementById("assistantPanel"),
   assistantTitle: document.querySelector(".assistant-panel-title"),
   assistantStatus: document.getElementById("assistantStatus"),
-  assistantRailToggle: document.getElementById("assistantRailToggle"),
+  assistantResizeHandle: document.getElementById("assistantResizeHandle"),
   assistantMessages: document.getElementById("assistantMessages"),
   assistantForm: document.getElementById("assistantForm"),
   assistantInput: document.getElementById("assistantInput"),
@@ -118,14 +122,29 @@ function setBusy(mapController, busy) {
   mapController.setInteractionDisabled(busy);
 }
 
-function revealPanel(element) {
-  if (!element) {
-    return;
+function clampAssistantPanelWidth(width) {
+  const viewportLimit = Math.max(
+    ASSISTANT_PANEL_MIN_WIDTH,
+    Math.min(ASSISTANT_PANEL_MAX_WIDTH, Math.floor(window.innerWidth * 0.42))
+  );
+  return Math.max(ASSISTANT_PANEL_MIN_WIDTH, Math.min(Number(width) || 0, viewportLimit));
+}
+
+function setAssistantPanelWidth(width, { persist = true, mapController = null } = {}) {
+  const nextWidth = clampAssistantPanelWidth(width);
+  document.documentElement.style.setProperty("--assistant-panel-width", `${nextWidth}px`);
+  elements.assistantResizeHandle?.setAttribute("aria-valuenow", String(nextWidth));
+
+  if (persist) {
+    localStorage.setItem(ASSISTANT_PANEL_WIDTH_KEY, String(nextWidth));
   }
 
-  window.requestAnimationFrame(() => {
-    element.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  });
+  syncSidePanelLayout(mapController);
+}
+
+function restoreAssistantPanelWidth() {
+  const storedWidth = Number(localStorage.getItem(ASSISTANT_PANEL_WIDTH_KEY));
+  setAssistantPanelWidth(storedWidth || 390, { persist: false });
 }
 
 function syncSidePanelLayout(mapController = null) {
@@ -144,6 +163,71 @@ function syncSidePanelLayout(mapController = null) {
       }, 220);
     });
   }
+}
+
+function initializeAssistantResize(mapController) {
+  if (!elements.assistantResizeHandle) {
+    return;
+  }
+
+  let isDragging = false;
+
+  const stopDragging = () => {
+    if (!isDragging) {
+      return;
+    }
+    isDragging = false;
+    document.body.classList.remove("assistant-resizing");
+    window.removeEventListener("pointermove", handlePointerMove);
+    window.removeEventListener("pointerup", stopDragging);
+    syncSidePanelLayout(mapController);
+  };
+
+  function handlePointerMove(event) {
+    if (!isDragging) {
+      return;
+    }
+    setAssistantPanelWidth(window.innerWidth - event.clientX, { mapController });
+  }
+
+  elements.assistantResizeHandle.addEventListener("pointerdown", (event) => {
+    if (window.innerWidth <= 720) {
+      return;
+    }
+    isDragging = true;
+    document.body.classList.add("assistant-resizing");
+    elements.assistantResizeHandle.setPointerCapture?.(event.pointerId);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    event.preventDefault();
+  });
+
+  elements.assistantResizeHandle.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      return;
+    }
+
+    const currentWidth =
+      Number.parseInt(
+        getComputedStyle(document.documentElement).getPropertyValue("--assistant-panel-width"),
+        10
+      ) || 390;
+    const step = event.shiftKey ? 48 : 24;
+    let nextWidth = currentWidth;
+
+    if (event.key === "ArrowLeft") {
+      nextWidth = currentWidth + step;
+    } else if (event.key === "ArrowRight") {
+      nextWidth = currentWidth - step;
+    } else if (event.key === "Home") {
+      nextWidth = ASSISTANT_PANEL_MIN_WIDTH;
+    } else if (event.key === "End") {
+      nextWidth = ASSISTANT_PANEL_MAX_WIDTH;
+    }
+
+    setAssistantPanelWidth(nextWidth, { mapController });
+    event.preventDefault();
+  });
 }
 
 function openPopup(mapController) {
@@ -178,19 +262,6 @@ function closeAppInfo(mapController) {
   syncSidePanelLayout(mapController);
 }
 
-function syncAssistantLayout(mapController = null) {
-  if (!mapController) {
-    return;
-  }
-
-  window.requestAnimationFrame(() => {
-    mapController.syncLayout();
-    window.setTimeout(() => {
-      mapController.syncLayout();
-    }, 260);
-  });
-}
-
 function openAssistantPanel(mapController = null) {
   if (!assistantConfig.enabled) {
     return;
@@ -202,7 +273,7 @@ function openAssistantPanel(mapController = null) {
   elements.assistantPanel.setAttribute("aria-hidden", "false");
   document.body.classList.add("assistant-panel-open");
   elements.openAssistantButton?.setAttribute("aria-expanded", "true");
-  elements.assistantRailToggle?.setAttribute("aria-expanded", "true");
+  restoreAssistantPanelWidth();
   syncSidePanelLayout(mapController);
 }
 
@@ -211,7 +282,6 @@ function closeAssistantPanel(mapController = null) {
   elements.assistantPanel.setAttribute("aria-hidden", "true");
   document.body.classList.remove("assistant-panel-open");
   elements.openAssistantButton?.setAttribute("aria-expanded", "false");
-  elements.assistantRailToggle?.setAttribute("aria-expanded", "false");
   syncSidePanelLayout(mapController);
 }
 
@@ -915,6 +985,7 @@ async function runAssistantInteraction(mapController, message) {
 
 async function bootstrap() {
   syncChromeOffset();
+  restoreAssistantPanelWidth();
 
   if (elements.appInfoModal?.parentElement !== document.body) {
     document.body.appendChild(elements.appInfoModal);
@@ -950,6 +1021,7 @@ async function bootstrap() {
   setAssistantStatus(null, assistantConfig.providerConfigured);
   renderAssistantMessages();
   updateActionStates(mapController);
+  initializeAssistantResize(mapController);
 
   if (!assistantConfig.enabled) {
     elements.openAssistantButton.hidden = true;
@@ -966,9 +1038,6 @@ async function bootstrap() {
       toggleAssistantPanel(mapController);
     });
 
-    elements.assistantRailToggle?.addEventListener("click", () => {
-      toggleAssistantPanel(mapController);
-    });
   }
 
   elements.resetButton.addEventListener("click", () => {
@@ -1029,8 +1098,16 @@ async function bootstrap() {
     });
   }
 
-  window.addEventListener("resize", syncChromeOffset);
-  window.addEventListener("orientationchange", syncChromeOffset);
+  window.addEventListener("resize", () => {
+    syncChromeOffset();
+    restoreAssistantPanelWidth();
+    syncSidePanelLayout(mapController);
+  });
+  window.addEventListener("orientationchange", () => {
+    syncChromeOffset();
+    restoreAssistantPanelWidth();
+    syncSidePanelLayout(mapController);
+  });
 
   document.addEventListener("click", (event) => {
     if (window.innerWidth > 920) {
