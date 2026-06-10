@@ -47,7 +47,7 @@ const state = {
   assistantMessages: [
     {
       role: "assistant",
-      text: "Assistente AI pronto.",
+      text: "Assistente pronto.",
     },
   ],
   assistantBusy: false,
@@ -80,6 +80,7 @@ const elements = {
   infoContainer: document.getElementById("infoNatura"),
   closePopupButton: document.getElementById("butchiudipopup"),
   appInfoModal: document.getElementById("infoApplicazione"),
+  closeAppInfoTopButton: document.getElementById("closeInfoAppTop"),
   closeAppInfoButton: document.getElementById("closeInfoApp"),
   statusContent: document.getElementById("statusContent"),
   legendContent: document.getElementById("legendContent"),
@@ -113,7 +114,7 @@ function setBusy(mapController, busy) {
   elements.runAnalysisButton.disabled = busy;
   elements.infoButton.disabled = busy;
   elements.appInfoButton.disabled = busy;
-  elements.runAnalysisButton.textContent = busy ? "Estrazione..." : "Estrai";
+  elements.runAnalysisButton.textContent = busy ? "Analisi..." : "Analizza";
   mapController.setInteractionDisabled(busy);
 }
 
@@ -127,28 +128,54 @@ function revealPanel(element) {
   });
 }
 
+function syncSidePanelLayout(mapController = null) {
+  document.body.classList.toggle(
+    "side-panel-open",
+    elements.municipalityPanel.classList.contains("visualizzaListaComuni") ||
+      elements.popup.classList.contains("open-popup") ||
+      elements.assistantPanel.classList.contains("is-open")
+  );
+
+  if (mapController) {
+    window.requestAnimationFrame(() => {
+      mapController.syncLayout();
+      window.setTimeout(() => {
+        mapController.syncLayout();
+      }, 220);
+    });
+  }
+}
+
 function openPopup(mapController) {
+  closeMunicipalityPanel();
+  closeAssistantPanel();
+  closeAppInfo();
   elements.popup.classList.add("open-popup");
   elements.popup.setAttribute("aria-hidden", "false");
-  revealPanel(elements.popup);
+  syncSidePanelLayout(mapController);
 }
 
 function closePopup(mapController) {
   elements.popup.classList.remove("open-popup");
   elements.popup.setAttribute("aria-hidden", "true");
+  syncSidePanelLayout(mapController);
 }
 
 function openAppInfo(mapController) {
+  closeMunicipalityPanel();
+  closePopup();
+  closeAssistantPanel();
   elements.appInfoModal.classList.add("open-infoApp");
   elements.appInfoModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("guide-modal-open");
-  revealPanel(elements.appInfoModal);
+  syncSidePanelLayout(mapController);
 }
 
 function closeAppInfo(mapController) {
   elements.appInfoModal.classList.remove("open-infoApp");
   elements.appInfoModal.setAttribute("aria-hidden", "true");
   document.body.classList.remove("guide-modal-open");
+  syncSidePanelLayout(mapController);
 }
 
 function syncAssistantLayout(mapController = null) {
@@ -168,13 +195,15 @@ function openAssistantPanel(mapController = null) {
   if (!assistantConfig.enabled) {
     return;
   }
+  closeMunicipalityPanel();
+  closePopup();
+  closeAppInfo();
   elements.assistantPanel.classList.add("is-open");
   elements.assistantPanel.setAttribute("aria-hidden", "false");
   document.body.classList.add("assistant-panel-open");
   elements.openAssistantButton?.setAttribute("aria-expanded", "true");
   elements.assistantRailToggle?.setAttribute("aria-expanded", "true");
-  revealPanel(elements.assistantPanel);
-  syncAssistantLayout(mapController);
+  syncSidePanelLayout(mapController);
 }
 
 function closeAssistantPanel(mapController = null) {
@@ -183,7 +212,7 @@ function closeAssistantPanel(mapController = null) {
   document.body.classList.remove("assistant-panel-open");
   elements.openAssistantButton?.setAttribute("aria-expanded", "false");
   elements.assistantRailToggle?.setAttribute("aria-expanded", "false");
-  syncAssistantLayout(mapController);
+  syncSidePanelLayout(mapController);
 }
 
 function toggleAssistantPanel(mapController = null) {
@@ -202,17 +231,20 @@ function syncMunicipalityPanelState() {
   );
 }
 
-function toggleMunicipalityPanel() {
-  elements.municipalityPanel.classList.toggle("visualizzaListaComuni");
+function toggleMunicipalityPanel(mapController = null) {
+  const shouldOpen = !elements.municipalityPanel.classList.contains("visualizzaListaComuni");
+  closePopup();
+  closeAssistantPanel();
+  closeAppInfo();
+  elements.municipalityPanel.classList.toggle("visualizzaListaComuni", shouldOpen);
   syncMunicipalityPanelState();
-  if (elements.municipalityPanel.classList.contains("visualizzaListaComuni")) {
-    revealPanel(elements.municipalityPanel);
-  }
+  syncSidePanelLayout(mapController);
 }
 
-function closeMunicipalityPanel() {
+function closeMunicipalityPanel(mapController = null) {
   elements.municipalityPanel.classList.remove("visualizzaListaComuni");
   syncMunicipalityPanelState();
+  syncSidePanelLayout(mapController);
 }
 
 function setPanelCollapsed(panelElement, buttonElement, collapsed) {
@@ -255,7 +287,7 @@ function setAssistantStatus(providerMode = null, configured = false) {
   if (!assistantConfig.enabled) {
     statusText = configured ? "Assistente disattivato" : "Assistente non configurato";
   } else if (providerMode === "openai" || configured) {
-    statusText = "LLM configurato";
+    statusText = "Pronto";
   }
 
   elements.assistantStatus.textContent = statusText;
@@ -348,34 +380,34 @@ function extractAssistantResponseText(response) {
 
 function describeAssistantToolProgress(toolName) {
   if (toolName === "search_municipalities") {
-    return "Sto cercando i comuni corretti...";
+    return "Cerco i comuni indicati...";
   }
 
   if (toolName === "analyze_municipalities") {
-    return "Sto analizzando i comuni richiesti sulla mappa...";
+    return "Analizzo i comuni richiesti...";
   }
 
   if (toolName === "analyze_current_selection") {
-    return "Sto analizzando la selezione corrente...";
+    return "Analizzo la selezione corrente...";
   }
 
   if (toolName === "get_last_analysis") {
-    return "Sto recuperando l'ultima analisi...";
+    return "Recupero l'ultimo report...";
   }
 
   if (toolName === "compare_recent_analyses") {
-    return "Sto confrontando le ultime analisi...";
+    return "Confronto gli ultimi report...";
   }
 
   if (toolName === "get_methodology") {
-    return "Sto recuperando la metodologia...";
+    return "Recupero la metodologia...";
   }
 
   if (toolName === "reset_analysis_context") {
-    return "Sto azzerando il contesto di sessione...";
+    return "Azzero la sessione...";
   }
 
-  return "Sto elaborando la richiesta...";
+  return "Elaboro la richiesta...";
 }
 
 function renderAssistantMessages() {
@@ -461,16 +493,16 @@ function renderStatusPanel({ selectedMunicipalityCount = 0, drawnFeatureCount = 
         state.summary.totalCo2
       )} t CO2/anno`
     : state.summary
-      ? "nessuna vegetazione supportata"
-      : "nessuna analisi";
+      ? "nessuna categoria supportata"
+      : "non avviata";
 
   elements.statusContent.innerHTML = `
     <div class="status-chip">
-      <span class="status-label">Input comuni</span>
+      <span class="status-label">Comuni</span>
       <strong class="status-value">${inputMunicipalities}</strong>
     </div>
     <div class="status-chip">
-      <span class="status-label">Input geometrie</span>
+      <span class="status-label">Geometrie</span>
       <strong class="status-value">${inputGeometries}</strong>
     </div>
     <div class="status-chip">
@@ -541,8 +573,8 @@ function renderInfoSummary() {
   if (!state.summary) {
     elements.infoContainer.innerHTML = `
       <div class="analysis-empty-state">
-        <h3>Nessuna analisi disponibile</h3>
-        <p>Seleziona uno o piu comuni, oppure disegna un'area sulla mappa, poi esegui l'estrazione.</p>
+        <h3>Nessun report disponibile</h3>
+        <p>Seleziona uno o più comuni, oppure disegna un'area sulla mappa, poi avvia l'analisi.</p>
       </div>
     `;
     return;
@@ -551,8 +583,8 @@ function renderInfoSummary() {
   if (!state.summary.hasSupportedVegetation) {
     elements.infoContainer.innerHTML = `
       <div class="analysis-empty-state">
-        <h3>Nessuna vegetazione supportata</h3>
-        <p>L'area estratta non contiene categorie forestali comprese nell'analisi corrente.</p>
+        <h3>Nessuna categoria forestale supportata</h3>
+        <p>L'area analizzata non contiene categorie forestali supportate dal modello corrente.</p>
       </div>
     `;
     return;
@@ -587,11 +619,11 @@ function renderInfoSummary() {
     <div class="summary-section analysis-summary">
       <div class="analysis-metrics-grid">
         <article class="analysis-metric-card">
-          <span class="analysis-metric-label">CO2 annua</span>
+          <span class="analysis-metric-label">CO2 annua stimata</span>
           <strong class="analysis-metric-value">${formatRoundedNumber(state.summary.totalCo2)} t</strong>
         </article>
         <article class="analysis-metric-card">
-          <span class="analysis-metric-label">Superficie</span>
+          <span class="analysis-metric-label">Superficie analizzata</span>
           <strong class="analysis-metric-value">${formatRoundedNumber(derivedMetrics.totalHectares)} ha</strong>
         </article>
         <article class="analysis-metric-card">
@@ -612,17 +644,17 @@ function renderInfoSummary() {
       </div>
       ${municipalitiesHtml}
       <div class="analysis-note-card">
-        <strong>Assorbimento stimato:</strong> ${formatRoundedNumber(state.summary.totalCo2)} tonnellate di CO2 all'anno.
+        <strong>Assorbimento annuo stimato:</strong> ${formatRoundedNumber(state.summary.totalCo2)} tonnellate di CO2.
       </div>
       <div class="analysis-valuation-card">
         <div class="analysis-section-header">
           <h4>Valorizzazione economica</h4>
-          <span class="analysis-section-meta">Stima basata sul prezzo selezionato</span>
+          <span class="analysis-section-meta">Valore stimato in base al prezzo scelto</span>
         </div>
         <div class="value-row">
           <select id="testoValore">${renderPriceOptions()}</select>
           <button id="butcalcolavalore" type="button" class="btn btn-info btn-sm text-light">
-            Calcola valore
+            Calcola
           </button>
         </div>
         <div id="valoreTotaleCalcolato" class="value-result"></div>
@@ -638,12 +670,12 @@ function renderInfoSummary() {
     const resultRoot = document.getElementById("valoreTotaleCalcolato");
     resultRoot.innerHTML = `
       <div class="analysis-value-total">
-        <span class="analysis-metric-label">Valore economico stimato</span>
+        <span class="analysis-metric-label">Valore stimato</span>
         <strong class="analysis-value-amount">${formatCurrency(state.calculatedValue)}</strong>
       </div>
       <p class="analysis-value-actions">
         <button id="butstampadettagli" type="button" class="btn btn-success btn-sm text-light mt-3">
-          Stampa dettagli
+          Esporta PDF
         </button>
       </p>
     `;
@@ -656,7 +688,7 @@ function renderInfoSummary() {
       closeButton.disabled = true;
       resultRoot.insertAdjacentHTML(
         "beforeend",
-        `<div class="pdf-status"><strong>Stiamo generando documento</strong></div>`
+        `<div class="pdf-status"><strong>Generazione PDF in corso...</strong></div>`
       );
 
       try {
@@ -667,7 +699,7 @@ function renderInfoSummary() {
           calculatedValue: state.calculatedValue,
           mapElement: elements.map,
         });
-        showNotice("PDF generato correttamente.", "success");
+        showNotice("PDF generato.", "success");
       } catch (error) {
         showNotice(error.message || "Errore nella generazione del PDF.", "error");
       } finally {
@@ -734,7 +766,7 @@ async function runAnalysis(mapController) {
     drawnFeatureCount: mapController.getDrawnFeatureCount(),
   };
   if (!payload.areas.length) {
-    showNotice("Seleziona almeno un comune o disegna un'area prima di estrarre.", "warning");
+    showNotice("Seleziona almeno un comune o disegna un'area prima di avviare l'analisi.", "warning");
     return;
   }
 
@@ -754,8 +786,8 @@ async function runAnalysis(mapController) {
     openPopup(mapController);
     showNotice(
       state.summary.hasSupportedVegetation
-        ? "Estrazione completata. Report aggiornato."
-        : "Estrazione completata, ma senza categorie supportate.",
+        ? "Analisi completata. Report aggiornato."
+        : "Analisi completata: nessuna categoria forestale supportata nell'area.",
       state.summary.hasSupportedVegetation ? "success" : "warning"
     );
   } catch (error) {
@@ -768,7 +800,7 @@ async function runAnalysis(mapController) {
 
 async function runAssistantInteraction(mapController, message) {
   if (!assistantConfig.enabled) {
-    showNotice("Assistente disattivato dalla configurazione applicativa.", "warning");
+    showNotice("Assistente non disponibile in questa configurazione.", "warning");
     return;
   }
 
@@ -804,7 +836,7 @@ async function runAssistantInteraction(mapController, message) {
             if (event.phase === "started") {
               setAssistantStreamingProgress(streamingMessageIndex, "Richiesta ricevuta...");
             } else if (event.phase === "model_created") {
-              setAssistantStreamingProgress(streamingMessageIndex, "Sto preparando la risposta...");
+              setAssistantStreamingProgress(streamingMessageIndex, "Preparo la risposta...");
             }
           },
           onToolPending: (event) => {
@@ -829,7 +861,7 @@ async function runAssistantInteraction(mapController, message) {
             }
             setAssistantStreamingProgress(
               streamingMessageIndex,
-              "Analisi completata. Sto scrivendo la risposta..."
+              "Analisi completata. Scrivo la risposta..."
             );
           },
         });
@@ -858,23 +890,23 @@ async function runAssistantInteraction(mapController, message) {
 
     if (response.uiHints?.mode === "reset") {
       resetAnalysis(mapController);
-      showNotice("Sessione assistente e risultati locali azzerati.", "success");
+      showNotice("Sessione e risultati cancellati.", "success");
     } else if (response.analysisResult?.clipped) {
       applyAnalysisResult(mapController, response.analysisResult);
-      showNotice("Analisi testuale completata e mappa aggiornata.", "success");
+      showNotice("Analisi completata. Mappa aggiornata.", "success");
     } else if (response.uiHints?.mode === "compare_analyses") {
       showNotice("Confronto analisi completato.", "success");
     } else if (response.uiHints?.needsClarification) {
-      showNotice("Assistente richiede un chiarimento per proseguire.", "warning");
+      showNotice("Serve un chiarimento per continuare.", "warning");
     } else if ((response.messages || []).length > 0) {
-      showNotice("Risposta assistente completata.", "success");
+      showNotice("Risposta completata.", "success");
     }
   } catch (error) {
     appendAssistantMessage(
       "assistant",
-      error.message || "Errore durante l'interazione testuale."
+      error.message || "Errore durante la richiesta all'assistente."
     );
-    showNotice(error.message || "Errore durante l'interazione testuale.", "error");
+    showNotice(error.message || "Errore durante la richiesta all'assistente.", "error");
   } finally {
     setAssistantBusy(false);
     updateActionStates(mapController);
@@ -926,7 +958,7 @@ async function bootstrap() {
   }
 
   elements.selectMunicipalityButton.addEventListener("click", () => {
-    toggleMunicipalityPanel();
+    toggleMunicipalityPanel(mapController);
   });
 
   if (assistantConfig.enabled) {
@@ -961,6 +993,10 @@ async function bootstrap() {
   });
 
   elements.closeAppInfoButton.addEventListener("click", () => {
+    closeAppInfo(mapController);
+  });
+
+  elements.closeAppInfoTopButton?.addEventListener("click", () => {
     closeAppInfo(mapController);
   });
 
@@ -1005,7 +1041,7 @@ async function bootstrap() {
       !elements.municipalityPanel.contains(event.target) &&
       event.target !== elements.selectMunicipalityButton
     ) {
-      closeMunicipalityPanel();
+      closeMunicipalityPanel(mapController);
     }
   });
 

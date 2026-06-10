@@ -1,7 +1,7 @@
 const rawConfig = document.getElementById("app-config")?.textContent;
 
 if (!rawConfig) {
-  throw new Error("Missing app config.");
+  throw new Error("Configurazione applicazione mancante.");
 }
 
 export const appConfig = JSON.parse(rawConfig);

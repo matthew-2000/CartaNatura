@@ -107,7 +107,7 @@ class RuleBasedIntentResolver:
             return IntentResolution(
                 command=InteractionCommand(intent=InteractionIntent.UNKNOWN),
                 clarification_message=(
-                    "Ho trovato piu comuni compatibili. Intendi uno di questi: "
+                    "Ho trovato più comuni compatibili. Intendi uno di questi: "
                     f"{', '.join(suggested_names)}?"
                 ),
             )
@@ -115,7 +115,7 @@ class RuleBasedIntentResolver:
         return IntentResolution(
             command=InteractionCommand(intent=InteractionIntent.UNKNOWN),
             clarification_message=(
-                "Posso gia analizzare comuni nominati nel messaggio, per esempio: "
+                "Scrivi il nome di uno o più comuni da analizzare, per esempio: "
                 "'analizza Avellino e Benevento'."
             ),
         )

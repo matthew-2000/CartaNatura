@@ -61,10 +61,10 @@ class AnalyzeSelectionHandler:
 
         selection_payload = command.payload or request.input.geo_selection
         if not selection_payload:
-            raise ValueError("Missing structured selection payload.")
+            raise ValueError("Nessuna selezione valida da analizzare.")
 
         if self._tool_registry is None:
-            raise ValueError("Tool registry not configured.")
+            raise ValueError("Servizio di analisi non configurato.")
 
         analysis_result = self._tool_registry.execute(
             ToolName.ANALYZE_SELECTION,
@@ -146,7 +146,7 @@ class AnalyzeMunicipalitiesHandler:
             raise ValueError("Nessun comune riconosciuto nel messaggio.")
 
         if self._tool_registry is None:
-            raise ValueError("Tool registry not configured.")
+            raise ValueError("Servizio di analisi non configurato.")
 
         analysis_result = self._tool_registry.execute(
             ToolName.ANALYZE_MUNICIPALITIES,
@@ -261,7 +261,7 @@ class CompareAnalysesHandler:
     ) -> InteractionResponse:
         del request, command
         if self._tool_registry is None:
-            raise ValueError("Tool registry not configured.")
+            raise ValueError("Servizio di analisi non configurato.")
 
         recent = self._analysis_store.list_recent(limit=2)
         if len(recent) < 2:

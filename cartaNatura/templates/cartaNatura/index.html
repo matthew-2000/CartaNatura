@@ -9,7 +9,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="author" content="unsorry">
-  <meta name="description" content="leaflet draw export to geojson file">
+  <meta name="description" content="WebGIS per analizzare vegetazione forestale, CO2 annua stimata e valore economico delle aree selezionate in Campania.">
 
   <link rel="icon" type="image/x-icon" href="{% static 'assets/favicon.png'%}">
 
@@ -34,11 +34,11 @@
           <span class="loading-core"></span>
         </div>
         <div class="loading-title">Analisi in corso</div>
-        <div class="loading-copy">Intersezione GIS, normalizzazione geometrie, sintesi vegetazione.</div>
+        <div class="loading-copy">Intersezione delle geometrie e calcolo degli indicatori forestali.</div>
         <div class="loading-steps" aria-hidden="true">
-          <span>Selezione</span>
-          <span>Estrazione</span>
-          <span>Sintesi</span>
+          <span>Area</span>
+          <span>Dati GIS</span>
+          <span>Report</span>
         </div>
       </div>
     </div>
@@ -55,18 +55,18 @@
         </div>
 
         <div class="workflow-rail" aria-hidden="true">
-          <span class="workflow-step">1. Definisci area</span>
-          <span class="workflow-step">2. Esegui estrazione</span>
-          <span class="workflow-step">3. Consulta risultati</span>
+          <span class="workflow-step">1. Seleziona area</span>
+          <span class="workflow-step">2. Esegui analisi</span>
+          <span class="workflow-step">3. Leggi report</span>
         </div>
 
         <div class="navbar-actions-shell">
-          <button id="butSelezionaComune" title="Seleziona comuni" class="btn btn-sm app-btn app-btn-secondary">Comuni</button>
-          <button id="eseguiClipBut" title="Esegui clip" class="btn btn-sm app-btn app-btn-primary">Estrai</button>
-          <button id="mostraInfoBut" title="Visualizza analisi" class="btn btn-sm app-btn app-btn-secondary">Analisi</button>
+          <button id="butSelezionaComune" title="Apri selezione comuni" class="btn btn-sm app-btn app-btn-secondary">Comuni</button>
+          <button id="eseguiClipBut" title="Esegui analisi GIS" class="btn btn-sm app-btn app-btn-primary">Analizza</button>
+          <button id="mostraInfoBut" title="Apri report" class="btn btn-sm app-btn app-btn-secondary">Report</button>
           <button id="openAssistantPanel" title="Apri assistente" aria-controls="assistantPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Assistente</button>
-          <button id="infoApp" title="Visualizza info app" class="btn btn-sm app-btn app-btn-ghost">Guida</button>
-          <button id="resetMapState" class="btn btn-sm app-btn app-btn-ghost">Reset</button>
+          <button id="infoApp" title="Apri guida" class="btn btn-sm app-btn app-btn-ghost">Guida</button>
+          <button id="resetMapState" title="Cancella selezioni e risultati" class="btn btn-sm app-btn app-btn-ghost">Reset</button>
         </div>
       </header>
 
@@ -77,16 +77,16 @@
               <div class="map-card-header">
                 <div>
                   <div class="map-card-kicker">Sessione</div>
-                  <div class="map-card-title">Snapshot operativo</div>
+                  <div class="map-card-title">Stato analisi</div>
                 </div>
               </div>
               <div id="statusContent">
                 <div class="status-chip">
-                  <span class="status-label">Input comuni</span>
+                  <span class="status-label">Comuni</span>
                   <strong class="status-value">0</strong>
                 </div>
                 <div class="status-chip">
-                  <span class="status-label">Input geometrie</span>
+                  <span class="status-label">Geometrie</span>
                   <strong class="status-value">0</strong>
                 </div>
                 <div class="status-chip">
@@ -95,7 +95,7 @@
                 </div>
                 <div class="status-chip status-chip-wide">
                   <span class="status-label">Risultato</span>
-                  <strong class="status-value">nessuna analisi</strong>
+                  <strong class="status-value">non avviata</strong>
                 </div>
               </div>
             </aside>
@@ -120,7 +120,7 @@
                 <div class="map-frame-kicker">Area di analisi</div>
                 <h2 class="map-frame-title">Mappa operativa</h2>
               </div>
-              <p class="map-frame-description">Seleziona comuni oppure disegna poligoni e rettangoli. Risultati, geometrie e controlli restano leggibili su ogni schermo.</p>
+              <p class="map-frame-description">Seleziona uno o più comuni oppure disegna un'area. La mappa mostra selezioni, risultati e confini territoriali.</p>
             </div>
             <div id="map"></div>
           </div>
@@ -132,7 +132,7 @@
               <div class="comuni-panel-eyebrow">Selezione territoriale</div>
               <div class="comuni-panel-title">Comuni della Campania</div>
               <div id="selectedCountLabel" class="comuni-panel-count">0 selezionati</div>
-              <input id="municipalitySearch" type="search" class="form-control form-control-sm" placeholder="Cerca comune" />
+              <input id="municipalitySearch" type="search" class="form-control form-control-sm" placeholder="Cerca un comune" />
             </div>
             <div id="lista-comuni" class="comuni-list"></div>
           </nav>
@@ -142,57 +142,64 @@
               <div id="navVisualizzaInfo" class="drawer-content">
                 <div class="drawer-header">
                   <div>
-                    <div class="drawer-eyebrow">Report analitico</div>
-                    <h2>Informazioni sulla natura</h2>
+                    <div class="drawer-eyebrow">Report</div>
+                    <h2>Risultati dell'analisi</h2>
                   </div>
                   <button id="butchiudipopup" type="button" class="btn btn-sm app-btn app-btn-ghost">Chiudi</button>
                 </div>
-                <div id="infoNatura"><p>dettagli qui</p></div>
+                <div id="infoNatura"><p>Nessun report disponibile.</p></div>
               </div>
             </div>
           </section>
 
           <section class="sidebar-card infoApp" id="infoApplicazione" role="region" aria-hidden="true">
+            <div class="guide-modal-header">
+              <div>
+                <div class="drawer-eyebrow">Guida operativa</div>
+                <h2>Guida rapida</h2>
+              </div>
+              <button id="closeInfoAppTop" type="button" class="btn btn-sm app-btn app-btn-ghost">Indietro alla mappa</button>
+            </div>
             <div class="guide-content">
               <div class="guide-hero">
-                <p class="guide-lead">Seleziona comuni o disegna un perimetro, esegui l'estrazione GIS e ottieni un report sintetico su copertura forestale, CO2 annua e valorizzazione economica.</p>
+                <p class="guide-lead">Seleziona un'area in Campania, esegui l'analisi GIS e consulta il report su vegetazione forestale, CO2 annua stimata e valore economico.</p>
               </div>
               <div class="guide-grid">
                 <article class="guide-step-card">
                   <div class="guide-step-index">01</div>
                   <h3>Definisci l'area</h3>
-                  <p>Apri il pannello <strong>Comuni</strong> e seleziona uno o piu comuni, oppure usa i tool mappa per disegnare un poligono o un rettangolo.</p>
+                  <p>Apri <strong>Comuni</strong> e seleziona uno o più territori, oppure disegna un poligono o un rettangolo sulla mappa.</p>
                   <img src="{% static 'assets/selezionacomuni.png'%}" alt="Pannello di selezione dei comuni">
                 </article>
                 <article class="guide-step-card">
                   <div class="guide-step-index">02</div>
                   <h3>Rifinisci la geometria</h3>
-                  <p>Puoi combinare area amministrativa e geometrie disegnate. I comandi mappa consentono di creare, modificare o rimuovere le selezioni.</p>
+                  <p>Puoi combinare comuni e geometrie disegnate. I controlli mappa consentono di creare, modificare o rimuovere le aree.</p>
                   <img src="{% static 'assets/modifica.png'%}" alt="Comandi di modifica della geometria">
                 </article>
                 <article class="guide-step-card">
                   <div class="guide-step-index">03</div>
-                  <h3>Esegui l'estrazione</h3>
-                  <p>Con <strong>Estrai</strong> l'applicazione interseca la selezione con la Carta della Natura e restituisce in mappa le categorie forestali rilevate.</p>
-                  <img src="{% static 'assets/risultatoclip.png'%}" alt="Risultato dell'estrazione sulla mappa">
+                  <h3>Esegui l'analisi</h3>
+                  <p>Con <strong>Analizza</strong> l'applicazione incrocia l'area selezionata con i dati Carta della Natura e mostra le categorie forestali rilevate.</p>
+                  <img src="{% static 'assets/risultatoclip.png'%}" alt="Risultato dell'analisi sulla mappa">
                 </article>
                 <article class="guide-step-card">
                   <div class="guide-step-index">04</div>
                   <h3>Leggi il report</h3>
-                  <p>Il pannello <strong>Analisi</strong> mostra ettari, CO2, categoria prevalente, dettaglio per vegetazione e una stima economica esportabile in PDF.</p>
+                  <p>Il pannello <strong>Report</strong> mostra superficie, CO2 annua stimata, categoria prevalente, dettaglio della vegetazione e valore economico esportabile in PDF.</p>
                   <img src="{% static 'assets/infonatura.png'%}" alt="Report analitico della vegetazione">
                 </article>
               </div>
               <div class="guide-tips-card">
                 <h3>Indicazioni rapide</h3>
                 <ul class="guide-tips-list">
-                  <li>Usa <strong>Reset</strong> per pulire selezioni, risultati e report correnti.</li>
-                  <li>Apri <strong>Legenda</strong> solo quando serve, senza coprire la mappa.</li>
-                  <li>Dopo il calcolo economico puoi generare un PDF con mappa e riepilogo dei risultati.</li>
+                  <li>Usa <strong>Reset</strong> per cancellare selezioni, risultati e report.</li>
+                  <li>Apri <strong>Legenda</strong> solo quando devi interpretare le categorie in mappa.</li>
+                  <li>Dopo il calcolo del valore puoi esportare un PDF con mappa e risultati.</li>
                 </ul>
               </div>
             </div>
-            <button id="closeInfoApp" type="button" class="btn btn-sm app-btn app-btn-ghost">Chiudi guida</button>
+            <button id="closeInfoApp" type="button" class="btn btn-sm app-btn app-btn-secondary guide-bottom-close">Indietro alla mappa</button>
           </section>
 
           <aside id="assistantPanel" class="sidebar-card assistant-panel" aria-hidden="true">
@@ -208,16 +215,14 @@
             <div class="assistant-panel-shell">
               <div class="assistant-panel-header">
                 <div>
-                  <div class="assistant-panel-eyebrow">Interaction layer</div>
+                  <div class="assistant-panel-eyebrow">Assistente AI</div>
                   <div class="assistant-panel-title">Assistente Carta Natura</div>
                   <div id="assistantStatus" class="assistant-panel-status">Assistente non disponibile</div>
                 </div>
                 <button id="closeAssistantPanel" type="button" class="btn btn-sm app-btn app-btn-ghost">Chiudi</button>
               </div>
               <div class="assistant-quick-actions">
-                <button type="button" class="assistant-chip" data-prompt="Analizza Avellino e Benevento">Analizza Avellino e Benevento</button>
-                <button type="button" class="assistant-chip" data-prompt="Spiegami ultimo risultato">Spiega ultimo risultato</button>
-                <button type="button" class="assistant-chip" data-prompt="Reset sessione">Reset sessione</button>
+                <button type="button" class="assistant-chip" data-prompt="Azzera sessione">Azzera sessione</button>
               </div>
               <div id="assistantMessages" class="assistant-messages" aria-live="polite"></div>
               <form id="assistantForm" class="assistant-form">
@@ -226,7 +231,7 @@
                   id="assistantInput"
                   class="assistant-input"
                   rows="3"
-                  placeholder="Scrivi: analizza Avellino e Benevento"
+                  placeholder="Scrivi un messaggio all'assistente"
                 ></textarea>
                 <div class="assistant-form-actions">
                   <button id="assistantSendButton" type="submit" class="btn btn-sm app-btn app-btn-primary">Invia</button>

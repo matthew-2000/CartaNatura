@@ -968,7 +968,7 @@ class OpenAiAssistantRuntime:
             {
                 "type": "function",
                 "name": MODEL_TOOL_ANALYZE_MUNICIPALITIES,
-                "description": "Use this when utente chiede analisi di uno o piu comuni gia risolti in modo affidabile.",
+                "description": "Use this when utente chiede analisi di uno o più comuni già risolti in modo affidabile.",
                 "strict": True,
                 "parameters": {
                     "type": "object",
@@ -985,7 +985,7 @@ class OpenAiAssistantRuntime:
             {
                 "type": "function",
                 "name": MODEL_TOOL_ANALYZE_CURRENT_SELECTION,
-                "description": "Use this when utente vuole analizzare selezione mappa corrente gia presente nel contesto UI.",
+                "description": "Use this when utente vuole analizzare la selezione mappa corrente già presente nel contesto UI.",
                 "strict": True,
                 "parameters": {
                     "type": "object",
@@ -1021,7 +1021,7 @@ class OpenAiAssistantRuntime:
             {
                 "type": "function",
                 "name": MODEL_TOOL_GET_METHODOLOGY,
-                "description": "Use this when utente chiede come vengono calcolati risultati o quale metodologia e stata usata.",
+                "description": "Use this when utente chiede come vengono calcolati risultati o quale metodologia è stata usata.",
                 "strict": True,
                 "parameters": {
                     "type": "object",

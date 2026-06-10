@@ -189,7 +189,7 @@ class PayloadParsingTests(SimpleTestCase):
             ]
         }
 
-        with self.assertRaisesMessage(ValueError, "Duplicated area kind"):
+        with self.assertRaisesMessage(ValueError, "Area duplicata"):
             parse_selection_payload(payload)
 
 

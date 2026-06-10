@@ -54,7 +54,7 @@ def analyze_municipalities(*, municipality_names: list[str]) -> dict[str, Any]:
 
 def analyze_selection(*, selection_payload: dict[str, Any]) -> dict[str, Any]:
     if not selection_payload:
-        raise ValueError("Missing structured selection payload.")
+        raise ValueError("Nessuna selezione valida da analizzare.")
 
     return _build_analysis_result(
         source="selection",

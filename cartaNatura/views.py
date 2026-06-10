@@ -45,10 +45,10 @@ def _build_asset_version() -> str:
 
 
 PRICE_OPTIONS = (
-    {"label": "Costo sociale - 138 EUR", "value": 138},
-    {"label": "Prezzo ombra - 303 EUR", "value": 303},
-    {"label": "Prezzo nel mercato regolamentato - 82 EUR", "value": 82},
-    {"label": "Prezzo nel mercato volontario - 20 EUR", "value": 20},
+    {"label": "Costo sociale: 138 EUR/t", "value": 138},
+    {"label": "Prezzo ombra: 303 EUR/t", "value": 303},
+    {"label": "Mercato regolamentato: 82 EUR/t", "value": 82},
+    {"label": "Mercato volontario: 20 EUR/t", "value": 20},
 )
 
 
@@ -122,8 +122,6 @@ def index(request):
             "title": "Assistente Carta Natura",
             "providerConfigured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
             "examples": [
-                "Analizza Avellino e Benevento",
-                "Spiegami ultimo risultato",
                 "Reset sessione",
             ],
         },
@@ -147,7 +145,7 @@ def gis(request):
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+        return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
 
     try:
         response = _build_request_orchestrator(request).handle(
@@ -161,7 +159,7 @@ def gis(request):
         return JsonResponse({"error": str(exc)}, status=400)
 
     if response.analysis_result is None:
-        return JsonResponse({"error": "Missing analysis result."}, status=500)
+        return JsonResponse({"error": "Analisi non completata: risultato mancante."}, status=500)
 
     return JsonResponse(response.analysis_result)
 
@@ -180,7 +178,7 @@ def interact(request):
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+        return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
 
     interaction_request = _build_text_interaction_request(request, payload)
     session_id = interaction_request.session_id
@@ -236,7 +234,7 @@ def interact_stream(request):
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+        return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
 
     interaction_request = _build_text_interaction_request(request, payload)
     session_id = interaction_request.session_id

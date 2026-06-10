@@ -15,30 +15,30 @@ def parse_selection_payload(payload: dict[str, Any]) -> SelectionRequest:
 
     raw_areas = payload.get("areas")
     if not isinstance(raw_areas, list) or not raw_areas:
-        raise ValueError("Payload must contain non-empty 'areas' list.")
+        raise ValueError("Seleziona almeno un'area da analizzare.")
 
     areas: list[SelectionArea] = []
     seen_kinds: set[str] = set()
 
     for raw_area in raw_areas:
         if not isinstance(raw_area, dict):
-            raise ValueError("Each area must be object.")
+            raise ValueError("Una delle aree selezionate non è valida.")
 
         kind = raw_area.get("kind")
         geojson = raw_area.get("geojson")
 
         if kind not in SUPPORTED_AREA_KINDS:
-            raise ValueError(f"Unsupported area kind: {kind!r}.")
+            raise ValueError(f"Tipo di area non supportato: {kind!r}.")
 
         if kind in seen_kinds:
-            raise ValueError(f"Duplicated area kind: {kind!r}.")
+            raise ValueError(f"Area duplicata: {kind!r}.")
 
         if not isinstance(geojson, dict) or geojson.get("type") != "FeatureCollection":
-            raise ValueError(f"Area {kind!r} must contain GeoJSON FeatureCollection.")
+            raise ValueError(f"L'area {kind!r} non contiene una geometria valida.")
 
         features = geojson.get("features")
         if not isinstance(features, list) or not features:
-            raise ValueError(f"Area {kind!r} must contain at least one feature.")
+            raise ValueError(f"L'area {kind!r} non contiene geometrie.")
 
         areas.append(SelectionArea(kind=kind, geojson=geojson))
         seen_kinds.add(kind)

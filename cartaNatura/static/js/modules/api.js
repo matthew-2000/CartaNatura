@@ -46,7 +46,7 @@ async function handleJsonResponse(response) {
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(data.error || "Request failed.");
+      throw new Error(data.error || "Richiesta non completata.");
     }
 
     return data;
@@ -58,7 +58,7 @@ async function handleJsonResponse(response) {
   }
 
   if (!response.ok) {
-    throw new Error(`Request failed (${response.status}).`);
+    throw new Error(`Richiesta non completata (${response.status}).`);
   }
 
   throw new Error("Il server ha restituito una risposta non valida.");
@@ -83,7 +83,7 @@ export async function fetchGeoJson(url) {
   }
 
   if (!response.ok) {
-    throw new Error(`Dataset request failed (${response.status}).`);
+    throw new Error(`Dataset non caricato (${response.status}).`);
   }
 
   return response.json();

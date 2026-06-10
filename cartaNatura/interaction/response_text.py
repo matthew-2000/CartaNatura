@@ -17,7 +17,7 @@ def build_analysis_reply(
         "Sei assistente GIS di Carta della Natura. "
         "Rispondi in italiano, max 4 frasi, tono chiaro e operativo. "
         "Formatta i numeri in stile italiano e arrotonda a massimo 2 decimali. "
-        "Descrivi solo risultato dell'analisi senza inventare dati.\n"
+        "Descrivi solo il risultato dell'analisi senza inventare dati.\n"
         f"Comuni richiesti: {', '.join(requested_municipalities) or 'non specificati'}\n"
         f"Summary JSON: {json.dumps(summary, ensure_ascii=True)}"
     )
@@ -36,12 +36,12 @@ def build_explanation_reply(
     if not analysis_summary:
         raise ValueError(
             "Non ho ancora un'analisi recente da spiegare. "
-            "Chiedimi prima di analizzare uno o piu comuni."
+            "Avvia prima un'analisi su uno o più comuni."
         )
 
     prompt = (
         "Sei assistente GIS di Carta della Natura. "
-        "Spiega in italiano, max 4 frasi, ultimo risultato analitico usando solo dati forniti. "
+        "Spiega in italiano, max 4 frasi, l'ultimo report usando solo i dati forniti. "
         "Formatta i numeri in stile italiano e arrotonda a massimo 2 decimali.\n"
         f"Summary JSON: {json.dumps(analysis_summary, ensure_ascii=True)}"
     )
