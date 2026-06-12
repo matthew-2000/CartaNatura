@@ -228,11 +228,19 @@
                   placeholder="Scrivi un messaggio all'assistente"
                 ></textarea>
                 <div class="assistant-form-actions">
-                  <button id="assistantVoiceButton" type="button" class="btn btn-sm app-btn app-btn-secondary assistant-voice-button" aria-pressed="false">
-                    <span class="assistant-voice-icon" aria-hidden="true"></span>
-                    <span class="assistant-voice-label">Voce</span>
+                  <button id="assistantVoiceButton" type="button" class="assistant-icon-button assistant-voice-button" aria-label="Registra messaggio vocale" aria-pressed="false">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" class="assistant-action-icon">
+                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                      <path d="M12 19v3"></path>
+                    </svg>
                   </button>
-                  <button id="assistantSendButton" type="submit" class="btn btn-sm app-btn app-btn-primary">Invia</button>
+                  <button id="assistantSendButton" type="submit" class="assistant-icon-button assistant-send-button" aria-label="Invia messaggio">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" class="assistant-action-icon">
+                      <path d="M12 19V5"></path>
+                      <path d="M5 12l7-7 7 7"></path>
+                    </svg>
+                  </button>
                 </div>
                 <div id="assistantVoiceStatus" class="assistant-voice-status" role="status" aria-live="polite" hidden></div>
               </form>

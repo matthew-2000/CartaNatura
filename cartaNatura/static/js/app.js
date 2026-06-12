@@ -420,34 +420,52 @@ function setAssistantBusy(busy) {
   elements.assistantSendButton.disabled = busy;
   elements.assistantInput.disabled = busy;
   if (elements.assistantVoiceButton) {
-    elements.assistantVoiceButton.disabled = busy;
-    elements.assistantVoiceButton.classList.toggle("is-unavailable", !MediaRecorderApi);
+    elements.assistantVoiceButton.disabled = busy && !state.voiceListening;
+    elements.assistantVoiceButton.classList.toggle("is-unavailable", !isVoiceRecordingSupported());
   }
-  elements.assistantSendButton.textContent = busy ? "Invio..." : "Invia";
+  elements.assistantSendButton.setAttribute("aria-busy", String(busy));
 }
 
-function setVoiceButtonLabel(text) {
-  const label = elements.assistantVoiceButton?.querySelector(".assistant-voice-label");
-  if (label) {
-    label.textContent = text;
+function setVoiceButtonState({ listening = state.voiceListening, unavailable = false } = {}) {
+  if (!elements.assistantVoiceButton) {
     return;
   }
-  if (elements.assistantVoiceButton) {
-    elements.assistantVoiceButton.textContent = text;
-  }
+  const label = unavailable
+    ? "Registrazione vocale non supportata da questo browser"
+    : listening
+      ? "Ferma e trascrivi registrazione"
+      : "Registra messaggio vocale";
+  elements.assistantVoiceButton.classList.toggle("is-listening", listening);
+  elements.assistantVoiceButton.classList.toggle("is-unavailable", unavailable);
+  elements.assistantVoiceButton.setAttribute("aria-pressed", String(listening));
+  elements.assistantVoiceButton.setAttribute("aria-label", label);
+  elements.assistantVoiceButton.title = label;
 }
 
 function setVoiceListening(listening) {
   state.voiceListening = listening;
-  if (!elements.assistantVoiceButton) {
-    return;
-  }
-  elements.assistantVoiceButton.classList.toggle("is-listening", listening);
-  elements.assistantVoiceButton.setAttribute("aria-pressed", String(listening));
-  setVoiceButtonLabel(listening ? "Stop" : "Voce");
+  setVoiceButtonState({ listening });
 }
 
-function setVoiceStatus(message = "", tone = "info") {
+const voiceStatusIcons = {
+  cancel:
+    '<svg aria-hidden="true" viewBox="0 0 24 24" class="assistant-action-icon"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>',
+  transcribe:
+    '<svg aria-hidden="true" viewBox="0 0 24 24" class="assistant-action-icon"><path d="m5 12 5 5L20 7"></path></svg>',
+};
+
+function createVoiceStatusAction({ label, icon, className = "", onClick }) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `assistant-status-icon-button ${className}`.trim();
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.innerHTML = icon;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function setVoiceStatus(message = "", tone = "info", actions = []) {
   if (!elements.assistantVoiceStatus) {
     return;
   }
@@ -471,6 +489,13 @@ function setVoiceStatus(message = "", tone = "info") {
   text.className = "assistant-voice-status-text";
   text.textContent = nextMessage;
   elements.assistantVoiceStatus.append(wave, text);
+
+  if (actions.length > 0) {
+    const actionGroup = document.createElement("span");
+    actionGroup.className = "assistant-voice-status-actions";
+    actionGroup.append(...actions);
+    elements.assistantVoiceStatus.append(actionGroup);
+  }
 }
 
 function formatVoiceElapsed(durationMs) {
@@ -480,23 +505,15 @@ function formatVoiceElapsed(durationMs) {
   return `${minutes}:${seconds}`;
 }
 
-function startVoiceTimer(startedAt) {
-  stopVoiceTimer();
-  const render = () => {
-    setVoiceStatus(
-      `Registrazione ${formatVoiceElapsed(elapsedSince(startedAt))}. Premi Stop per inviare.`,
-      "recording"
-    );
-  };
-  render();
-  state.voiceTimer = window.setInterval(render, 1000);
-}
-
 function stopVoiceTimer() {
   if (state.voiceTimer) {
     window.clearInterval(state.voiceTimer);
     state.voiceTimer = null;
   }
+}
+
+function isVoiceRecordingSupported() {
+  return Boolean(navigator.mediaDevices?.getUserMedia && MediaRecorderApi);
 }
 
 function getSupportedAudioMimeType() {
@@ -528,18 +545,11 @@ function initializeVoiceInput(mapController) {
     return;
   }
 
-  if (!navigator.mediaDevices?.getUserMedia || !MediaRecorderApi) {
+  if (!isVoiceRecordingSupported()) {
     elements.assistantVoiceButton.disabled = false;
-    elements.assistantVoiceButton.classList.add("is-unavailable");
-    setVoiceButtonLabel("Voce");
-    elements.assistantVoiceButton.setAttribute(
-      "aria-label",
-      "Registrazione vocale non supportata da questo browser"
-    );
-    elements.assistantVoiceButton.title = "Registrazione vocale non supportata da questo browser";
+    setVoiceButtonState({ unavailable: true });
     elements.assistantVoiceButton.addEventListener("click", () => {
       setVoiceStatus("Registrazione vocale non supportata da questo browser.", "warning");
-      showNotice("Registrazione vocale non supportata da questo browser.", "warning");
       recordExperiment({
         eventType: "error",
         channel: "voice",
@@ -551,19 +561,39 @@ function initializeVoiceInput(mapController) {
     return;
   }
 
-  elements.assistantVoiceButton.classList.remove("is-unavailable");
-  setVoiceButtonLabel("Voce");
-  elements.assistantVoiceButton.title = "Registra un messaggio vocale";
+  setVoiceButtonState();
 
   let recorder = null;
   let audioChunks = [];
   let audioStream = null;
   let recordingStartedAt = 0;
+  let recordingAction = "transcribe";
 
-  const stopRecording = () => {
+  const stopRecording = (action = "transcribe") => {
+    recordingAction = action;
     if (recorder && recorder.state !== "inactive") {
       recorder.stop();
     }
+  };
+
+  const renderRecordingStatus = () => {
+    const cancelAction = createVoiceStatusAction({
+      label: "Annulla registrazione",
+      icon: voiceStatusIcons.cancel,
+      className: "is-cancel",
+      onClick: () => stopRecording("cancel"),
+    });
+    const transcribeAction = createVoiceStatusAction({
+      label: "Trascrivi senza inviare",
+      icon: voiceStatusIcons.transcribe,
+      className: "is-confirm",
+      onClick: () => stopRecording("transcribe"),
+    });
+    setVoiceStatus(
+      `Registrazione ${formatVoiceElapsed(elapsedSince(recordingStartedAt))}`,
+      "recording",
+      [cancelAction, transcribeAction]
+    );
   };
 
   elements.assistantVoiceButton.addEventListener("click", () => {
@@ -572,7 +602,7 @@ function initializeVoiceInput(mapController) {
     }
 
     if (state.voiceListening) {
-      stopRecording();
+      stopRecording("transcribe");
       return;
     }
 
@@ -587,7 +617,6 @@ function initializeVoiceInput(mapController) {
         interactionMode: "voice",
         error: error.message || "voice_recording_failed",
       });
-      showNotice("Input vocale non acquisito.", "warning");
     });
   });
 
@@ -595,6 +624,7 @@ function initializeVoiceInput(mapController) {
     audioChunks = [];
     audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const mimeType = getSupportedAudioMimeType();
+    recordingAction = "transcribe";
     recorder = new MediaRecorderApi(
       audioStream,
       mimeType ? { mimeType } : undefined
@@ -616,9 +646,14 @@ function initializeVoiceInput(mapController) {
       setVoiceListening(false);
       stopVoiceTimer();
 
+      if (recordingAction === "cancel") {
+        audioChunks = [];
+        setVoiceStatus("");
+        return;
+      }
+
       if (!audioBlob.size) {
         setVoiceStatus("Nessun audio registrato.", "warning");
-        showNotice("Nessun audio registrato.", "warning");
         return;
       }
 
@@ -626,7 +661,9 @@ function initializeVoiceInput(mapController) {
     });
 
     setVoiceListening(true);
-    startVoiceTimer(recordingStartedAt);
+    stopVoiceTimer();
+    renderRecordingStatus();
+    state.voiceTimer = window.setInterval(renderRecordingStatus, 1000);
     recordExperiment({
       eventType: "voice_started",
       channel: "voice",
@@ -641,7 +678,6 @@ function initializeVoiceInput(mapController) {
     setAssistantBusy(true);
     try {
       setVoiceStatus("Trascrizione in corso...", "processing");
-      showNotice("Trascrizione vocale in corso...", "info");
       const result = await transcribeVoiceMessage(
         appConfig.voiceTranscriptionUrl,
         audioBlob,
@@ -655,10 +691,8 @@ function initializeVoiceInput(mapController) {
         throw new Error("Nessun testo riconosciuto.");
       }
       elements.assistantInput.value = transcript;
-      setVoiceStatus("Trascrizione completata. Invio richiesta...", "success");
-      setAssistantBusy(false);
-      await runAssistantInteraction(mapControllerRef, transcript, { interactionMode: "voice" });
-      setVoiceStatus("");
+      elements.assistantInput.focus();
+      setVoiceStatus("Trascrizione pronta. Modifica o invia.", "success");
     } catch (error) {
       recordExperiment({
         eventType: "error",
@@ -669,7 +703,6 @@ function initializeVoiceInput(mapController) {
         error: error.message || "voice_transcription_failed",
       });
       setVoiceStatus(error.message || "Trascrizione vocale non riuscita.", "error");
-      showNotice(error.message || "Trascrizione vocale non riuscita.", "error");
     } finally {
       if (state.assistantBusy) {
         setAssistantBusy(false);
@@ -1436,16 +1469,10 @@ async function runAssistantInteraction(mapController, message, { interactionMode
 
     if (response.uiHints?.mode === "reset") {
       resetAnalysis(mapController);
-      showNotice("Sessione e risultati cancellati.", "success");
     } else if (response.analysisResult?.clipped) {
       applyAnalysisResult(mapController, response.analysisResult);
-      showNotice("Analisi completata. Mappa aggiornata.", "success");
-    } else if (response.uiHints?.mode === "compare_analyses") {
-      showNotice("Confronto analisi completato.", "success");
     } else if (response.uiHints?.needsClarification) {
       showNotice("Serve un chiarimento per continuare.", "warning");
-    } else if ((response.messages || []).length > 0) {
-      showNotice("Risposta completata.", "success");
     }
     recordExperiment({
       eventType: "task_completed",

@@ -1118,90 +1118,120 @@ body.assistant-resizing {
 }
 
 .assistant-form {
-  display: grid;
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   flex: 0 0 auto;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fffdf8;
+  box-shadow: 0 10px 30px rgba(19, 32, 28, 0.08);
 }
 
 .assistant-form-label {
-  color: var(--text-soft);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 .assistant-input {
-  min-height: 108px;
+  min-height: 86px;
   max-height: 220px;
-  border: 1px solid var(--line);
-  background: #fffdf8;
-  padding: 14px 15px;
+  border: 0;
+  background: transparent;
+  padding: 4px 2px;
   resize: vertical;
   font: inherit;
   color: var(--text-main);
+  outline: none;
+  box-shadow: none;
+}
+
+.assistant-input:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .assistant-form-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
 }
 
-.assistant-voice-button {
+.assistant-icon-button,
+.assistant-status-icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  min-width: 84px;
-  background: #eef5f0;
-  border-color: #6f8b7d;
-  color: #163c30;
-}
-
-.assistant-voice-button:hover {
-  background: #dfece5;
-}
-
-.assistant-voice-icon {
-  position: relative;
-  width: 12px;
-  height: 16px;
-  flex: 0 0 12px;
-  border: 2px solid currentColor;
-  border-radius: 999px 999px 7px 7px;
-}
-
-.assistant-voice-icon::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -7px;
-  width: 2px;
-  height: 6px;
-  background: currentColor;
-  transform: translateX(-50%);
-}
-
-.assistant-voice-icon::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -8px;
-  width: 10px;
-  height: 2px;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 1px solid rgba(32, 52, 45, 0.14);
   border-radius: 999px;
-  background: currentColor;
-  transform: translateX(-50%);
+  background: #f7f4ec;
+  color: #163c30;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
 }
 
-.assistant-form-actions .is-listening {
+.assistant-icon-button:hover,
+.assistant-status-icon-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(32, 52, 45, 0.28);
+  background: #eef5f0;
+}
+
+.assistant-icon-button:disabled,
+.assistant-status-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+.assistant-action-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.assistant-send-button {
+  background: #c44f3b;
+  border-color: #c44f3b;
+  color: #fff;
+}
+
+.assistant-send-button:hover {
+  background: #a73f30;
+  border-color: #a73f30;
+}
+
+.assistant-send-button[aria-busy="true"] {
+  box-shadow: 0 0 0 4px rgba(196, 79, 59, 0.14);
+}
+
+.assistant-voice-button.is-listening {
   background: #8a2d2d;
   border-color: #8a2d2d;
   color: #fff;
   box-shadow: 0 0 0 4px rgba(138, 45, 45, 0.12);
 }
 
-.assistant-form-actions .is-unavailable {
+.assistant-voice-button.is-unavailable {
   opacity: 1;
   background: #f2eee6;
   border-color: #c8d3cc;
@@ -1211,11 +1241,11 @@ body.assistant-resizing {
 .assistant-voice-status {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 34px;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  gap: 9px;
+  min-height: 38px;
+  padding: 7px 8px 7px 10px;
+  border: 1px solid rgba(32, 52, 45, 0.1);
+  border-radius: 999px;
   background: #f7f4ec;
   color: var(--text-main);
   font-size: 12px;
@@ -1275,6 +1305,38 @@ body.assistant-resizing {
 .assistant-voice-status.is-error .assistant-voice-wave span {
   background: #9f3c2f;
   height: 5px;
+}
+
+.assistant-voice-status-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.assistant-voice-status-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+}
+
+.assistant-status-icon-button {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+  background: #fffdf8;
+}
+
+.assistant-status-icon-button.is-cancel {
+  color: #8a2d2d;
+}
+
+.assistant-status-icon-button.is-confirm {
+  background: #1f5b49;
+  border-color: #1f5b49;
+  color: #fff;
 }
 
 @keyframes assistantVoiceWave {
