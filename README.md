@@ -1,16 +1,19 @@
 # CartaNatura
 
-Web GIS Django + Leaflet per analizzare la vegetazione forestale in Campania a partire da comuni selezionati o geometrie disegnate in mappa. L'app interseca la selezione con il dataset Carta della Natura, restituisce le categorie forestali rilevate e genera una sintesi con superficie, CO2 annua stimata e valorizzazione economica.
+Sistema WebGIS Django + Leaflet per analizzare aree forestali in Campania, stimare la CO2 sequestrata annualmente e calcolare il valore economico secondo scenari di prezzo configurabili. Il sistema supporta due modalità di lavoro confrontabili nello stesso ambiente: interfaccia grafica WebGIS tradizionale e interfaccia conversazionale testuale/vocale basata su LLM.
 
-## Stato del progetto
+La mappa resta l'ambiente principale per selezionare aree, verificare risultati, interpretare categorie forestali e controllare ciò che viene prodotto dalla conversazione.
 
-- Backend GIS refactorizzato in layer `domain` + `services`
-- Frontend modularizzato in ES modules
-- UI desktop e mobile rifinita
-- Dataset locali inclusi nella repository
-- Assistente WebGIS con OpenAI Responses API, tool GIS deterministici, SSE streaming e stato sessione server-side
-- `uiActions` validate con allowlist server/client
-- Test automatici su parsing payload, edge-case GIS, orchestrator, runtime assistant, tool registry e smoke view
+## Funzioni Principali
+
+- selezione di comuni e geometrie disegnate in mappa
+- identificazione delle categorie forestali Carta della Natura
+- stima della CO2 sequestrata annualmente
+- valutazione economica con scenari di prezzo alternativi
+- chat testuale con intenti applicativi di dominio
+- input vocale via registrazione browser e trascrizione OpenAI
+- report analitico e PDF con mappa, metriche e comuni interessati
+- logging sperimentale esportabile in JSON
 
 ## Stack
 
@@ -19,10 +22,9 @@ Web GIS Django + Leaflet per analizzare la vegetazione forestale in Campania a p
 - GeoPandas / Pandas / Shapely
 - Leaflet + Leaflet Draw
 - JavaScript modulare vanilla
+- OpenAI Responses API per l'assistente, quando configurata
 
-## Quick Start
-
-### 1. Setup locale
+## Avvio Locale
 
 ```bash
 python3 -m venv .venv
@@ -34,20 +36,20 @@ python manage.py migrate
 python manage.py runserver 127.0.0.1:8000
 ```
 
-App disponibile su:
+App:
 
 - `http://127.0.0.1:8000/progettoGIS/cartaNatura/`
 
-### 2. Setup con Docker
+Docker:
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-## Variabili ambiente
+## Configurazione
 
-Le variabili supportate sono:
+Variabili principali:
 
 - `DJANGO_SECRET_KEY`
 - `DJANGO_DEBUG`
@@ -56,86 +58,76 @@ Le variabili supportate sono:
 - `AI_ASSISTANT_ENABLED`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `OPENAI_TRANSCRIPTION_MODEL`
 - `OPENAI_BASE_URL`
 
-Vedi [.env.example](/Users/matteoercolino/IdeaProjects/CartaNatura/.env.example:1).
+Gli scenari di prezzo CO2 sono configurati in [cartaNatura/views.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/views.py:47) come `PRICE_OPTIONS` e inviati al frontend via config applicativa.
 
-## Comandi utili
+## Architettura
 
-Se usi il [Makefile](/Users/matteoercolino/IdeaProjects/CartaNatura/Makefile:1):
+Moduli principali:
 
-```bash
-make install
-make migrate
-make run
-make test
-make check
-```
+- [cartaNatura/domain](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/domain): categorie forestali, coefficienti CO2, regole sui comuni
+- [cartaNatura/services](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/services): parsing payload, dataset GIS, clip spaziale, sintesi analitica
+- [cartaNatura/interaction](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction): intenti, orchestratore, runtime LLM, tool deterministici, stato conversazionale
+- [cartaNatura/experiments](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/experiments): eventi sperimentali e export JSON
+- [cartaNatura/static/js/modules](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/static/js/modules): API client, mappa, analisi lato client, export PDF
+- [cartaNatura/templates](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/templates): shell UI WebGIS
 
-Senza `make`:
+Dettaglio: [docs/architecture.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/architecture.md:1).
+
+## Flussi Utente
+
+WebGIS tradizionale:
+
+1. seleziona comuni o disegna area
+2. avvia analisi
+3. verifica risultati su mappa
+4. apre report
+5. sceglie scenario prezzo
+6. esporta PDF
+
+Conversazionale:
+
+1. apre assistente
+2. scrive o detta richiesta orientata al dominio
+3. il sistema risolve intento e usa tool GIS deterministici
+4. la mappa mostra area e risultati
+5. l'assistente spiega cosa ha calcolato, parametri usati e area analizzata
+
+Intenti documentati: [docs/conversational-interface.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/conversational-interface.md:1).
+
+## Logging Sperimentale
+
+Endpoint:
+
+- `GET /progettoGIS/cartaNatura/experiment/log` esporta log JSON
+- `POST /progettoGIS/cartaNatura/experiment/log` registra evento controllato
+- `DELETE /progettoGIS/cartaNatura/experiment/log` svuota log sessione
+
+Metriche raccolte: tempo completamento task, numero interazioni, passaggi operativi, errori, richieste non comprese, uso testo/voce, operazioni completate, generazione report. Il log evita testo libero, transcript, identificativi personali e dati browser.
+
+Dettaglio: [docs/experimental-logging.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/experimental-logging.md:1).
+
+## Test
 
 ```bash
 python manage.py test cartaNatura
 python manage.py check
 ```
 
-## Struttura repository
+Con Makefile:
 
-```text
-CartaNatura/
-  cartaNatura/
-    domain/           # regole di dominio: categorie vegetazione, comuni
-    services/         # parsing payload, dataset loader, clip GIS
-    static/           # css, js, assets, geojson client-side
-    templates/        # pagina e shell UI
-    tests.py          # smoke/unit tests
-    views.py          # view Django sottili
-  progettoGIS/        # settings e routing globale Django
-  docs/               # architettura, sviluppo, piano refactor
-  Dockerfile
-  docker-compose.yml
-  .env.example
-  Makefile
+```bash
+make test
+make check
 ```
 
-## Architettura
+## Dataset Inclusi
 
-Documentazione consigliata:
-
-- [docs/architecture.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/architecture.md:1)
-- [docs/development.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/development.md:1)
-- [docs/refactoring-plan.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/refactoring-plan.md:1)
-- [docs/ai-interaction-research.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/ai-interaction-research.md:1)
-- [docs/assistant-product-contract.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-product-contract.md:1)
-- [docs/assistant-phase-1-backlog.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-1-backlog.md:1)
-- [docs/assistant-phase-2-hardening.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-2-hardening.md:1)
-- [docs/assistant-phase-3-demo-readiness.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/assistant-phase-3-demo-readiness.md:1)
-
-## Flusso applicativo
-
-1. L'utente seleziona uno o più comuni oppure disegna una geometria.
-2. Il frontend invia una richiesta GeoJSON a `/progettoGIS/cartaNatura/gis`.
-3. Django valida il payload, costruisce la maschera di analisi e fa il clip sul dataset Carta della Natura.
-4. Il frontend renderizza i risultati, aggrega le categorie vegetazionali e produce il report analitico.
-5. L'utente può stimare un valore economico ed esportare il report in PDF.
-6. L'utente può usare l'assistente per analizzare comuni, analizzare la selezione corrente, spiegare l'ultimo risultato e confrontare analisi recenti.
-
-## Datasets inclusi
-
-La repository include dati GIS locali:
-
-- shapefile Carta della Natura: `cartaNatura/shapeCN/` circa `53 MB`
-- geojson comuni / confini Campania: `cartaNatura/static/data/` circa `20 MB`
-- asset guida e branding: `cartaNatura/static/assets/` circa `5.6 MB`
-
-Questo rende il repository pesante. Se il progetto evolve, una direzione sensata è spostare i dataset più grandi in uno storage versionato separato o in un artefact registry.
-
-## Limiti noti
-
-- Il progetto usa SQLite per sviluppo locale.
-- Alcuni edge-case GIS sono coperti, ma non esiste ancora una pipeline e2e browser in CI.
-- Gli asset statici sono ancora più pesanti del necessario.
-- Il Docker setup è orientato a sviluppo, non a produzione.
+- shapefile Carta della Natura: `cartaNatura/shapeCN/`
+- comuni e confini Campania per UI: `cartaNatura/static/data/`
+- asset guida e branding: `cartaNatura/static/assets/`
 
 ## Licenza
 

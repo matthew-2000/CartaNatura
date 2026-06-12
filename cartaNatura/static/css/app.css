@@ -1143,6 +1143,156 @@ body.assistant-resizing {
 .assistant-form-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
+  align-items: center;
+}
+
+.assistant-voice-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 84px;
+  background: #eef5f0;
+  border-color: #6f8b7d;
+  color: #163c30;
+}
+
+.assistant-voice-button:hover {
+  background: #dfece5;
+}
+
+.assistant-voice-icon {
+  position: relative;
+  width: 12px;
+  height: 16px;
+  flex: 0 0 12px;
+  border: 2px solid currentColor;
+  border-radius: 999px 999px 7px 7px;
+}
+
+.assistant-voice-icon::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  width: 2px;
+  height: 6px;
+  background: currentColor;
+  transform: translateX(-50%);
+}
+
+.assistant-voice-icon::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  width: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateX(-50%);
+}
+
+.assistant-form-actions .is-listening {
+  background: #8a2d2d;
+  border-color: #8a2d2d;
+  color: #fff;
+  box-shadow: 0 0 0 4px rgba(138, 45, 45, 0.12);
+}
+
+.assistant-form-actions .is-unavailable {
+  opacity: 1;
+  background: #f2eee6;
+  border-color: #c8d3cc;
+  color: #5f6b65;
+}
+
+.assistant-voice-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #f7f4ec;
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.assistant-voice-wave {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 28px;
+  height: 18px;
+  flex: 0 0 28px;
+}
+
+.assistant-voice-wave span {
+  width: 3px;
+  height: 7px;
+  border-radius: 999px;
+  background: #6f8b7d;
+  transform-origin: center;
+}
+
+.assistant-voice-status.is-recording .assistant-voice-wave span,
+.assistant-voice-status.is-processing .assistant-voice-wave span {
+  background: #c44f3b;
+  animation: assistantVoiceWave 780ms ease-in-out infinite;
+}
+
+.assistant-voice-status.is-processing .assistant-voice-wave span {
+  animation-duration: 980ms;
+}
+
+.assistant-voice-wave span:nth-child(2) {
+  animation-delay: 90ms;
+}
+
+.assistant-voice-wave span:nth-child(3) {
+  animation-delay: 180ms;
+}
+
+.assistant-voice-wave span:nth-child(4) {
+  animation-delay: 270ms;
+}
+
+.assistant-voice-wave span:nth-child(5) {
+  animation-delay: 360ms;
+}
+
+.assistant-voice-status.is-success .assistant-voice-wave span {
+  background: #1d7a54;
+  height: 9px;
+}
+
+.assistant-voice-status.is-warning .assistant-voice-wave span,
+.assistant-voice-status.is-error .assistant-voice-wave span {
+  background: #9f3c2f;
+  height: 5px;
+}
+
+@keyframes assistantVoiceWave {
+  0%,
+  100% {
+    height: 6px;
+  }
+  50% {
+    height: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-voice-status.is-recording .assistant-voice-wave span,
+  .assistant-voice-status.is-processing .assistant-voice-wave span {
+    animation: none;
+    height: 10px;
+  }
 }
 
 .leaflet-control-zoom,

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import geopandas
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, override_settings
 from shapely.geometry import box
 
@@ -15,7 +16,7 @@ from cartaNatura.interaction import (
     InteractionRequest,
     SessionContext,
 )
-from cartaNatura.interaction.analysis_store import StoredAnalysis, new_stored_analysis
+from cartaNatura.interaction.analysis_store import StoredAnalysis, create_stored_analysis
 from cartaNatura.interaction.observability import summarize_openai_usage
 from cartaNatura.interaction.orchestrator import build_default_orchestrator
 from cartaNatura.interaction.resolvers import RuleBasedIntentResolver
@@ -29,6 +30,7 @@ from cartaNatura.interaction.tools.analysis_history import (
 from cartaNatura.interaction.tools.gis_analysis import analyze_selection
 from cartaNatura.interaction.ui_context import build_interaction_context
 from cartaNatura.interaction.tools.contracts import ToolName
+from cartaNatura.interaction.voice import transcribe_uploaded_audio
 from cartaNatura.schemas import SelectionArea, SelectionRequest
 from cartaNatura.services.gis_clip import clip_selection
 from cartaNatura.services.municipality_text import (
@@ -36,6 +38,7 @@ from cartaNatura.services.municipality_text import (
     suggest_municipality_names,
 )
 from cartaNatura.services.payloads import parse_selection_payload
+from cartaNatura.experiments import export_experiment_log, record_experiment_event
 
 
 class FakeLlmProvider:
@@ -380,6 +383,10 @@ class ViewSmokeTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, '"apiUrl": "/progettoGIS/cartaNatura/gis"')
+        self.assertContains(
+            response,
+            '"voiceTranscriptionUrl": "/progettoGIS/cartaNatura/voice/transcribe"',
+        )
 
     def test_gis_rejects_invalid_payload(self):
         response = Client().post(
@@ -442,6 +449,45 @@ class ViewSmokeTests(SimpleTestCase):
             )
 
         self.assertEqual(response.status_code, 503)
+
+    def test_experiment_log_endpoint_records_and_exports_events(self):
+        client = Client()
+        post_response = client.post(
+            "/progettoGIS/cartaNatura/experiment/log",
+            data=(
+                '{"eventType":"task_completed","channel":"web_map",'
+                '"operation":"spatial_analysis","interactionMode":"map",'
+                '"durationMs":321,"stepCount":2}'
+            ),
+            content_type="application/json",
+        )
+        get_response = client.get("/progettoGIS/cartaNatura/experiment/log")
+
+        self.assertEqual(post_response.status_code, 200)
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.json()["eventCount"], 1)
+        self.assertEqual(get_response.json()["summary"]["taskCompletionDurationMs"], [321])
+
+    @patch("cartaNatura.views.transcribe_uploaded_audio")
+    def test_voice_transcribe_returns_transcript(self, transcribe_uploaded_audio):
+        transcribe_uploaded_audio.return_value = "analizza Avellino"
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            response = Client().post(
+                "/progettoGIS/cartaNatura/voice/transcribe",
+                data={
+                    "audio": SimpleUploadedFile(
+                        "voice.webm",
+                        b"fake-audio",
+                        content_type="audio/webm",
+                    ),
+                    "durationMs": "1200",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["transcript"], "analizza Avellino")
+        transcribe_uploaded_audio.assert_called_once()
 
     @patch("cartaNatura.interaction.orchestrator.build_optional_llm_provider")
     def test_interact_stream_returns_sse_events(self, build_optional_llm_provider):
@@ -739,7 +785,7 @@ class InteractionOrchestratorTests(SimpleTestCase):
             ),
         )
         analysis_store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="municipalities",
                 summary={"items": [], "totalCo2": 0, "totalHectares": 0, "hasSupportedVegetation": False, "topCategory": None},
             )
@@ -1259,13 +1305,13 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
     def test_inmemory_analysis_store_returns_last_saved_item(self):
         store = InMemoryAnalysisStore()
         first = store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="municipalities",
                 summary={"items": [], "totalCo2": 1, "totalHectares": 2, "hasSupportedVegetation": True, "topCategory": None},
             )
         )
         second = store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="selection",
                 summary={"items": [], "totalCo2": 3, "totalHectares": 4, "hasSupportedVegetation": True, "topCategory": None},
             )
@@ -1277,7 +1323,7 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
     def test_tool_registry_returns_last_analysis(self):
         store = InMemoryAnalysisStore()
         saved = store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="municipalities",
                 summary={"items": [], "totalCo2": 3, "totalHectares": 4, "hasSupportedVegetation": True, "topCategory": None},
                 requested_municipalities=["Avellino"],
@@ -1294,13 +1340,13 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
     def test_get_recent_analyses_returns_newest_first(self):
         store = InMemoryAnalysisStore()
         first = store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="municipalities",
                 summary={"items": [], "totalCo2": 1, "totalHectares": 2, "hasSupportedVegetation": True, "topCategory": None},
             )
         )
         second = store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="selection",
                 summary={"items": [], "totalCo2": 3, "totalHectares": 4, "hasSupportedVegetation": True, "topCategory": None},
             )
@@ -1314,13 +1360,13 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
     def test_compare_analyses_returns_numeric_delta(self):
         store = InMemoryAnalysisStore()
         left = store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="municipalities",
                 summary={"items": [], "totalCo2": 10, "totalHectares": 20, "hasSupportedVegetation": True, "topCategory": None},
             )
         )
         right = store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="selection",
                 summary={"items": [], "totalCo2": 15, "totalHectares": 24, "hasSupportedVegetation": True, "topCategory": None},
             )
@@ -1338,13 +1384,13 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
     def test_compare_recent_analyses_uses_latest_two_items(self):
         store = InMemoryAnalysisStore()
         store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="municipalities",
                 summary={"items": [], "totalCo2": 10, "totalHectares": 20, "hasSupportedVegetation": True, "topCategory": None},
             )
         )
         latest = store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source="selection",
                 summary={"items": [], "totalCo2": 15, "totalHectares": 24, "hasSupportedVegetation": True, "topCategory": None},
             )
@@ -1446,7 +1492,7 @@ class ObservabilityTests(SimpleTestCase):
             {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         )
 
-    def test_summarize_openai_usage_falls_back_to_legacy_token_names(self):
+    def test_summarize_openai_usage_falls_back_to_classic_token_names(self):
         usage = summarize_openai_usage(
             {
                 "usage": {
@@ -1460,3 +1506,84 @@ class ObservabilityTests(SimpleTestCase):
             usage,
             {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
         )
+
+
+class ExperimentLoggingTests(SimpleTestCase):
+    def test_record_experiment_event_sanitizes_details(self):
+        session = {}
+
+        event = record_experiment_event(
+            session,
+            event_type="task_completed",
+            channel="voice",
+            operation="conversational_request",
+            interaction_mode="voice",
+            duration_ms=1200,
+            step_count=3,
+            details={
+                "messageText": "non salvare",
+                "transcriptText": "non salvare",
+                "messageLength": 42,
+                "totalCo2": 12.5,
+            },
+        )
+
+        self.assertEqual(event["eventType"], "task_completed")
+        self.assertEqual(event["details"], {"messageLength": 42, "totalCo2": 12.5})
+        self.assertNotIn("messageText", event["details"])
+        self.assertNotIn("transcriptText", event["details"])
+
+    def test_export_experiment_log_returns_summary_metrics(self):
+        session = {}
+        record_experiment_event(
+            session,
+            event_type="interaction_started",
+            channel="web_chat",
+            operation="conversational_request",
+            interaction_mode="text",
+        )
+        record_experiment_event(
+            session,
+            event_type="task_completed",
+            channel="web_chat",
+            operation="analyze_municipalities",
+            interaction_mode="text",
+            duration_ms=900,
+            step_count=2,
+        )
+        record_experiment_event(
+            session,
+            event_type="report_generated",
+            channel="web_map",
+            operation="report_generation",
+            interaction_mode="map",
+        )
+
+        payload = export_experiment_log(session)
+
+        self.assertEqual(payload["eventCount"], 3)
+        self.assertEqual(payload["summary"]["taskCompletionCount"], 1)
+        self.assertEqual(payload["summary"]["textInteractionCount"], 2)
+        self.assertEqual(payload["summary"]["reportGeneratedCount"], 1)
+
+
+class VoiceTranscriptionTests(SimpleTestCase):
+    @patch("cartaNatura.interaction.voice.OpenAI")
+    def test_transcribe_uploaded_audio_uses_tuple_file_upload(self, openai_client_class):
+        create = MagicMock(return_value="analizza Avellino")
+        openai_client_class.return_value.audio.transcriptions.create = create
+        audio = SimpleUploadedFile(
+            "voice.webm",
+            b"fake-audio",
+            content_type="audio/webm",
+        )
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            transcript = transcribe_uploaded_audio(audio)
+
+        self.assertEqual(transcript, "analizza Avellino")
+        file_argument = create.call_args.kwargs["file"]
+        self.assertIsInstance(file_argument, tuple)
+        self.assertEqual(file_argument[0], "voice.webm")
+        self.assertEqual(file_argument[1], b"fake-audio")
+        self.assertEqual(file_argument[2], "audio/webm")

@@ -18,8 +18,13 @@ class InteractionChannel(StrEnum):
 class InteractionIntent(StrEnum):
     ANALYZE_SELECTION = "analyze_selection"
     ANALYZE_MUNICIPALITIES = "analyze_municipalities"
+    EXTRACT_FOREST_INFORMATION = "extract_forest_information"
+    ESTIMATE_CO2_SEQUESTRATION = "estimate_co2_sequestration"
+    COMPARE_ECONOMIC_SCENARIOS = "compare_economic_scenarios"
     COMPARE_ANALYSES = "compare_analyses"
     EXPLAIN_LAST_ANALYSIS = "explain_last_analysis"
+    GENERATE_REPORT = "generate_report"
+    GUIDE_WORKFLOW = "guide_workflow"
     RESET_SESSION = "reset_session"
     UNKNOWN = "unknown"
 

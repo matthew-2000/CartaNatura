@@ -9,7 +9,7 @@ from typing import Any, Callable, Generator
 
 from cartaNatura.domain.vegetation import serialize_categories
 
-from .analysis_store import AnalysisStore, NullAnalysisStore, new_stored_analysis
+from .analysis_store import AnalysisStore, NullAnalysisStore, create_stored_analysis
 from .models import (
     InteractionCommand,
     InteractionIntent,
@@ -221,7 +221,7 @@ class AssistantToolExecutor:
     ) -> ToolExecutionOutcome:
         requested = requested_municipalities or result.get("requestedMunicipalities", []) or []
         stored = self._analysis_store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source=str(result.get("source") or "analysis"),
                 summary=result["summary"],
                 requested_municipalities=requested,
@@ -293,7 +293,7 @@ class OpenAiAssistantRuntime:
 
         yield {
             "type": "status",
-            "phase": "started",
+            "stage": "started",
             "message": "Richiesta ricevuta.",
         }
         response_body = yield from self._stream_response_body_events(
@@ -609,7 +609,7 @@ class OpenAiAssistantRuntime:
                         event_callback,
                         {
                             "type": "status",
-                            "phase": "model_created",
+                            "stage": "model_created",
                             "responseId": getattr(response, "id", None),
                         },
                     )
@@ -663,7 +663,7 @@ class OpenAiAssistantRuntime:
                     response = getattr(event, "response", None)
                     yield {
                         "type": "status",
-                        "phase": "model_created",
+                        "stage": "model_created",
                         "responseId": getattr(response, "id", None),
                     }
                 elif event_type == "response.output_item.added":
@@ -945,6 +945,9 @@ class OpenAiAssistantRuntime:
             "Se utente cita comuni in modo parziale o ambiguo, usa prima search_municipalities. "
             "Se utente chiede analisi su selezione corrente, usa analyze_current_selection solo se selezione disponibile. "
             "Se utente chiede spiegazioni o confronto di risultati recenti, usa get_last_analysis o compare_recent_analyses. "
+            "Classifica intenti finali in operazioni di dominio: analisi area/comuni, informazioni forestali, stima CO2, "
+            "scenari economici, report, spiegazione risultati, guida workflow. "
+            "Per report o scenari economici senza calcolo nuovo, spiega cosa usare in UI e mantieni verifica in mappa. "
             "Per richieste metodologiche usa get_methodology prima di spiegare. "
             "Se manca contesto sufficiente, non improvvisare: chiedi chiarimento. "
             "Azioni UI consentite: show_last_analysis, open_report_panel, show_legend, focus_map_results. "

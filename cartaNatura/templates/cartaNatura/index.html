@@ -228,8 +228,13 @@
                   placeholder="Scrivi un messaggio all'assistente"
                 ></textarea>
                 <div class="assistant-form-actions">
+                  <button id="assistantVoiceButton" type="button" class="btn btn-sm app-btn app-btn-secondary assistant-voice-button" aria-pressed="false">
+                    <span class="assistant-voice-icon" aria-hidden="true"></span>
+                    <span class="assistant-voice-label">Voce</span>
+                  </button>
                   <button id="assistantSendButton" type="submit" class="btn btn-sm app-btn app-btn-primary">Invia</button>
                 </div>
+                <div id="assistantVoiceStatus" class="assistant-voice-status" role="status" aria-live="polite" hidden></div>
               </form>
             </div>
           </aside>

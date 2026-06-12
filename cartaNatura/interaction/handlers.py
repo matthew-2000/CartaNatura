@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .analysis_store import AnalysisStore, NullAnalysisStore, new_stored_analysis
+from .analysis_store import AnalysisStore, NullAnalysisStore, create_stored_analysis
 from .models import (
     InteractionChannel,
     InteractionCommand,
@@ -71,7 +71,7 @@ class AnalyzeSelectionHandler:
             selection_payload=selection_payload,
         )
         stored_analysis = self._analysis_store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source=str(analysis_result.get("source") or "selection"),
                 summary=analysis_result["summary"],
                 intersected_municipalities=analysis_result.get("intersectedMunicipalities", []),
@@ -153,7 +153,7 @@ class AnalyzeMunicipalitiesHandler:
             municipality_names=requested_municipalities,
         )
         stored_analysis = self._analysis_store.save(
-            new_stored_analysis(
+            create_stored_analysis(
                 source=str(analysis_result.get("source") or "municipalities"),
                 summary=analysis_result["summary"],
                 requested_municipalities=requested_municipalities,

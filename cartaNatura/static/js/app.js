@@ -2,8 +2,10 @@ const assetVersion = document.documentElement.dataset.assetVersion || "dev";
 const versionedPath = (path) =>
   `${path}${path.includes("?") ? "&" : "?"}v=${encodeURIComponent(assetVersion)}`;
 
-let requestNatureClip;
+let requestSpatialAnalysis;
 let fetchGeoJson;
+let sendExperimentEvent;
+let transcribeVoiceMessage;
 let sendInteractionMessage;
 let sendInteractionMessageStream;
 let deriveSummaryMetrics;
@@ -21,6 +23,7 @@ let generatePdfReport;
 const ASSISTANT_PANEL_WIDTH_KEY = "cartaNatura.assistantPanelWidth";
 const ASSISTANT_PANEL_MIN_WIDTH = 320;
 const ASSISTANT_PANEL_MAX_WIDTH = 560;
+const MediaRecorderApi = window.MediaRecorder || null;
 const ALLOWED_ASSISTANT_UI_ACTIONS = new Set([
   "show_last_analysis",
   "open_report_panel",
@@ -38,8 +41,14 @@ async function loadModules() {
       import(versionedPath("./modules/pdf-export.js")),
     ]);
 
-  ({ requestNatureClip, fetchGeoJson, sendInteractionMessage, sendInteractionMessageStream } =
-    apiModule);
+  ({
+    requestSpatialAnalysis,
+    fetchGeoJson,
+    sendExperimentEvent,
+    transcribeVoiceMessage,
+    sendInteractionMessage,
+    sendInteractionMessageStream,
+  } = apiModule);
   ({ deriveSummaryMetrics, summarizeClippedFeatures, formatCurrency, formatRoundedNumber } =
     analysisModule);
   ({ appConfig, assistantConfig, categories, categoryByCode, priceOptions } = configModule);
@@ -61,6 +70,8 @@ const state = {
     },
   ],
   assistantBusy: false,
+  voiceListening: false,
+  voiceTimer: null,
 };
 
 const elements = {
@@ -86,6 +97,8 @@ const elements = {
   assistantForm: document.getElementById("assistantForm"),
   assistantInput: document.getElementById("assistantInput"),
   assistantSendButton: document.getElementById("assistantSendButton"),
+  assistantVoiceButton: document.getElementById("assistantVoiceButton"),
+  assistantVoiceStatus: document.getElementById("assistantVoiceStatus"),
   closeAssistantButton: document.getElementById("closeAssistantPanel"),
   infoContainer: document.getElementById("infoNatura"),
   closePopupButton: document.getElementById("butchiudipopup"),
@@ -358,6 +371,35 @@ function showNotice(message, tone = "info") {
   }, 3400);
 }
 
+function recordExperiment(event) {
+  if (!appConfig?.experimentLogUrl || !sendExperimentEvent) {
+    return;
+  }
+
+  sendExperimentEvent(appConfig.experimentLogUrl, event).catch((error) => {
+    console.debug("Experiment event not recorded", error);
+  });
+}
+
+function elapsedSince(startedAt) {
+  return Math.max(0, Math.round(performance.now() - startedAt));
+}
+
+function buildAnalysisEventDetails(mapController, analysisResult = null, analysisContext = null) {
+  const summary = analysisResult?.summary || state.summary || {};
+  return {
+    analysisId: analysisResult?.analysisId,
+    selectedMunicipalityCount:
+      analysisContext?.selectedMunicipalityCount ?? mapController.getSelectedMunicipalityCount(),
+    drawnFeatureCount: analysisContext?.drawnFeatureCount ?? mapController.getDrawnFeatureCount(),
+    intersectedMunicipalityCount:
+      analysisResult?.intersectedMunicipalities?.length || state.intersectedMunicipalities.length,
+    categoryCount: summary.items?.length || 0,
+    hasSupportedVegetation: Boolean(summary.hasSupportedVegetation),
+    totalCo2: Number(summary.totalCo2 || 0),
+  };
+}
+
 function setAssistantStatus(providerMode = null, configured = false) {
   let statusText = "Assistente non disponibile";
   if (!assistantConfig.enabled) {
@@ -377,7 +419,264 @@ function setAssistantBusy(busy) {
   state.assistantBusy = busy;
   elements.assistantSendButton.disabled = busy;
   elements.assistantInput.disabled = busy;
+  if (elements.assistantVoiceButton) {
+    elements.assistantVoiceButton.disabled = busy;
+    elements.assistantVoiceButton.classList.toggle("is-unavailable", !MediaRecorderApi);
+  }
   elements.assistantSendButton.textContent = busy ? "Invio..." : "Invia";
+}
+
+function setVoiceButtonLabel(text) {
+  const label = elements.assistantVoiceButton?.querySelector(".assistant-voice-label");
+  if (label) {
+    label.textContent = text;
+    return;
+  }
+  if (elements.assistantVoiceButton) {
+    elements.assistantVoiceButton.textContent = text;
+  }
+}
+
+function setVoiceListening(listening) {
+  state.voiceListening = listening;
+  if (!elements.assistantVoiceButton) {
+    return;
+  }
+  elements.assistantVoiceButton.classList.toggle("is-listening", listening);
+  elements.assistantVoiceButton.setAttribute("aria-pressed", String(listening));
+  setVoiceButtonLabel(listening ? "Stop" : "Voce");
+}
+
+function setVoiceStatus(message = "", tone = "info") {
+  if (!elements.assistantVoiceStatus) {
+    return;
+  }
+
+  const nextMessage = String(message || "").trim();
+  elements.assistantVoiceStatus.hidden = !nextMessage;
+  elements.assistantVoiceStatus.className = `assistant-voice-status is-${tone}`;
+  elements.assistantVoiceStatus.replaceChildren();
+  if (!nextMessage) {
+    return;
+  }
+
+  const wave = document.createElement("span");
+  wave.className = "assistant-voice-wave";
+  wave.setAttribute("aria-hidden", "true");
+  for (let index = 0; index < 5; index += 1) {
+    wave.appendChild(document.createElement("span"));
+  }
+
+  const text = document.createElement("span");
+  text.className = "assistant-voice-status-text";
+  text.textContent = nextMessage;
+  elements.assistantVoiceStatus.append(wave, text);
+}
+
+function formatVoiceElapsed(durationMs) {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function startVoiceTimer(startedAt) {
+  stopVoiceTimer();
+  const render = () => {
+    setVoiceStatus(
+      `Registrazione ${formatVoiceElapsed(elapsedSince(startedAt))}. Premi Stop per inviare.`,
+      "recording"
+    );
+  };
+  render();
+  state.voiceTimer = window.setInterval(render, 1000);
+}
+
+function stopVoiceTimer() {
+  if (state.voiceTimer) {
+    window.clearInterval(state.voiceTimer);
+    state.voiceTimer = null;
+  }
+}
+
+function getSupportedAudioMimeType() {
+  if (!MediaRecorderApi?.isTypeSupported) {
+    return "";
+  }
+
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/ogg;codecs=opus",
+  ];
+  return candidates.find((mimeType) => MediaRecorderApi.isTypeSupported(mimeType)) || "";
+}
+
+function audioFilenameForMimeType(mimeType) {
+  if (mimeType.includes("mp4")) {
+    return "voice-message.mp4";
+  }
+  if (mimeType.includes("ogg")) {
+    return "voice-message.ogg";
+  }
+  return "voice-message.webm";
+}
+
+function initializeVoiceInput(mapController) {
+  if (!elements.assistantVoiceButton) {
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia || !MediaRecorderApi) {
+    elements.assistantVoiceButton.disabled = false;
+    elements.assistantVoiceButton.classList.add("is-unavailable");
+    setVoiceButtonLabel("Voce");
+    elements.assistantVoiceButton.setAttribute(
+      "aria-label",
+      "Registrazione vocale non supportata da questo browser"
+    );
+    elements.assistantVoiceButton.title = "Registrazione vocale non supportata da questo browser";
+    elements.assistantVoiceButton.addEventListener("click", () => {
+      setVoiceStatus("Registrazione vocale non supportata da questo browser.", "warning");
+      showNotice("Registrazione vocale non supportata da questo browser.", "warning");
+      recordExperiment({
+        eventType: "error",
+        channel: "voice",
+        operation: "voice_input",
+        interactionMode: "voice",
+        error: "media_recorder_unavailable",
+      });
+    });
+    return;
+  }
+
+  elements.assistantVoiceButton.classList.remove("is-unavailable");
+  setVoiceButtonLabel("Voce");
+  elements.assistantVoiceButton.title = "Registra un messaggio vocale";
+
+  let recorder = null;
+  let audioChunks = [];
+  let audioStream = null;
+  let recordingStartedAt = 0;
+
+  const stopRecording = () => {
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
+  };
+
+  elements.assistantVoiceButton.addEventListener("click", () => {
+    if (state.assistantBusy) {
+      return;
+    }
+
+    if (state.voiceListening) {
+      stopRecording();
+      return;
+    }
+
+    startVoiceRecording(mapController).catch((error) => {
+      setVoiceListening(false);
+      stopVoiceTimer();
+      setVoiceStatus("Input vocale non acquisito.", "warning");
+      recordExperiment({
+        eventType: "error",
+        channel: "voice",
+        operation: "voice_input",
+        interactionMode: "voice",
+        error: error.message || "voice_recording_failed",
+      });
+      showNotice("Input vocale non acquisito.", "warning");
+    });
+  });
+
+  async function startVoiceRecording(mapControllerRef) {
+    audioChunks = [];
+    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = getSupportedAudioMimeType();
+    recorder = new MediaRecorderApi(
+      audioStream,
+      mimeType ? { mimeType } : undefined
+    );
+    recordingStartedAt = performance.now();
+
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size > 0) {
+        audioChunks.push(event.data);
+      }
+    });
+
+    recorder.addEventListener("stop", () => {
+      const durationMs = elapsedSince(recordingStartedAt);
+      const recordedType = recorder.mimeType || mimeType || "audio/webm";
+      const audioBlob = new Blob(audioChunks, { type: recordedType });
+      audioStream?.getTracks().forEach((track) => track.stop());
+      audioStream = null;
+      setVoiceListening(false);
+      stopVoiceTimer();
+
+      if (!audioBlob.size) {
+        setVoiceStatus("Nessun audio registrato.", "warning");
+        showNotice("Nessun audio registrato.", "warning");
+        return;
+      }
+
+      handleVoiceAudioBlob(mapControllerRef, audioBlob, durationMs, recordedType);
+    });
+
+    setVoiceListening(true);
+    startVoiceTimer(recordingStartedAt);
+    recordExperiment({
+      eventType: "voice_started",
+      channel: "voice",
+      operation: "voice_input",
+      interactionMode: "voice",
+      stepCount: 1,
+    });
+    recorder.start();
+  }
+
+  async function handleVoiceAudioBlob(mapControllerRef, audioBlob, durationMs, mimeType) {
+    setAssistantBusy(true);
+    try {
+      setVoiceStatus("Trascrizione in corso...", "processing");
+      showNotice("Trascrizione vocale in corso...", "info");
+      const result = await transcribeVoiceMessage(
+        appConfig.voiceTranscriptionUrl,
+        audioBlob,
+        {
+          durationMs,
+          filename: audioFilenameForMimeType(mimeType),
+        }
+      );
+      const transcript = String(result.transcript || "").trim();
+      if (!transcript) {
+        throw new Error("Nessun testo riconosciuto.");
+      }
+      elements.assistantInput.value = transcript;
+      setVoiceStatus("Trascrizione completata. Invio richiesta...", "success");
+      setAssistantBusy(false);
+      await runAssistantInteraction(mapControllerRef, transcript, { interactionMode: "voice" });
+      setVoiceStatus("");
+    } catch (error) {
+      recordExperiment({
+        eventType: "error",
+        channel: "voice",
+        operation: "voice_transcription",
+        interactionMode: "voice",
+        durationMs,
+        error: error.message || "voice_transcription_failed",
+      });
+      setVoiceStatus(error.message || "Trascrizione vocale non riuscita.", "error");
+      showNotice(error.message || "Trascrizione vocale non riuscita.", "error");
+    } finally {
+      if (state.assistantBusy) {
+        setAssistantBusy(false);
+      }
+      updateActionStates(mapControllerRef);
+    }
+  }
 }
 
 function appendAssistantMessage(role, text) {
@@ -813,8 +1112,21 @@ function renderInfoSummary() {
 
   const calculateButton = document.getElementById("butcalcolavalore");
   calculateButton.addEventListener("click", () => {
+    const valuationStartedAt = performance.now();
     const selectedValue = Number(document.getElementById("testoValore").value || 0);
     state.calculatedValue = selectedValue * state.summary.totalCo2;
+    recordExperiment({
+      eventType: "valuation_completed",
+      channel: "web_map",
+      operation: "economic_valuation",
+      interactionMode: "map",
+      durationMs: elapsedSince(valuationStartedAt),
+      stepCount: 1,
+      details: {
+        priceEurPerTon: selectedValue,
+        totalCo2: Number(state.summary.totalCo2 || 0),
+      },
+    });
 
     const resultRoot = document.getElementById("valoreTotaleCalcolato");
     resultRoot.innerHTML = `
@@ -830,6 +1142,7 @@ function renderInfoSummary() {
     `;
 
     document.getElementById("butstampadettagli").addEventListener("click", async () => {
+      const reportStartedAt = performance.now();
       const printButton = document.getElementById("butstampadettagli");
       const closeButton = elements.closePopupButton;
       calculateButton.disabled = true;
@@ -848,8 +1161,29 @@ function renderInfoSummary() {
           calculatedValue: state.calculatedValue,
           mapElement: elements.map,
         });
+        recordExperiment({
+          eventType: "report_generated",
+          channel: "web_map",
+          operation: "report_generation",
+          interactionMode: "map",
+          durationMs: elapsedSince(reportStartedAt),
+          stepCount: 1,
+          details: {
+            reportFormat: "pdf",
+            priceEurPerTon: selectedValue,
+            totalCo2: Number(state.summary.totalCo2 || 0),
+          },
+        });
         showNotice("PDF generato.", "success");
       } catch (error) {
+        recordExperiment({
+          eventType: "error",
+          channel: "web_map",
+          operation: "report_generation",
+          interactionMode: "map",
+          durationMs: elapsedSince(reportStartedAt),
+          error: error.message || "pdf_generation_failed",
+        });
         showNotice(error.message || "Errore nella generazione del PDF.", "error");
       } finally {
         calculateButton.disabled = false;
@@ -902,9 +1236,17 @@ function resetAnalysis(mapController) {
   closePopup(mapController);
   closeAppInfo(mapController);
   updateActionStates(mapController);
+  recordExperiment({
+    eventType: "reset_completed",
+    channel: "web_map",
+    operation: "reset_analysis_workspace",
+    interactionMode: "map",
+    stepCount: 1,
+  });
 }
 
 async function runAnalysis(mapController) {
+  const analysisStartedAt = performance.now();
   closePopup(mapController);
   closeAppInfo(mapController);
   closeMunicipalityPanel();
@@ -916,13 +1258,28 @@ async function runAnalysis(mapController) {
   };
   if (!payload.areas.length) {
     showNotice("Seleziona almeno un comune o disegna un'area prima di avviare l'analisi.", "warning");
+    recordExperiment({
+      eventType: "error",
+      channel: "web_map",
+      operation: "spatial_analysis",
+      interactionMode: "map",
+      error: "missing_selection",
+    });
     return;
   }
 
+  recordExperiment({
+    eventType: "task_started",
+    channel: "web_map",
+    operation: "spatial_analysis",
+    interactionMode: "map",
+    stepCount: payload.areas.length,
+    details: buildAnalysisEventDetails(mapController),
+  });
   setBusy(mapController, true);
 
   try {
-    const response = await requestNatureClip(appConfig.apiUrl, payload);
+    const response = await requestSpatialAnalysis(appConfig.apiUrl, payload);
     applyAnalysisResult(
       mapController,
       {
@@ -933,6 +1290,15 @@ async function runAnalysis(mapController) {
       analysisContext
     );
     openPopup(mapController);
+    recordExperiment({
+      eventType: "task_completed",
+      channel: "web_map",
+      operation: "spatial_analysis",
+      interactionMode: "map",
+      durationMs: elapsedSince(analysisStartedAt),
+      stepCount: payload.areas.length + 2,
+      details: buildAnalysisEventDetails(mapController, response, analysisContext),
+    });
     showNotice(
       state.summary.hasSupportedVegetation
         ? "Analisi completata. Report aggiornato."
@@ -940,6 +1306,15 @@ async function runAnalysis(mapController) {
       state.summary.hasSupportedVegetation ? "success" : "warning"
     );
   } catch (error) {
+    recordExperiment({
+      eventType: "error",
+      channel: "web_map",
+      operation: "spatial_analysis",
+      interactionMode: "map",
+      durationMs: elapsedSince(analysisStartedAt),
+      error: error.message || "analysis_failed",
+      details: buildAnalysisEventDetails(mapController),
+    });
     showNotice(error.message || "Errore durante l'analisi.", "error");
   } finally {
     setBusy(mapController, false);
@@ -947,7 +1322,8 @@ async function runAnalysis(mapController) {
   }
 }
 
-async function runAssistantInteraction(mapController, message) {
+async function runAssistantInteraction(mapController, message, { interactionMode = "text" } = {}) {
+  const interactionStartedAt = performance.now();
   if (!assistantConfig.enabled) {
     showNotice("Assistente non disponibile in questa configurazione.", "warning");
     return;
@@ -972,8 +1348,21 @@ async function runAssistantInteraction(mapController, message) {
     const payload = {
       message: trimmedMessage,
       context: buildInteractionContext(mapController),
+      metadata: {
+        interactionMode,
+      },
     };
     let response;
+    recordExperiment({
+      eventType: "task_started",
+      channel: interactionMode === "voice" ? "voice" : "web_chat",
+      operation: "conversational_request",
+      interactionMode,
+      stepCount: 1,
+      details: {
+        messageLength: trimmedMessage.length,
+      },
+    });
 
     if (appConfig.interactionStreamUrl) {
       const streamingMessageIndex = startAssistantStreamingMessage();
@@ -982,9 +1371,9 @@ async function runAssistantInteraction(mapController, message) {
       try {
         response = await sendInteractionMessageStream(appConfig.interactionStreamUrl, payload, {
           onStatus: (event) => {
-            if (event.phase === "started") {
+            if (event.stage === "started") {
               setAssistantStreamingProgress(streamingMessageIndex, "Richiesta ricevuta...");
-            } else if (event.phase === "model_created") {
+            } else if (event.stage === "model_created") {
               setAssistantStreamingProgress(streamingMessageIndex, "Preparo la risposta...");
             }
           },
@@ -1058,11 +1447,36 @@ async function runAssistantInteraction(mapController, message) {
     } else if ((response.messages || []).length > 0) {
       showNotice("Risposta completata.", "success");
     }
+    recordExperiment({
+      eventType: "task_completed",
+      channel: interactionMode === "voice" ? "voice" : "web_chat",
+      operation: response.uiHints?.mode || "conversational_request",
+      interactionMode,
+      durationMs: elapsedSince(interactionStartedAt),
+      stepCount: response.analysisResult?.clipped ? 3 : 2,
+      details: {
+        analysisId: response.analysisResult?.analysisId,
+        messageLength: trimmedMessage.length,
+        providerMode: response.uiHints?.providerMode,
+        needsClarification: Boolean(response.uiHints?.needsClarification),
+      },
+    });
   } catch (error) {
     appendAssistantMessage(
       "assistant",
       error.message || "Errore durante la richiesta all'assistente."
     );
+    recordExperiment({
+      eventType: "error",
+      channel: interactionMode === "voice" ? "voice" : "web_chat",
+      operation: "conversational_request",
+      interactionMode,
+      durationMs: elapsedSince(interactionStartedAt),
+      error: error.message || "assistant_interaction_failed",
+      details: {
+        messageLength: trimmedMessage.length,
+      },
+    });
     showNotice(error.message || "Errore durante la richiesta all'assistente.", "error");
   } finally {
     setAssistantBusy(false);
@@ -1091,6 +1505,17 @@ async function bootstrap() {
 
     renderStatusPanel({ selectedMunicipalityCount, drawnFeatureCount });
     updateActionStates(mapControllerRef || mapController);
+    recordExperiment({
+      eventType: "selection_changed",
+      channel: "web_map",
+      operation: "area_selection",
+      interactionMode: "map",
+      stepCount: 1,
+      details: {
+        selectedMunicipalityCount,
+        drawnFeatureCount,
+      },
+    });
   };
 
   const mapController = new MapController({
@@ -1109,6 +1534,13 @@ async function bootstrap() {
   renderAssistantMessages();
   updateActionStates(mapController);
   initializeAssistantResize(mapController);
+  initializeVoiceInput(mapController);
+  recordExperiment({
+    eventType: "session_started",
+    channel: "system",
+    operation: "application_session",
+    interactionMode: "system",
+  });
 
   if (!assistantConfig.enabled) {
     elements.openAssistantButton.hidden = true;

@@ -1,153 +1,72 @@
 # Sviluppo
 
-## Prerequisiti
-
-- Python 3.11 o superiore
-- `pip`
-- ambiente virtuale consigliato
-- opzionale: Docker + Docker Compose
-
-## Avvio locale
+## Setup
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip
 pip install -r requirements.txt
 cp .env.example .env
 python manage.py migrate
 python manage.py runserver 127.0.0.1:8000
 ```
 
-Apri:
-
-- `http://127.0.0.1:8000/progettoGIS/cartaNatura/`
-
-## Variabili ambiente
-
-Il progetto legge `.env` automaticamente tramite `python-dotenv`.
-
-Variabili disponibili:
-
-```env
-DJANGO_SECRET_KEY=change-me
-DJANGO_DEBUG=true
-DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost
-DJANGO_CORS_ALLOWED_ORIGINS=
-AI_ASSISTANT_ENABLED=true
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5-mini
-OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-## Comandi standard
-
-### Test
+## Test
 
 ```bash
 python manage.py test cartaNatura
-```
-
-### Check Django
-
-```bash
 python manage.py check
 ```
 
-### Raccolta statici
+## Modifica Analisi GIS
 
-```bash
-python manage.py collectstatic --noinput
-```
+Verificare sempre:
 
-## Makefile
+- payload vuoto rifiutato
+- CRS comuni/disegni coerenti
+- clip con area senza vegetazione supportata
+- comuni interessati corretti
+- mappa aggiornata dopo risposta backend
 
-Il repository espone scorciatoie:
+## Modifica Assistente
 
-```bash
-make install
-make migrate
-make run
-make test
-make check
-make collectstatic
-```
+Regole:
 
-## Docker
+- aggiungere intenti in `InteractionIntent`
+- documentare intenti in [conversational-interface.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/conversational-interface.md:1)
+- mantenere tool deterministici per numeri GIS
+- non aggiungere azioni UI fuori allowlist server/client
+- testare fast path rule-based e runtime LLM mockato
 
-```bash
-cp .env.example .env
-docker compose up --build
-```
+## Modifica Voce
 
-Uso previsto:
+Il flusso vocale usa `MediaRecorder` lato browser e OpenAI Audio Transcriptions lato Django.
 
-- sviluppo locale
-- smoke environment
+Variabili:
 
-Non è ancora un setup production-grade.
+- `OPENAI_API_KEY`
+- `OPENAI_TRANSCRIPTION_MODEL`, default `gpt-4o-transcribe`
 
-## Convenzioni operative
+Regole:
 
-- usare `domain/` per regole pure
-- usare `services/` per logica GIS e accesso dataset
-- tenere le view Django sottili
-- evitare asset o GeoJSON embedded dentro JS applicativo
-- non introdurre dipendenze da servizi esterni per il flusso base
+- non inviare API key al browser
+- non salvare transcript nei log sperimentali
+- mantenere il transcript come input dello stesso orchestratore conversazionale
 
-## Testing manuale minimo consigliato
+## Modifica Logging Sperimentale
 
-1. Aprire la home.
-2. Selezionare almeno un comune.
-3. Eseguire `Analizza`.
-4. Aprire `Report`.
-5. Calcolare un valore economico.
-6. Verificare export PDF.
-7. Verificare layout desktop e mobile.
+Regole:
 
-## Testing assistente consigliato
+- aggiungere nuovi eventi solo in `ALLOWED_EVENT_TYPES`
+- non salvare testo utente o transcript
+- aggiungere test su sanitizzazione/export
+- mantenere export JSON analizzabile senza dipendenze esterne
 
-Richiede `OPENAI_API_KEY` configurata.
+## Modifica Scenari Prezzo
 
-1. Aprire `Assistente`.
-2. Inviare `analizza Avellino`.
-3. Verificare che mappa e report si aggiornino.
-4. Inviare un follow-up, ad esempio `spiega ultimo risultato`.
-5. Eseguire una seconda analisi e poi `confronta ultime due analisi`.
-6. Provare una richiesta ambigua, ad esempio `analizza san`, e verificare che venga chiesto chiarimento.
-7. Verificare console browser senza errori o warning rilevanti.
+Aggiornare `PRICE_OPTIONS` in [views.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/views.py:47). Ogni opzione deve avere:
 
-## Troubleshooting
+- `label`
+- `value` in EUR/t CO2
 
-### GeoPandas / shapely non installano
-
-Aggiorna `pip`, `setuptools`, `wheel`:
-
-```bash
-pip install --upgrade pip setuptools wheel
-```
-
-### L'app parte ma la mappa è vuota
-
-Controlla:
-
-- presenza dei file in `cartaNatura/static/data/`
-- URL statici serviti correttamente
-- errori browser console
-
-### L'endpoint GIS risponde lentamente
-
-Primo check:
-
-- dataset caricati da disco
-- dimensione layer
-- ambiente Docker troppo limitato
-
-Il backend usa cache in-process sui dataset, quindi la prima richiesta tende a costare più delle successive.
-
-## Cosa non fare
-
-- non spostare logica di mapping vegetazione dentro `views.py`
-- non duplicare costanti business in più punti senza motivo
-- non usare URL assoluti hardcoded per l'API
-- non rimettere dataset grossi direttamente in `app.js`
+Il frontend calcola `value * totalCo2`.

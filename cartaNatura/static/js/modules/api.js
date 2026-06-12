@@ -89,7 +89,7 @@ export async function fetchGeoJson(url) {
   return response.json();
 }
 
-export async function requestNatureClip(apiUrl, payload) {
+export async function requestSpatialAnalysis(apiUrl, payload) {
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
@@ -97,6 +97,41 @@ export async function requestNatureClip(apiUrl, payload) {
       "X-CSRFToken": getCsrfToken(),
     },
     body: JSON.stringify(payload),
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function sendExperimentEvent(experimentLogUrl, payload) {
+  if (!experimentLogUrl) {
+    return null;
+  }
+
+  const response = await fetch(experimentLogUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCsrfToken(),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function transcribeVoiceMessage(voiceTranscriptionUrl, audioBlob, metadata = {}) {
+  const formData = new FormData();
+  formData.append("audio", audioBlob, metadata.filename || "voice-message.webm");
+  if (Number.isFinite(metadata.durationMs)) {
+    formData.append("durationMs", String(Math.max(0, Math.round(metadata.durationMs))));
+  }
+
+  const response = await fetch(voiceTranscriptionUrl, {
+    method: "POST",
+    headers: {
+      "X-CSRFToken": getCsrfToken(),
+    },
+    body: formData,
   });
 
   return handleJsonResponse(response);

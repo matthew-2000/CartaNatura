@@ -14,9 +14,15 @@ from django.middleware.csrf import get_token
 from django.templatetags.static import static
 from django.urls import reverse
 from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.http import require_http_methods
 from django.views.decorators.http import require_POST
 
 from cartaNatura.domain.vegetation import serialize_categories
+from cartaNatura.experiments import (
+    clear_experiment_log,
+    export_experiment_log,
+    record_experiment_event,
+)
 from cartaNatura.interaction import (
     DjangoSessionAnalysisStore,
     InteractionChannel,
@@ -28,6 +34,7 @@ from cartaNatura.interaction import (
 from cartaNatura.interaction.llm import LlmProviderUnavailableError
 from cartaNatura.interaction.session import DjangoSessionStore
 from cartaNatura.interaction.ui_context import build_interaction_context
+from cartaNatura.interaction.voice import transcribe_uploaded_audio
 
 logger = logging.getLogger(__name__)
 APP_DIR = Path(__file__).resolve().parent
@@ -68,10 +75,18 @@ def _build_request_orchestrator(request):
 def _build_text_interaction_request(request, payload: dict[str, object]) -> InteractionRequest:
     message = str(payload.get("message") or "").strip()
     context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    metadata_payload = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    interaction_mode = str(metadata_payload.get("interactionMode") or "").strip()
     return InteractionRequest(
-        channel=InteractionChannel.WEB_CHAT,
+        channel=InteractionChannel.VOICE if interaction_mode == "voice" else InteractionChannel.WEB_CHAT,
         session_id=_ensure_session_id(request),
-        input=InteractionInput(text=message, metadata={"source": "web_assistant"}),
+        input=InteractionInput(
+            text=message,
+            metadata={
+                "source": "web_assistant",
+                "interactionMode": interaction_mode or "text",
+            },
+        ),
         context=build_interaction_context(context_payload),
     )
 
@@ -110,6 +125,8 @@ def index(request):
         "apiUrl": reverse("gis"),
         "interactionUrl": reverse("interact"),
         "interactionStreamUrl": reverse("interact_stream"),
+        "voiceTranscriptionUrl": reverse("voice_transcribe"),
+        "experimentLogUrl": reverse("experiment_log"),
         "csrfToken": get_token(request),
         "priceOptions": PRICE_OPTIONS,
         "categories": serialize_categories(),
@@ -147,6 +164,15 @@ def gis(request):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
 
+    record_experiment_event(
+        request.session,
+        event_type="analysis_started",
+        channel=InteractionChannel.WEB_MAP.value,
+        operation="spatial_analysis",
+        interaction_mode="map",
+        step_count=len(payload.get("areas", [])) if isinstance(payload.get("areas"), list) else None,
+    )
+
     try:
         response = _build_request_orchestrator(request).handle(
             InteractionRequest(
@@ -156,11 +182,46 @@ def gis(request):
             )
         )
     except ValueError as exc:
+        record_experiment_event(
+            request.session,
+            event_type="error",
+            channel=InteractionChannel.WEB_MAP.value,
+            operation="spatial_analysis",
+            interaction_mode="map",
+            error=str(exc),
+        )
         return JsonResponse({"error": str(exc)}, status=400)
 
     if response.analysis_result is None:
+        record_experiment_event(
+            request.session,
+            event_type="error",
+            channel=InteractionChannel.WEB_MAP.value,
+            operation="spatial_analysis",
+            interaction_mode="map",
+            error="missing_analysis_result",
+        )
         return JsonResponse({"error": "Analisi non completata: risultato mancante."}, status=500)
 
+    summary = response.analysis_result.get("summary", {})
+    record_experiment_event(
+        request.session,
+        event_type="analysis_completed",
+        channel=InteractionChannel.WEB_MAP.value,
+        operation="spatial_analysis",
+        interaction_mode="map",
+        details={
+            "analysisId": response.analysis_result.get("analysisId"),
+            "intersectedMunicipalityCount": len(
+                response.analysis_result.get("intersectedMunicipalities", [])
+            ),
+            "categoryCount": len(summary.get("items", [])) if isinstance(summary, dict) else 0,
+            "hasSupportedVegetation": bool(
+                summary.get("hasSupportedVegetation") if isinstance(summary, dict) else False
+            ),
+            "totalCo2": summary.get("totalCo2") if isinstance(summary, dict) else None,
+        },
+    )
     return JsonResponse(response.analysis_result)
 
 
@@ -182,6 +243,15 @@ def interact(request):
 
     interaction_request = _build_text_interaction_request(request, payload)
     session_id = interaction_request.session_id
+    interaction_mode = interaction_request.input.metadata.get("interactionMode", "text")
+    record_experiment_event(
+        request.session,
+        event_type="interaction_started",
+        channel=interaction_request.channel.value,
+        operation="conversational_request",
+        interaction_mode=str(interaction_mode),
+        details={"messageLength": len(interaction_request.input.primary_text())},
+    )
     logger.info(
         "Assistant interaction started session=%s chars=%s selected=%s",
         session_id,
@@ -195,6 +265,14 @@ def interact(request):
     try:
         response = _build_request_orchestrator(request).handle(interaction_request)
     except ValueError as exc:
+        record_experiment_event(
+            request.session,
+            event_type="unknown_request",
+            channel=interaction_request.channel.value,
+            operation="conversational_request",
+            interaction_mode=str(interaction_mode),
+            error=str(exc),
+        )
         logger.warning(
             "Assistant interaction rejected session=%s error=%s",
             session_id,
@@ -202,6 +280,14 @@ def interact(request):
         )
         return JsonResponse({"error": str(exc)}, status=400)
     except LlmProviderUnavailableError as exc:
+        record_experiment_event(
+            request.session,
+            event_type="error",
+            channel=interaction_request.channel.value,
+            operation="conversational_request",
+            interaction_mode=str(interaction_mode),
+            error=str(exc),
+        )
         logger.warning(
             "Assistant interaction provider failure session=%s error=%s",
             session_id,
@@ -215,6 +301,18 @@ def interact(request):
         response.ui_hints.get("mode"),
         response.ui_hints.get("providerMode", "local"),
         bool(response.analysis_result),
+    )
+    record_experiment_event(
+        request.session,
+        event_type="interaction_completed",
+        channel=interaction_request.channel.value,
+        operation=str(response.ui_hints.get("mode") or "conversational_request"),
+        interaction_mode=str(interaction_mode),
+        details={
+            "analysisId": (response.analysis_result or {}).get("analysisId"),
+            "providerMode": response.ui_hints.get("providerMode"),
+            "needsClarification": response.ui_hints.get("needsClarification"),
+        },
     )
 
     return JsonResponse(_serialize_interaction_response(response))
@@ -238,6 +336,15 @@ def interact_stream(request):
 
     interaction_request = _build_text_interaction_request(request, payload)
     session_id = interaction_request.session_id
+    interaction_mode = interaction_request.input.metadata.get("interactionMode", "text")
+    record_experiment_event(
+        request.session,
+        event_type="interaction_started",
+        channel=interaction_request.channel.value,
+        operation="conversational_request",
+        interaction_mode=str(interaction_mode),
+        details={"messageLength": len(interaction_request.input.primary_text())},
+    )
     logger.info(
         "Assistant stream started session=%s chars=%s",
         session_id,
@@ -259,6 +366,14 @@ def interact_stream(request):
                 event_type = str(event.get("type") or "message")
                 yield _encode_sse(event_type, event)
         except ValueError as exc:
+            record_experiment_event(
+                request.session,
+                event_type="unknown_request",
+                channel=interaction_request.channel.value,
+                operation="conversational_request",
+                interaction_mode=str(interaction_mode),
+                error=str(exc),
+            )
             logger.warning(
                 "Assistant stream rejected session=%s error=%s",
                 session_id,
@@ -266,6 +381,14 @@ def interact_stream(request):
             )
             yield _encode_sse("error", {"type": "error", "message": str(exc)})
         except LlmProviderUnavailableError as exc:
+            record_experiment_event(
+                request.session,
+                event_type="error",
+                channel=interaction_request.channel.value,
+                operation="conversational_request",
+                interaction_mode=str(interaction_mode),
+                error=str(exc),
+            )
             logger.warning(
                 "Assistant stream provider failure session=%s error=%s",
                 session_id,
@@ -278,6 +401,18 @@ def interact_stream(request):
         finally:
             _save_stream_session_if_needed(request)
             if final_response is not None:
+                record_experiment_event(
+                    request.session,
+                    event_type="interaction_completed",
+                    channel=interaction_request.channel.value,
+                    operation=str(final_response.ui_hints.get("mode") or "conversational_request"),
+                    interaction_mode=str(interaction_mode),
+                    details={
+                        "analysisId": (final_response.analysis_result or {}).get("analysisId"),
+                        "providerMode": final_response.ui_hints.get("providerMode"),
+                        "needsClarification": final_response.ui_hints.get("needsClarification"),
+                    },
+                )
                 logger.info(
                     "Assistant stream completed session=%s mode=%s provider=%s has_analysis=%s",
                     session_id,
@@ -290,3 +425,95 @@ def interact_stream(request):
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
     return response
+
+
+@require_POST
+def voice_transcribe(request):
+    if not settings.AI_ASSISTANT_ENABLED:
+        return HttpResponseNotFound()
+
+    if not os.getenv("OPENAI_API_KEY", "").strip():
+        return JsonResponse(
+            {"error": "Trascrizione vocale non configurata. Imposta OPENAI_API_KEY."},
+            status=503,
+        )
+
+    audio_file = request.FILES.get("audio")
+    if audio_file is None:
+        return JsonResponse({"error": "Audio mancante nella richiesta."}, status=400)
+
+    duration_ms = None
+    try:
+        raw_duration = request.POST.get("durationMs")
+        duration_ms = int(raw_duration) if raw_duration else None
+    except (TypeError, ValueError):
+        duration_ms = None
+
+    try:
+        transcript = transcribe_uploaded_audio(audio_file)
+    except ValueError as exc:
+        record_experiment_event(
+            request.session,
+            event_type="error",
+            channel=InteractionChannel.VOICE.value,
+            operation="voice_transcription",
+            interaction_mode="voice",
+            duration_ms=duration_ms,
+            error=str(exc),
+        )
+        return JsonResponse({"error": str(exc)}, status=400)
+    except LlmProviderUnavailableError as exc:
+        record_experiment_event(
+            request.session,
+            event_type="error",
+            channel=InteractionChannel.VOICE.value,
+            operation="voice_transcription",
+            interaction_mode="voice",
+            duration_ms=duration_ms,
+            error=str(exc),
+        )
+        return JsonResponse({"error": str(exc)}, status=503)
+
+    record_experiment_event(
+        request.session,
+        event_type="voice_transcribed",
+        channel=InteractionChannel.VOICE.value,
+        operation="voice_transcription",
+        interaction_mode="voice",
+        duration_ms=duration_ms,
+        details={"transcriptLength": len(transcript)},
+    )
+    return JsonResponse({"transcript": transcript})
+
+
+@require_http_methods(["GET", "POST", "DELETE"])
+def experiment_log(request):
+    if request.method == "GET":
+        return JsonResponse(export_experiment_log(request.session))
+
+    if request.method == "DELETE":
+        clear_experiment_log(request.session)
+        return JsonResponse(export_experiment_log(request.session))
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
+
+    if not isinstance(payload, dict):
+        return JsonResponse({"error": "Richiesta non valida: payload non supportato."}, status=400)
+
+    event = record_experiment_event(
+        request.session,
+        event_type=str(payload.get("eventType") or ""),
+        channel=str(payload.get("channel") or "system"),
+        operation=str(payload.get("operation") or ""),
+        interaction_mode=str(payload.get("interactionMode") or ""),
+        duration_ms=payload.get("durationMs") if isinstance(payload.get("durationMs"), int) else None,
+        step_count=payload.get("stepCount") if isinstance(payload.get("stepCount"), int) else None,
+        task_id=str(payload.get("taskId") or ""),
+        status=str(payload.get("status") or ""),
+        error=str(payload.get("error") or ""),
+        details=payload.get("details") if isinstance(payload.get("details"), dict) else {},
+    )
+    return JsonResponse({"event": event, "summary": export_experiment_log(request.session)["summary"]})

@@ -1,169 +1,133 @@
 # Architettura
 
-## Obiettivo
+## Scopo
 
-`CartaNatura` è una web app GIS che consente di:
+`CartaNatura` è un sistema WebGIS per supportare analisi e valutazione economica del servizio ecosistemico di sequestro forestale della CO2. Il progetto è organizzato come applicazione unica, senza linee parallele o moduli storici: interfaccia mappa, conversazione, voce, report e logging sperimentale condividono gli stessi servizi analitici.
 
-- selezionare comuni della Campania
-- disegnare poligoni o rettangoli in mappa
-- intersecare la selezione con il dataset Carta della Natura
-- sintetizzare superficie, categorie vegetazionali, CO2 annua e valore economico
-
-## Vista ad alto livello
+## Moduli
 
 ```text
 Browser
-  -> Leaflet UI
-  -> selezione comuni / geometrie
-  -> POST /progettoGIS/cartaNatura/gis
+  -> Leaflet map workspace
+  -> conversational panel
+  -> voice input
+  -> report/PDF
+  -> experimental event client
 
 Django
   -> views.py
-  -> services/payloads.py
-  -> services/gis_clip.py
-  -> services/datasets.py
-  -> domain/*
+  -> domain/
+  -> services/
+  -> interaction/
+  -> experiments/
 
 Dataset locali
   -> shapeCN/CNPulita.shp
-  -> static/util/moddedCampania.geojson
   -> static/data/*.geojson
 ```
 
-## Layer applicativi
+## Separazione Responsabilità
 
-### `progettoGIS/`
+### WebGIS e Mappa
 
-Contiene il contenitore Django:
+- [static/js/modules/map-controller.js](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/static/js/modules/map-controller.js:1)
+- selezione comuni
+- disegno, modifica e rimozione geometrie
+- rendering categorie forestali e comuni interessati
+- verifica spaziale dei risultati
 
-- `settings.py`
-- `urls.py`
-- `wsgi.py`
-- `asgi.py`
+### Analisi Spaziale
 
-Non contiene logica di dominio.
+- [services/payloads.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/services/payloads.py:1)
+- [services/datasets.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/services/datasets.py:1)
+- [services/gis_clip.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/services/gis_clip.py:1)
+- validazione payload GeoJSON
+- conversione CRS
+- clip tra selezione e Carta della Natura
+- comuni interessati
 
-### `cartaNatura/views.py`
+### CO2 Sequestrata
 
-Responsabilità:
+- [domain/vegetation.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/domain/vegetation.py:1)
+- coefficienti per categoria forestale
+- serializzazione categorie per frontend
+- sintesi server/client coerente
 
-- render della pagina principale
-- iniezione config frontend
-- endpoint POST `/gis`
-- orchestrazione tra parsing payload e servizio GIS
+### Valutazione Economica
 
-Le view devono restare sottili.
+- scenari prezzo configurati in [views.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/views.py:47)
+- calcolo lato client: prezzo EUR/t moltiplicato per CO2 annua stimata
+- evento sperimentale `valuation_completed`
 
-### `cartaNatura/services/`
+### Interfaccia Conversazionale
 
-Responsabilità:
+- [interaction/models.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction/models.py:1)
+- [interaction/resolvers.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction/resolvers.py:1)
+- [interaction/orchestrator.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction/orchestrator.py:1)
+- [interaction/assistant_runtime.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction/assistant_runtime.py:1)
+- intenti di dominio
+- fast path deterministici
+- runtime LLM con tool use
+- stato conversazionale in sessione Django
 
-- `payloads.py`: valida e normalizza la richiesta del client
-- `datasets.py`: carica in cache i dataset GIS locali
-- `gis_clip.py`: converte le aree in `GeoDataFrame`, applica il clip e restituisce il risultato
+### Supporto Vocale
 
-Qui vive la logica applicativa GIS.
+- `MediaRecorder` nel browser acquisisce un messaggio audio breve
+- Django invia audio a OpenAI Audio Transcriptions
+- il transcript torna al frontend e viene inviato allo stesso endpoint conversazionale
+- channel `voice`, metadata `interactionMode=voice`
+- log senza salvare transcript
 
-### `cartaNatura/domain/`
+### Report
 
-Responsabilità:
+- [static/js/modules/pdf-export.js](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/static/js/modules/pdf-export.js:1)
+- report HTML nel pannello laterale
+- PDF con mappa, CO2, superficie, categoria prevalente, scenario prezzo, valore stimato, comuni interessati
+- evento `report_generated`
 
-- `vegetation.py`: categorie vegetazionali, mapping codice -> categoria, coefficienti CO2
-- `municipalities.py`: regole sui comuni e filtri di business
+### Logging Sperimentale
 
-Qui vivono regole pure, senza dipendenze Django.
+- [experiments/logging.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/experiments/logging.py:1)
+- log session-scoped
+- export JSON
+- niente testo libero utente, transcript, IP o identificativi personali
 
-### `cartaNatura/static/js/`
-
-Responsabilità:
-
-- bootstrap frontend
-- gestione mappa
-- chiamate API
-- aggregazione analisi lato client
-- export PDF
-
-La logica è divisa in moduli e non più in un singolo file monolitico con GeoJSON embedded.
-
-## Flusso richiesta
+## Flusso WebGIS
 
 ```mermaid
 flowchart TD
-  A["Utente seleziona comuni o disegna geometrie"] --> B["Frontend costruisce payload GeoJSON"]
-  B --> C["POST /progettoGIS/cartaNatura/gis"]
+  A["Utente seleziona comuni o disegna area"] --> B["Frontend costruisce payload GeoJSON"]
+  B --> C["POST /gis"]
   C --> D["parse_selection_payload"]
   D --> E["clip_selection"]
-  E --> F["load_nature_shapes / load_campania_boundaries"]
-  F --> G["GeoPandas clip"]
-  G --> H["JsonResponse con feature clipped e comuni interessati"]
-  H --> I["Frontend aggrega categorie, CO2 e report"]
+  E --> F["Sintesi categorie forestali e CO2"]
+  F --> G["Mappa + report aggiornati"]
+  G --> H["Scenario prezzo + PDF"]
 ```
 
-## Interaction layer assistente
+## Flusso Conversazionale
 
-Il progetto include anche un layer assistente sopra il GIS deterministico:
-
-```text
-Browser chat / mappa
-  -> POST /progettoGIS/cartaNatura/interact
-  -> POST /progettoGIS/cartaNatura/interact/stream
-
-Django interaction layer
-  -> InteractionOrchestrator
-  -> RuleBasedIntentResolver per fast-path deterministici
-  -> OpenAiAssistantRuntime per Responses API e tool use
-  -> ToolRegistry
-  -> AnalysisStore e SessionStore in sessione Django
-
-GIS tools
-  -> analyze_municipalities
-  -> analyze_selection
-  -> compare_recent_analyses
-  -> get_last_analysis
-  -> get_methodology
+```mermaid
+flowchart TD
+  A["Utente scrive o detta richiesta"] --> B["InteractionRequest"]
+  B --> C["Intent resolver"]
+  C --> D{"Serve LLM?"}
+  D -->|no| E["Handler deterministico"]
+  D -->|si| F["Responses API + tool registry"]
+  E --> G["Analisi GIS"]
+  F --> G
+  G --> H["Risposta testuale + uiHints"]
+  H --> I["Mappa aggiornata e verificabile"]
 ```
 
-Regola architetturale: LLM interpreta e sintetizza, ma numeri GIS e confronti arrivano solo da tool backend.
-Le `uiActions` sono una allowlist server/client: il backend accetta solo azioni note nello schema structured output e il frontend filtra di nuovo prima di eseguire handler locali.
+## Regole
 
-## Coordinate systems
-
-Il progetto usa CRS diversi a seconda della sorgente:
-
-- comuni selezionati: `EPSG:32633`
-- geometrie disegnate in mappa: `EPSG:4326`
-- analisi GIS finale: conversione a `EPSG:4326`
-
-Questo punto è critico: ogni modifica GIS deve essere verificata rispetto alla coerenza dei CRS.
-
-## Datasets
-
-### `cartaNatura/shapeCN/CNPulita.*`
-
-Shapefile sorgente della Carta della Natura usato per il clip.
-
-### `cartaNatura/static/util/moddedCampania.geojson`
-
-Confini comunali usati per ricavare i comuni interessati da geometrie disegnate.
-
-### `cartaNatura/static/data/*.geojson`
-
-Dataset client-side ottimizzati per la UI:
-
-- comuni Campania in `32633`
-- boundaries in `4326`
-
-## Convenzioni architetturali
-
-- Le view non devono contenere business logic GIS.
-- Le costanti di dominio devono vivere in `domain/`, non duplicate tra Python e JS quando evitabile.
-- I dataset locali devono essere caricati con caching.
-- Il frontend deve parlare con il backend tramite path relativi e config iniettata dal server.
-- Il repository deve restare operabile in locale senza dipendenze da servizi GIS esterni.
-
-## Debito tecnico residuo
-
-- separare ulteriormente il report PDF dal bootstrap applicativo
-- estendere QA browser in CI quando esiste pipeline e2e dedicata
-- alleggerire ulteriormente gli asset statici residui
-- introdurre eventualmente un formato dati più efficiente per alcuni layer grandi
+- Numeri GIS e CO2 arrivano solo da servizi deterministici.
+- LLM interpreta richieste, guida workflow e sintetizza risultati.
+- Ogni risultato prodotto dalla conversazione deve restare verificabile su mappa.
+- Le view Django restano sottili.
+- I dataset locali sono caricati con caching.
+- CRS critici:
+  - comuni UI: `EPSG:32633`
+  - disegni mappa: `EPSG:4326`
+  - analisi finale: conversione coerente prima del clip

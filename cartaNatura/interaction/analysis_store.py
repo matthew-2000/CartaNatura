@@ -66,11 +66,11 @@ class AnalysisStore(Protocol):
         """Remove all stored analyses."""
 
 
-def new_analysis_id() -> str:
+def create_analysis_id() -> str:
     return f"analysis_{uuid4().hex[:12]}"
 
 
-def new_stored_analysis(
+def create_stored_analysis(
     *,
     source: str,
     summary: dict[str, Any],
@@ -80,7 +80,7 @@ def new_stored_analysis(
     metadata: dict[str, Any] | None = None,
 ) -> StoredAnalysis:
     return StoredAnalysis(
-        analysis_id=new_analysis_id(),
+        analysis_id=create_analysis_id(),
         source=source,
         created_at=datetime.now(UTC).isoformat(),
         summary=summary,
