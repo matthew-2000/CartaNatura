@@ -32,20 +32,20 @@ export async function generatePdfReport({
 }) {
   const JsPdf = getJsPdfConstructor();
   if (!JsPdf || !window.domtoimage) {
-    throw new Error("PDF libraries not available.");
+    throw new Error("Generazione PDF non disponibile.");
   }
 
   const doc = new JsPdf();
   const derivedMetrics = deriveSummaryMetrics(summary);
 
-  const title = "Informazioni sulla natura";
+  const title = "Report Carta della Natura";
   const pageWidth = doc.internal.pageSize.getWidth();
   doc.setFontSize(22);
   doc.setTextColor(22, 38, 31);
   doc.text(title, 14, 24);
   doc.setFontSize(10);
   doc.setTextColor(98, 108, 102);
-  doc.text("Report sintetico di estrazione GIS e valorizzazione forestale", 14, 31);
+  doc.text("Analisi GIS, assorbimento annuo stimato e valorizzazione forestale", 14, 31);
 
   const mapImage = await window.domtoimage.toPng(mapElement);
   doc.addImage(mapImage, "PNG", 14, 38, 108, 88);
@@ -55,7 +55,7 @@ export async function generatePdfReport({
     y: 38,
     width: 68,
     height: 22,
-    label: "CO2 annua",
+    label: "CO2 annua stimata",
     value: `${formatRoundedNumber(summary.totalCo2)} t`,
   });
   addMetricCard(doc, {
@@ -92,20 +92,16 @@ export async function generatePdfReport({
   }
 
   cursorY += 2;
-  doc.text(
-    `CO2 assorbita annua: ${formatRoundedNumber(summary.totalCo2)} t`,
-    14,
-    cursorY
-  );
+  doc.text(`Assorbimento annuo stimato: ${formatRoundedNumber(summary.totalCo2)} t CO2`, 14, cursorY);
   cursorY += 12;
 
   if (selectedPrice) {
-    doc.text(`Valore per tonnellata: ${selectedPrice} EUR`, 14, cursorY);
+    doc.text(`Prezzo selezionato: ${selectedPrice} EUR/t`, 14, cursorY);
     cursorY += 6;
   }
 
   if (calculatedValue > 0) {
-    doc.text(`Valore monetario totale: ${formatCurrency(calculatedValue)}`, 14, cursorY);
+    doc.text(`Valore stimato: ${formatCurrency(calculatedValue)}`, 14, cursorY);
   }
 
   doc.addPage();
@@ -114,7 +110,7 @@ export async function generatePdfReport({
   doc.text("Comuni interessati", 14, 20);
   doc.setFontSize(10);
   doc.setTextColor(98, 108, 102);
-  doc.text("Elenco dei comuni intercettati dalla selezione finale", 14, 26);
+  doc.text("Comuni compresi nell'area analizzata", 14, 26);
   const municipalitiesText = intersectedMunicipalities.length
     ? `I comuni interessati sono: ${intersectedMunicipalities.join(", ")}`
     : "Nessun comune interessato.";

@@ -1,57 +1,31 @@
 {% load static %}
 
 <!DOCTYPE html>
-<html>
+<html data-asset-version="{{ asset_version }}">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="author" content="unsorry">
-  <meta name="description" content="leaflet draw export to geojson file">
+  <meta name="description" content="WebGIS per analizzare vegetazione forestale, CO2 annua stimata e valore economico delle aree selezionate in Campania.">
 
   <link rel="icon" type="image/x-icon" href="{% static 'assets/favicon.png'%}">
 
-  <title>Carta della Natura</title>
+  <title>Carta Natura</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=Spectral:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
-  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  <link rel="stylesheet" href="{% static 'vendor/leaflet/leaflet.css' %}?v={{ asset_version }}"/>
+  <link rel="stylesheet" href="{% static 'css/leaflet.draw.css' %}?v={{ asset_version }}"/>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}?v={{ asset_version }}">
 </head>
 <body>
-  <div class="navbar">
-    <div class="navbar-brand-shell">
-      <div class="brand-badge">GIS</div>
-      <div class="brand-copy">
-        <div class="brand-eyebrow">Sistema informativo territoriale</div>
-        <div class="brand-title">Carta della Natura</div>
-        <div class="brand-subtitle">Analisi premium della vegetazione forestale in Campania</div>
-      </div>
-    </div>
-    <div class="navbar-actions-shell">
-      <div class="workflow-rail">
-        <span class="workflow-step">1. Selezione</span>
-        <span class="workflow-step">2. Estrazione</span>
-        <span class="workflow-step">3. Sintesi</span>
-      </div>
-      <div class="navbar-group navbar-main-actions">
-        <button id="butSelezionaComune" title="Seleziona comuni" class="btn btn-info btn-sm text-light app-btn app-btn-secondary">Comuni</button>
-        <button id="eseguiClipBut" title="Esegui clip" class="btn btn-danger btn-sm text-light app-btn app-btn-primary">Estrai</button>
-        <button id="mostraInfoBut" title="Visualizza analisi" class="btn btn-danger btn-sm text-light app-btn app-btn-primary">Analisi</button>
-      </div>
-      <div class="navbar-group navbar-utility-actions">
-        <button id="resetMapState" class="btn btn-outline-light btn-sm app-btn app-btn-ghost">Reset</button>
-        <button id="infoApp" title="Visualizza info app" class="btn btn-danger btn-sm text-light app-btn app-btn-ghost">Guida</button>
-      </div>
-    </div>
-  </div>
   <div id="container">
-  <div id="appNotice" class="app-notice" role="status" aria-live="polite" hidden></div>
-	<div class="loading" aria-live="polite" aria-hidden="true">
+    <div id="appNotice" class="app-notice" role="status" aria-live="polite" hidden></div>
+    <div class="loading" aria-live="polite" aria-hidden="true">
       <div class="loading-card">
         <div class="loading-visual" aria-hidden="true">
           <span class="loading-ring loading-ring-outer"></span>
@@ -60,107 +34,210 @@
           <span class="loading-core"></span>
         </div>
         <div class="loading-title">Analisi in corso</div>
-        <div class="loading-copy">Intersezione GIS, normalizzazione geometrie, sintesi vegetazione.</div>
+        <div class="loading-copy">Intersezione delle geometrie e calcolo degli indicatori forestali.</div>
         <div class="loading-steps" aria-hidden="true">
-          <span>Selezione</span>
-          <span>Estrazione</span>
-          <span>Sintesi</span>
+          <span>Area</span>
+          <span>Dati GIS</span>
+          <span>Report</span>
         </div>
       </div>
-	</div>
-  <div class="popup" id="popup" role="dialog" aria-modal="true" aria-hidden="true">
-    <div class="drawer-shell">
-      <nav id="navVisualizzaInfo" class="drawer-content">
-		    <div class="drawer-header">
-          <div>
-            <div class="drawer-eyebrow">Report analitico</div>
-            <h2>Informazioni sulla natura</h2>
+    </div>
+
+    <div class="workspace-shell">
+      <header class="navbar">
+        <div class="navbar-brand-shell">
+          <div class="brand-badge">GIS</div>
+          <div class="brand-copy">
+            <div class="brand-eyebrow">Sistema informativo territoriale</div>
+            <div class="brand-title">Carta Natura</div>
+            <div class="brand-subtitle">Analisi territoriale della vegetazione forestale in Campania</div>
           </div>
-          <button id="butchiudipopup" type="button" class="btn btn-sm app-btn app-btn-ghost app-btn-dark">Chiudi</button>
         </div>
-		    <div id="infoNatura"><p>dettagli qui</p></div>
-      </nav>
+
+        <div class="navbar-actions-shell">
+          <button id="butSelezionaComune" title="Apri selezione comuni" class="btn btn-sm app-btn app-btn-secondary">Comuni</button>
+          <button id="eseguiClipBut" title="Esegui analisi GIS" class="btn btn-sm app-btn app-btn-primary">Analizza</button>
+          <button id="mostraInfoBut" title="Apri report" class="btn btn-sm app-btn app-btn-secondary">Report</button>
+          <button id="openAssistantPanel" title="Apri assistente" aria-controls="assistantPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Assistente</button>
+          <button id="infoApp" title="Apri guida" class="btn btn-sm app-btn app-btn-ghost">Guida</button>
+          <button id="resetMapState" title="Cancella selezioni e risultati" class="btn btn-sm app-btn app-btn-ghost">Reset</button>
+        </div>
+      </header>
+
+      <div class="workspace-main">
+        <section class="map-column">
+          <div class="map-top-panels">
+            <aside id="mapStatusPanel" class="map-card status-card">
+              <div class="map-card-header">
+                <div>
+                  <div class="map-card-kicker">Sessione</div>
+                  <div class="map-card-title">Stato analisi</div>
+                </div>
+              </div>
+              <div id="statusContent">
+                <div class="status-chip">
+                  <span class="status-label">Comuni</span>
+                  <strong class="status-value">0</strong>
+                </div>
+                <div class="status-chip">
+                  <span class="status-label">Geometrie</span>
+                  <strong class="status-value">0</strong>
+                </div>
+                <div class="status-chip">
+                  <span class="status-label">Categorie</span>
+                  <strong class="status-value">0</strong>
+                </div>
+                <div class="status-chip status-chip-wide">
+                  <span class="status-label">Risultato</span>
+                  <strong class="status-value">non avviata</strong>
+                </div>
+              </div>
+            </aside>
+
+            <aside id="legendPanel" class="map-card legend-card is-collapsed">
+              <div class="map-card-header">
+                <div>
+                  <div class="map-card-kicker">Classificazione</div>
+                  <div class="map-card-title">Legenda</div>
+                </div>
+                <button type="button" id="toggleLegendPanel" class="map-card-toggle" aria-expanded="false" aria-controls="legendContent">
+                  Apri
+                </button>
+              </div>
+              <div id="legendContent"></div>
+            </aside>
+          </div>
+
+          <div class="map-stage">
+            <div class="map-frame-header">
+              <div>
+                <div class="map-frame-kicker">Area di analisi</div>
+                <h2 class="map-frame-title">Mappa operativa</h2>
+              </div>
+              <p class="map-frame-description">Seleziona uno o più comuni oppure disegna un'area. La mappa mostra selezioni, risultati e confini territoriali.</p>
+            </div>
+            <div id="map"></div>
+          </div>
+        </section>
+
+        <aside class="workspace-sidebar">
+          <nav id="navListaComuni" class="sidebar-card comuni-panel nascondiListaComuni" aria-label="Selezione comuni">
+            <div class="comuni-panel-header">
+              <div class="comuni-panel-eyebrow">Selezione territoriale</div>
+              <div class="comuni-panel-title">Comuni della Campania</div>
+              <div id="selectedCountLabel" class="comuni-panel-count">0 selezionati</div>
+              <input id="municipalitySearch" type="search" class="form-control form-control-sm" placeholder="Cerca un comune" />
+            </div>
+            <div id="lista-comuni" class="comuni-list"></div>
+          </nav>
+
+          <section class="sidebar-card popup" id="popup" role="region" aria-hidden="true">
+            <div class="drawer-shell">
+              <div id="navVisualizzaInfo" class="drawer-content">
+                <div class="drawer-header">
+                  <div>
+                    <div class="drawer-eyebrow">Report</div>
+                    <h2>Risultati dell'analisi</h2>
+                  </div>
+                  <button id="butchiudipopup" type="button" class="btn btn-sm app-btn app-btn-ghost">Chiudi</button>
+                </div>
+                <div id="infoNatura"><p>Nessun report disponibile.</p></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="sidebar-card infoApp" id="infoApplicazione" role="region" aria-hidden="true">
+            <div class="guide-modal-header">
+              <div>
+                <div class="drawer-eyebrow">Guida operativa</div>
+                <h2>Guida rapida</h2>
+              </div>
+              <button id="closeInfoAppTop" type="button" class="btn btn-sm app-btn app-btn-ghost">Indietro alla mappa</button>
+            </div>
+            <div class="guide-content">
+              <div class="guide-hero">
+                <p class="guide-lead">Seleziona un'area in Campania, esegui l'analisi GIS e consulta il report su vegetazione forestale, CO2 annua stimata e valore economico.</p>
+              </div>
+              <div class="guide-grid">
+                <article class="guide-step-card">
+                  <div class="guide-step-index">01</div>
+                  <h3>Definisci l'area</h3>
+                  <p>Apri <strong>Comuni</strong> e seleziona uno o più territori, oppure disegna un poligono o un rettangolo sulla mappa.</p>
+                  <img src="{% static 'assets/selezionacomuni.png'%}" alt="Pannello di selezione dei comuni">
+                </article>
+                <article class="guide-step-card">
+                  <div class="guide-step-index">02</div>
+                  <h3>Rifinisci la geometria</h3>
+                  <p>Puoi combinare comuni e geometrie disegnate. I controlli mappa consentono di creare, modificare o rimuovere le aree.</p>
+                  <img src="{% static 'assets/modifica.png'%}" alt="Comandi di modifica della geometria">
+                </article>
+                <article class="guide-step-card">
+                  <div class="guide-step-index">03</div>
+                  <h3>Esegui l'analisi</h3>
+                  <p>Con <strong>Analizza</strong> l'applicazione incrocia l'area selezionata con i dati Carta della Natura e mostra le categorie forestali rilevate.</p>
+                  <img src="{% static 'assets/risultatoclip.png'%}" alt="Risultato dell'analisi sulla mappa">
+                </article>
+                <article class="guide-step-card">
+                  <div class="guide-step-index">04</div>
+                  <h3>Leggi il report</h3>
+                  <p>Il pannello <strong>Report</strong> mostra superficie, CO2 annua stimata, categoria prevalente, dettaglio della vegetazione e valore economico esportabile in PDF.</p>
+                  <img src="{% static 'assets/infonatura.png'%}" alt="Report analitico della vegetazione">
+                </article>
+              </div>
+              <div class="guide-tips-card">
+                <h3>Indicazioni rapide</h3>
+                <ul class="guide-tips-list">
+                  <li>Usa <strong>Reset</strong> per cancellare selezioni, risultati e report.</li>
+                  <li>Apri <strong>Legenda</strong> solo quando devi interpretare le categorie in mappa.</li>
+                  <li>Dopo il calcolo del valore puoi esportare un PDF con mappa e risultati.</li>
+                </ul>
+              </div>
+            </div>
+            <button id="closeInfoApp" type="button" class="btn btn-sm app-btn app-btn-secondary guide-bottom-close">Indietro alla mappa</button>
+          </section>
+
+          <aside id="assistantPanel" class="sidebar-card assistant-panel" aria-hidden="true">
+            <div
+              id="assistantResizeHandle"
+              class="assistant-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-controls="assistantPanel"
+              aria-label="Ridimensiona pannello assistente"
+              tabindex="0"
+            ></div>
+            <div class="assistant-panel-shell">
+              <div class="assistant-panel-header">
+                <div>
+                  <div class="assistant-panel-eyebrow">Assistente AI</div>
+                  <div class="assistant-panel-title">Assistente Carta Natura</div>
+                  <div id="assistantStatus" class="assistant-panel-status">Assistente non disponibile</div>
+                </div>
+                <button id="closeAssistantPanel" type="button" class="btn btn-sm app-btn app-btn-ghost">Chiudi</button>
+              </div>
+              <div class="assistant-quick-actions">
+                <button type="button" class="assistant-chip" data-prompt="Azzera sessione">Azzera sessione</button>
+              </div>
+              <div id="assistantMessages" class="assistant-messages" aria-live="polite"></div>
+              <form id="assistantForm" class="assistant-form">
+                <label class="assistant-form-label" for="assistantInput">Messaggio</label>
+                <textarea
+                  id="assistantInput"
+                  class="assistant-input"
+                  rows="3"
+                  placeholder="Scrivi un messaggio all'assistente"
+                ></textarea>
+                <div class="assistant-form-actions">
+                  <button id="assistantSendButton" type="submit" class="btn btn-sm app-btn app-btn-primary">Invia</button>
+                </div>
+              </form>
+            </div>
+          </aside>
+        </aside>
+      </div>
     </div>
   </div>
-  <div class="infoApp" id="infoApplicazione" role="dialog" aria-modal="true" aria-hidden="true">
-    <nav class="guide-content">		
-      <div class="guide-hero">
-        <p class="guide-lead">Seleziona comuni o disegna un perimetro, esegui l'estrazione GIS e ottieni un report sintetico su copertura forestale, CO2 annua e valorizzazione economica.</p>
-      </div>
-      <div class="guide-grid">
-        <article class="guide-step-card">
-          <div class="guide-step-index">01</div>
-          <h3>Definisci l'area</h3>
-          <p>Apri il pannello <strong>Comuni</strong> e seleziona uno o piu comuni, oppure usa i tool mappa per disegnare un poligono o un rettangolo.</p>
-          <img src="{% static 'assets/selezionacomuni.png'%}" alt="Pannello di selezione dei comuni">
-        </article>
-        <article class="guide-step-card">
-          <div class="guide-step-index">02</div>
-          <h3>Rifinisci la geometria</h3>
-          <p>Puoi combinare area amministrativa e geometrie disegnate. I comandi in basso a sinistra consentono di creare, modificare o rimuovere le selezioni.</p>
-          <img src="{% static 'assets/modifica.png'%}" alt="Comandi di modifica della geometria">
-        </article>
-        <article class="guide-step-card">
-          <div class="guide-step-index">03</div>
-          <h3>Esegui l'estrazione</h3>
-          <p>Con <strong>Estrai</strong> l'applicazione interseca la selezione con la Carta della Natura e restituisce in mappa le categorie forestali rilevate.</p>
-          <img src="{% static 'assets/risultatoclip.png'%}" alt="Risultato dell'estrazione sulla mappa">
-        </article>
-        <article class="guide-step-card">
-          <div class="guide-step-index">04</div>
-          <h3>Leggi e valorizza il report</h3>
-          <p>Il pannello <strong>Analisi</strong> mostra ettari, CO2, categoria prevalente, dettaglio per vegetazione e una stima economica esportabile in PDF.</p>
-          <img src="{% static 'assets/infonatura.png'%}" alt="Report analitico della vegetazione">
-        </article>
-      </div>
-      <div class="guide-tips-card">
-        <h3>Indicazioni rapide</h3>
-        <ul class="guide-tips-list">
-          <li>Usa <strong>Reset</strong> per pulire selezioni, risultati e report correnti.</li>
-          <li>La <strong>Legenda</strong> puo restare chiusa e si apre solo quando serve.</li>
-          <li>Dopo il calcolo economico puoi generare un PDF con mappa e riepilogo dei risultati.</li>
-        </ul>
-      </div>
-    </nav>  
-			  <button id="closeInfoApp" type="button" class="btn btn-sm mt-3 app-btn app-btn-ghost app-btn-dark">Chiudi finestra</button>
-		</div>
-	<nav id="navListaComuni" class="nascondiListaComuni comuni-panel">
-    <div class="comuni-panel-header">
-      <div class="comuni-panel-eyebrow">Selezione territoriale</div>
-      <div class="comuni-panel-title">Comuni della Campania</div>
-      <div id="selectedCountLabel" class="comuni-panel-count">0 selezionati</div>
-      <input id="municipalitySearch" type="search" class="form-control form-control-sm" placeholder="Cerca comune" />
-    </div>
-    <div id='lista-comuni' class="comuni-list">
-    </div>
-  </nav>
-    <aside id="mapStatusPanel" class="map-card status-card">
-      <div class="map-card-header">
-        <div>
-          <div class="map-card-kicker">Sessione corrente</div>
-          <div class="map-card-title">Stato</div>
-        </div>
-      </div>
-      <div id="statusContent">
-        <div class="status-line"><strong>Comuni selezionati:</strong> 0</div>
-        <div class="status-line"><strong>Geometrie disegnate:</strong> 0</div>
-        <div class="status-line"><strong>Risultato:</strong> nessuna analisi</div>
-      </div>
-    </aside>
-    <aside id="legendPanel" class="map-card legend-card is-collapsed">
-      <div class="map-card-header">
-        <div>
-          <div class="map-card-kicker">Classificazione</div>
-          <div class="map-card-title">Legenda</div>
-        </div>
-        <button type="button" id="toggleLegendPanel" class="map-card-toggle" aria-expanded="false" aria-controls="legendContent">
-          Apri
-        </button>
-      </div>
-      <div id="legendContent"></div>
-    </aside>
-    <div id="map"></div>
-  </div>
+
   <template class="comune-template">
     <div class="comune-item">
       <div>
@@ -173,12 +250,11 @@
   </template>
   <div id="div-finale"></div>
   <script id="app-config" type="application/json">{{ app_config_json|safe }}</script>
-  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-geometryutil/0.10.3/leaflet.geometryutil.min.js"></script>
+  <script src="{% static 'vendor/leaflet/leaflet.js' %}?v={{ asset_version }}"></script>
+  <script src="{% static 'vendor/leaflet-draw/leaflet.draw.js' %}?v={{ asset_version }}"></script>
+  <script src="{% static 'vendor/leaflet-geometryutil/leaflet.geometryutil.min.js' %}?v={{ asset_version }}"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/1.5.3/jspdf.min.js"></script>
-  <script src="{% static 'js/dom-to-image.min.js' %}"></script>
-  <script type="module" src="{% static 'js/app.js' %}"></script>
-  
+  <script src="{% static 'js/dom-to-image.min.js' %}?v={{ asset_version }}"></script>
+  <script type="module" src="{% static 'js/app.js' %}?v={{ asset_version }}"></script>
 </body>
 </html>

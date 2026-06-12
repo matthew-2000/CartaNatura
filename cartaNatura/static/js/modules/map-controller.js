@@ -125,8 +125,24 @@ export class MapController {
     return this.selectedMunicipalities.size;
   }
 
+  getSelectedMunicipalityNames() {
+    return [...this.selectedMunicipalities];
+  }
+
   getDrawnFeatureCount() {
     return this.drawnItems.toGeoJSON().features.length;
+  }
+
+  getMapExtent() {
+    const bounds = this.map.getBounds();
+    return bounds.isValid()
+      ? {
+          south: bounds.getSouth(),
+          west: bounds.getWest(),
+          north: bounds.getNorth(),
+          east: bounds.getEast(),
+        }
+      : null;
   }
 
   toggleMunicipalitySelection(name, selected) {
@@ -249,6 +265,10 @@ export class MapController {
   setInteractionDisabled(disabled) {
     const container = this.map.getContainer();
     container.classList.toggle("map-disabled", disabled);
+  }
+
+  syncLayout() {
+    this.map.invalidateSize({ pan: false, debounceMoveend: true });
   }
 
   _fitToUserInputs() {
