@@ -5,6 +5,9 @@ const versionedPath = (path) =>
 let requestSpatialAnalysis;
 let fetchGeoJson;
 let sendExperimentEvent;
+let startStudySession;
+let clearStudySession;
+let fetchStudyExport;
 let transcribeVoiceMessage;
 let sendInteractionMessage;
 let sendInteractionMessageStream;
@@ -45,6 +48,9 @@ async function loadModules() {
     requestSpatialAnalysis,
     fetchGeoJson,
     sendExperimentEvent,
+    startStudySession,
+    clearStudySession,
+    fetchStudyExport,
     transcribeVoiceMessage,
     sendInteractionMessage,
     sendInteractionMessageStream,
@@ -72,6 +78,10 @@ const state = {
   assistantBusy: false,
   voiceListening: false,
   voiceTimer: null,
+  study: {
+    panel: null,
+    session: null,
+  },
 };
 
 const elements = {
@@ -376,9 +386,218 @@ function recordExperiment(event) {
     return;
   }
 
-  sendExperimentEvent(appConfig.experimentLogUrl, event).catch((error) => {
+  const payload = { ...event };
+  const activeStudySession = state.study.session || appConfig.study?.currentSession || null;
+  if (activeStudySession?.taskId && !payload.taskId) {
+    payload.taskId = activeStudySession.taskId;
+  }
+
+  sendExperimentEvent(appConfig.experimentLogUrl, payload).catch((error) => {
     console.debug("Experiment event not recorded", error);
   });
+}
+
+function isStudyConsoleEnabled() {
+  return Boolean(appConfig?.study?.enabled && appConfig.study.sessionUrl);
+}
+
+function getStudySession() {
+  return state.study.session || appConfig.study?.currentSession || null;
+}
+
+function setStudySession(session) {
+  state.study.session = session || null;
+  if (appConfig.study) {
+    appConfig.study.currentSession = session || null;
+  }
+  renderStudyStatus();
+}
+
+function buildStudyTaskOptions() {
+  return (appConfig.study?.tasks || [])
+    .map((task) => `<option value="${escapeHtml(task.id)}">${escapeHtml(task.label)}</option>`)
+    .join("");
+}
+
+function buildStudyConsole() {
+  if (!isStudyConsoleEnabled()) {
+    return;
+  }
+
+  const panel = document.createElement("section");
+  panel.id = "studyConsole";
+  panel.className = "study-console is-collapsed";
+  panel.innerHTML = `
+    <button type="button" class="study-console-toggle" aria-expanded="false" aria-controls="studyConsoleBody">
+      Controllo
+    </button>
+    <div id="studyConsoleBody" class="study-console-body">
+      <div class="study-console-header">
+        <div>
+          <div class="study-console-kicker">Riservato</div>
+          <div class="study-console-title">Console operatore</div>
+        </div>
+        <div id="studyConsoleStatus" class="study-console-status">Non avviata</div>
+      </div>
+      <div class="study-console-grid">
+        <label>
+          <span>Codice</span>
+          <input id="studyParticipantId" type="text" value="participant_001" autocomplete="off" spellcheck="false">
+        </label>
+        <label>
+          <span>Percorso</span>
+          <select id="studyCondition">
+            <option value="webgis">webgis</option>
+            <option value="conversational">conversational</option>
+          </select>
+        </label>
+        <label class="study-console-wide">
+          <span>Attività</span>
+          <select id="studyTaskId">${buildStudyTaskOptions()}</select>
+        </label>
+      </div>
+      <div class="study-console-actions">
+        <button type="button" class="study-action is-primary" data-study-action="start-session">Avvia</button>
+        <button type="button" class="study-action" data-study-action="start-task">Inizia attività</button>
+        <button type="button" class="study-action" data-study-action="complete-task">Completa</button>
+        <button type="button" class="study-action" data-study-action="mark-error">Errore</button>
+        <button type="button" class="study-action" data-study-action="mark-unknown">Non compresa</button>
+        <button type="button" class="study-action" data-study-action="export-json">JSON</button>
+        <button type="button" class="study-action" data-study-action="export-jsonl">JSONL</button>
+        <button type="button" class="study-action is-danger" data-study-action="reset-session">Reset</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(panel);
+  state.study.panel = panel;
+
+  panel.querySelector(".study-console-toggle").addEventListener("click", () => {
+    const collapsed = !panel.classList.contains("is-collapsed");
+    panel.classList.toggle("is-collapsed", collapsed);
+    panel.querySelector(".study-console-toggle").setAttribute("aria-expanded", String(!collapsed));
+  });
+
+  panel.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-study-action]")?.dataset.studyAction;
+    if (!action) {
+      return;
+    }
+    handleStudyAction(action);
+  });
+
+  const currentSession = getStudySession();
+  if (currentSession) {
+    panel.querySelector("#studyParticipantId").value = currentSession.participantId || "";
+    panel.querySelector("#studyCondition").value = currentSession.condition || "webgis";
+    panel.querySelector("#studyTaskId").value = currentSession.taskId || "";
+  }
+  renderStudyStatus();
+}
+
+function renderStudyStatus(message = null) {
+  const status = state.study.panel?.querySelector("#studyConsoleStatus");
+  if (!status) {
+    return;
+  }
+  const session = getStudySession();
+  if (!session) {
+    status.textContent = message || "Non avviata";
+    status.classList.remove("is-active");
+    return;
+  }
+  status.textContent = message || `${session.participantId} / ${session.condition}`;
+  status.classList.add("is-active");
+}
+
+async function handleStudyAction(action) {
+  try {
+    if (action === "start-session") {
+      await startCurrentStudySession();
+    } else if (action === "start-task") {
+      markStudyEvent("task_started", "study_task", "started");
+    } else if (action === "complete-task") {
+      markStudyEvent("task_completed", "study_task", "completed");
+    } else if (action === "mark-error") {
+      markStudyEvent("error", "manual_mark", "marked", { error: "manual_error" });
+    } else if (action === "mark-unknown") {
+      markStudyEvent("unknown_request", "manual_mark", "marked", { error: "manual_unknown_request" });
+    } else if (action === "export-json") {
+      await downloadStudyExport("json");
+    } else if (action === "export-jsonl") {
+      await downloadStudyExport("jsonl");
+    } else if (action === "reset-session") {
+      await resetCurrentStudySession();
+    }
+  } catch (error) {
+    renderStudyStatus(error.message || "Errore");
+    showNotice(error.message || "Operazione non completata.", "error");
+  }
+}
+
+async function startCurrentStudySession() {
+  const participantId = state.study.panel.querySelector("#studyParticipantId").value.trim();
+  const condition = state.study.panel.querySelector("#studyCondition").value;
+  const taskId = state.study.panel.querySelector("#studyTaskId").value;
+  const result = await startStudySession(appConfig.study.sessionUrl, {
+    participantId,
+    condition,
+    taskId,
+  });
+  setStudySession(result.session);
+  showNotice("Sessione riservata avviata.", "success");
+}
+
+function markStudyEvent(eventType, operation, status, extra = {}) {
+  if (!getStudySession()) {
+    throw new Error("Avvia prima la sessione riservata.");
+  }
+  recordExperiment({
+    eventType,
+    channel: "system",
+    operation,
+    interactionMode: "system",
+    status,
+    stepCount: 1,
+    ...extra,
+  });
+  renderStudyStatus(status === "completed" ? "Completata" : "Evento registrato");
+}
+
+async function downloadStudyExport(format) {
+  if (!getStudySession()) {
+    throw new Error("Nessuna sessione attiva da esportare.");
+  }
+  const session = getStudySession();
+  const payload = await fetchStudyExport(appConfig.study.sessionUrl, format);
+  const text =
+    format === "jsonl" ? payload : JSON.stringify(payload.export || payload, null, 2);
+  const blob = new Blob([text], {
+    type: format === "jsonl" ? "application/jsonl" : "application/json",
+  });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${session.participantId}_${session.studySessionId}.${format}`;
+  document.body.appendChild(link);
+  link.click();
+  URL.revokeObjectURL(link.href);
+  link.remove();
+  renderStudyStatus("Esportata");
+}
+
+async function resetCurrentStudySession() {
+  if (getStudySession()) {
+    recordExperiment({
+      eventType: "reset_completed",
+      channel: "system",
+      operation: "study_console_reset",
+      interactionMode: "system",
+      status: "completed",
+    });
+  }
+  await clearStudySession(appConfig.study.sessionUrl);
+  setStudySession(null);
+  renderStudyStatus("Reset completato");
+  showNotice("Sessione riservata azzerata.", "success");
 }
 
 function elapsedSince(startedAt) {
@@ -452,6 +671,8 @@ const voiceStatusIcons = {
     '<svg aria-hidden="true" viewBox="0 0 24 24" class="assistant-action-icon"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>',
   transcribe:
     '<svg aria-hidden="true" viewBox="0 0 24 24" class="assistant-action-icon"><path d="m5 12 5 5L20 7"></path></svg>',
+  send:
+    '<svg aria-hidden="true" viewBox="0 0 24 24" class="assistant-action-icon"><path d="M12 19V5"></path><path d="M5 12l7-7 7 7"></path></svg>',
 };
 
 function createVoiceStatusAction({ label, icon, className = "", onClick }) {
@@ -589,10 +810,16 @@ function initializeVoiceInput(mapController) {
       className: "is-confirm",
       onClick: () => stopRecording("transcribe"),
     });
+    const sendAction = createVoiceStatusAction({
+      label: "Trascrivi e invia",
+      icon: voiceStatusIcons.send,
+      className: "is-send",
+      onClick: () => stopRecording("send"),
+    });
     setVoiceStatus(
       `Registrazione ${formatVoiceElapsed(elapsedSince(recordingStartedAt))}`,
       "recording",
-      [cancelAction, transcribeAction]
+      [cancelAction, transcribeAction, sendAction]
     );
   };
 
@@ -657,7 +884,9 @@ function initializeVoiceInput(mapController) {
         return;
       }
 
-      handleVoiceAudioBlob(mapControllerRef, audioBlob, durationMs, recordedType);
+      handleVoiceAudioBlob(mapControllerRef, audioBlob, durationMs, recordedType, {
+        sendAfterTranscription: recordingAction === "send",
+      });
     });
 
     setVoiceListening(true);
@@ -674,10 +903,19 @@ function initializeVoiceInput(mapController) {
     recorder.start();
   }
 
-  async function handleVoiceAudioBlob(mapControllerRef, audioBlob, durationMs, mimeType) {
+  async function handleVoiceAudioBlob(
+    mapControllerRef,
+    audioBlob,
+    durationMs,
+    mimeType,
+    { sendAfterTranscription = false } = {}
+  ) {
     setAssistantBusy(true);
     try {
-      setVoiceStatus("Trascrizione in corso...", "processing");
+      setVoiceStatus(
+        sendAfterTranscription ? "Trascrizione in corso. Invio automatico..." : "Trascrizione in corso...",
+        "processing"
+      );
       const result = await transcribeVoiceMessage(
         appConfig.voiceTranscriptionUrl,
         audioBlob,
@@ -692,7 +930,14 @@ function initializeVoiceInput(mapController) {
       }
       elements.assistantInput.value = transcript;
       elements.assistantInput.focus();
-      setVoiceStatus("Trascrizione pronta. Modifica o invia.", "success");
+      if (sendAfterTranscription) {
+        setVoiceStatus("Trascrizione completata. Invio...", "success");
+        setAssistantBusy(false);
+        await runAssistantInteraction(mapControllerRef, transcript, { interactionMode: "voice" });
+        setVoiceStatus("");
+      } else {
+        setVoiceStatus("Trascrizione pronta. Modifica o invia.", "success");
+      }
     } catch (error) {
       recordExperiment({
         eventType: "error",
@@ -1383,6 +1628,7 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       context: buildInteractionContext(mapController),
       metadata: {
         interactionMode,
+        studySessionId: getStudySession()?.studySessionId || null,
       },
     };
     let response;
@@ -1395,6 +1641,8 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       details: {
         messageLength: trimmedMessage.length,
       },
+      userText: trimmedMessage,
+      userTranscript: interactionMode === "voice" ? trimmedMessage : "",
     });
 
     if (appConfig.interactionStreamUrl) {
@@ -1421,6 +1669,28 @@ async function runAssistantInteraction(mapController, message, { interactionMode
               streamingMessageIndex,
               describeAssistantToolProgress(event.toolName)
             );
+            recordExperiment({
+              eventType: "interaction_started",
+              channel: interactionMode === "voice" ? "voice" : "web_chat",
+              operation: event.toolName || "assistant_tool",
+              interactionMode,
+              status: "started",
+              details: {
+                toolName: event.toolName || "",
+              },
+            });
+          },
+          onToolResult: (event) => {
+            recordExperiment({
+              eventType: "interaction_completed",
+              channel: interactionMode === "voice" ? "voice" : "web_chat",
+              operation: event.toolName || "assistant_tool",
+              interactionMode,
+              status: "completed",
+              details: {
+                toolName: event.toolName || "",
+              },
+            });
           },
           onMessageDelta: (event) => {
             appendAssistantStreamingDelta(streamingMessageIndex, event.delta || "");
@@ -1481,6 +1751,10 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       interactionMode,
       durationMs: elapsedSince(interactionStartedAt),
       stepCount: response.analysisResult?.clipped ? 3 : 2,
+      intent: response.uiHints?.mode || "",
+      userText: trimmedMessage,
+      userTranscript: interactionMode === "voice" ? trimmedMessage : "",
+      assistantResponse: extractAssistantResponseText(response),
       details: {
         analysisId: response.analysisResult?.analysisId,
         messageLength: trimmedMessage.length,
@@ -1488,6 +1762,19 @@ async function runAssistantInteraction(mapController, message, { interactionMode
         needsClarification: Boolean(response.uiHints?.needsClarification),
       },
     });
+    if (response.uiHints?.needsClarification || response.uiHints?.mode === "unknown") {
+      recordExperiment({
+        eventType: "unknown_request",
+        channel: interactionMode === "voice" ? "voice" : "web_chat",
+        operation: "conversational_request",
+        interactionMode,
+        status: "needs_clarification",
+        intent: response.uiHints?.mode || "unknown",
+        userText: trimmedMessage,
+        userTranscript: interactionMode === "voice" ? trimmedMessage : "",
+        assistantResponse: extractAssistantResponseText(response),
+      });
+    }
   } catch (error) {
     appendAssistantMessage(
       "assistant",
@@ -1500,6 +1787,8 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       interactionMode,
       durationMs: elapsedSince(interactionStartedAt),
       error: error.message || "assistant_interaction_failed",
+      userText: trimmedMessage,
+      userTranscript: interactionMode === "voice" ? trimmedMessage : "",
       details: {
         messageLength: trimmedMessage.length,
       },
@@ -1514,6 +1803,7 @@ async function runAssistantInteraction(mapController, message, { interactionMode
 async function bootstrap() {
   syncChromeOffset();
   restoreAssistantPanelWidth();
+  setStudySession(appConfig.study?.currentSession || null);
 
   if (elements.appInfoModal?.parentElement !== document.body) {
     document.body.appendChild(elements.appInfoModal);
@@ -1562,6 +1852,7 @@ async function bootstrap() {
   updateActionStates(mapController);
   initializeAssistantResize(mapController);
   initializeVoiceInput(mapController);
+  buildStudyConsole();
   recordExperiment({
     eventType: "session_started",
     channel: "system",

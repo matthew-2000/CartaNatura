@@ -9,4 +9,5 @@ urlpatterns = [
     path('interact/stream', views.interact_stream, name='interact_stream'),
     path('voice/transcribe', views.voice_transcribe, name='voice_transcribe'),
     path('experiment/log', views.experiment_log, name='experiment_log'),
+    path('experiment/study/session', views.study_session, name='study_session'),
 ]

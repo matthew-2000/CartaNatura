@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import geopandas
@@ -38,7 +42,14 @@ from cartaNatura.services.municipality_text import (
     suggest_municipality_names,
 )
 from cartaNatura.services.payloads import parse_selection_payload
-from cartaNatura.experiments import export_experiment_log, record_experiment_event
+from cartaNatura.experiments import (
+    create_study_session,
+    export_experiment_log,
+    export_study_events_jsonl,
+    export_study_session,
+    record_experiment_event,
+    record_study_event,
+)
 
 
 class FakeLlmProvider:
@@ -467,6 +478,54 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertEqual(get_response.status_code, 200)
         self.assertEqual(get_response.json()["eventCount"], 1)
         self.assertEqual(get_response.json()["summary"]["taskCompletionDurationMs"], [321])
+
+    def test_index_exposes_study_config_only_with_query_flag(self):
+        client = Client()
+
+        normal_response = client.get("/progettoGIS/cartaNatura/")
+        study_response = client.get("/progettoGIS/cartaNatura/?study=1")
+
+        self.assertContains(normal_response, '"study": {"enabled": false')
+        self.assertContains(study_response, '"study": {"enabled": true')
+        self.assertContains(study_response, '"sessionUrl": "/progettoGIS/cartaNatura/experiment/study/session"')
+
+    def test_study_session_endpoint_persists_following_experiment_events(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            client = Client()
+            start_response = client.post(
+                "/progettoGIS/cartaNatura/experiment/study/session",
+                data=(
+                    '{"participantId":"participant_010","condition":"conversational",'
+                    '"taskId":"municipalities_report"}'
+                ),
+                content_type="application/json",
+            )
+            event_response = client.post(
+                "/progettoGIS/cartaNatura/experiment/log",
+                data=(
+                    '{"eventType":"task_completed","channel":"web_chat",'
+                    '"operation":"conversational_request","interactionMode":"text",'
+                    '"intent":"analyze_municipalities",'
+                    '"userText":"analizza Avellino",'
+                    '"assistantResponse":"Ho analizzato Avellino."}'
+                ),
+                content_type="application/json",
+            )
+            export_response = client.get("/progettoGIS/cartaNatura/experiment/study/session")
+            jsonl_response = client.get(
+                "/progettoGIS/cartaNatura/experiment/study/session?format=jsonl"
+            )
+
+        self.assertEqual(start_response.status_code, 200)
+        self.assertEqual(start_response.json()["session"]["participantId"], "participant_010")
+        self.assertEqual(event_response.status_code, 200)
+        self.assertEqual(export_response.status_code, 200)
+        exported_events = export_response.json()["export"]["events"]
+        self.assertEqual(export_response.json()["export"]["condition"], "conversational")
+        self.assertEqual(export_response.json()["export"]["eventCount"], 2)
+        self.assertEqual(exported_events[1]["userText"], "analizza Avellino")
+        self.assertEqual(exported_events[1]["assistantResponse"], "Ho analizzato Avellino.")
+        self.assertContains(jsonl_response, '"userText": "analizza Avellino"')
 
     @patch("cartaNatura.views.transcribe_uploaded_audio")
     def test_voice_transcribe_returns_transcript(self, transcribe_uploaded_audio):
@@ -1565,6 +1624,108 @@ class ExperimentLoggingTests(SimpleTestCase):
         self.assertEqual(payload["summary"]["taskCompletionCount"], 1)
         self.assertEqual(payload["summary"]["textInteractionCount"], 2)
         self.assertEqual(payload["summary"]["reportGeneratedCount"], 1)
+
+
+class StudyLoggingTests(SimpleTestCase):
+    def test_create_study_session_writes_summary_in_expected_directory(self):
+        with TemporaryDirectory() as temp_dir:
+            context = create_study_session(
+                participant_id="participant_001",
+                condition="webgis",
+                task_id="task_area_co2",
+                now=datetime(2026, 6, 13, 10, 15, tzinfo=UTC),
+                log_root=Path(temp_dir),
+            )
+
+            session_dir = Path(temp_dir) / "participant_001" / "session_20260613_101500_webgis"
+            summary = json.loads((session_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertTrue(session_dir.exists())
+
+            self.assertEqual(context.participantId, "participant_001")
+            self.assertEqual(context.condition, "webgis")
+            self.assertEqual(summary["participantId"], "participant_001")
+            self.assertEqual(summary["condition"], "webgis")
+            self.assertEqual(summary["eventCount"], 0)
+
+    def test_record_study_event_persists_jsonl_and_summary_with_conversation_text(self):
+        with TemporaryDirectory() as temp_dir:
+            context = create_study_session(
+                participant_id="participant_002",
+                condition="conversational",
+                task_id="task_report",
+                now=datetime(2026, 6, 13, 10, 42, tzinfo=UTC),
+                log_root=Path(temp_dir),
+            )
+
+            event = record_study_event(
+                context,
+                event_type="interaction_completed",
+                channel="voice",
+                operation="analyze_municipalities",
+                interaction_mode="voice",
+                duration_ms=1200,
+                step_count=2,
+                status="completed",
+                intent="analyze_municipalities",
+                user_text="analizza Avellino",
+                user_transcript="analizza Avellino",
+                assistant_response="Ho analizzato Avellino.",
+                details={
+                    "toolCalls": ["analyze_municipalities"],
+                    "email": "person@example.com",
+                    "ip": "127.0.0.1",
+                    "userAgent": "Browser",
+                },
+                log_root=Path(temp_dir),
+            )
+            exported = export_study_session(context, log_root=Path(temp_dir))
+            jsonl = export_study_events_jsonl(context, log_root=Path(temp_dir))
+            summary_path = (
+                Path(temp_dir)
+                / "participant_002"
+                / "session_20260613_104200_conversational"
+                / "summary.json"
+            )
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(event["participantId"], "participant_002")
+        self.assertEqual(event["condition"], "conversational")
+        self.assertEqual(event["taskId"], "task_report")
+        self.assertEqual(event["userText"], "analizza Avellino")
+        self.assertEqual(event["userTranscript"], "analizza Avellino")
+        self.assertEqual(event["assistantResponse"], "Ho analizzato Avellino.")
+        self.assertEqual(event["details"], {"toolCalls": ["analyze_municipalities"]})
+        self.assertEqual(exported["eventCount"], 1)
+        self.assertIn('"userText": "analizza Avellino"', jsonl)
+        self.assertEqual(summary["eventCount"], 1)
+        self.assertEqual(summary["voiceInteractionCount"], 1)
+
+    def test_study_logging_sanitizes_ids_and_invalid_values(self):
+        with TemporaryDirectory() as temp_dir:
+            context = create_study_session(
+                participant_id="../participant 003@example.com",
+                condition="invalid-condition",
+                task_id="../task/one",
+                now=datetime(2026, 6, 13, 11, 0, tzinfo=UTC),
+                log_root=Path(temp_dir),
+            )
+            event = record_study_event(
+                context,
+                event_type="not_allowed",
+                channel="browser",
+                interaction_mode="browser",
+                duration_ms=-5,
+                step_count="bad",
+                log_root=Path(temp_dir),
+            )
+
+        self.assertEqual(context.participantId, "participant_003_example_com")
+        self.assertEqual(context.condition, "webgis")
+        self.assertEqual(context.taskId, "task_one")
+        self.assertEqual(event["eventType"], "error")
+        self.assertEqual(event["channel"], "system")
+        self.assertNotIn("durationMs", event)
+        self.assertNotIn("stepCount", event)
 
 
 class VoiceTranscriptionTests(SimpleTestCase):

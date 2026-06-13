@@ -119,6 +119,49 @@ export async function sendExperimentEvent(experimentLogUrl, payload) {
   return handleJsonResponse(response);
 }
 
+export async function startStudySession(studySessionUrl, payload) {
+  const response = await fetch(studySessionUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCsrfToken(),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function clearStudySession(studySessionUrl) {
+  const response = await fetch(studySessionUrl, {
+    method: "DELETE",
+    headers: {
+      "X-CSRFToken": getCsrfToken(),
+    },
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function fetchStudyExport(studySessionUrl, format = "json") {
+  const url = `${studySessionUrl}${studySessionUrl.includes("?") ? "&" : "?"}format=${encodeURIComponent(format)}`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: format === "jsonl" ? "application/jsonl" : "application/json",
+    },
+  });
+
+  if (format === "jsonl") {
+    if (!response.ok) {
+      throw new Error(`Esportazione non completata (${response.status}).`);
+    }
+    return response.text();
+  }
+
+  return handleJsonResponse(response);
+}
+
 export async function transcribeVoiceMessage(voiceTranscriptionUrl, audioBlob, metadata = {}) {
   const formData = new FormData();
   formData.append("audio", audioBlob, metadata.filename || "voice-message.webm");

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from django.conf import settings
+from django.http import HttpResponse
 from django.http import HttpResponseNotFound
 from django.http import JsonResponse
 from django.http import StreamingHttpResponse
@@ -19,8 +20,12 @@ from django.views.decorators.http import require_POST
 
 from cartaNatura.domain.vegetation import serialize_categories
 from cartaNatura.experiments import (
+    STUDY_CONTEXT_SESSION_KEY,
     clear_experiment_log,
+    create_study_session,
     export_experiment_log,
+    export_study_events_jsonl,
+    export_study_session,
     record_experiment_event,
 )
 from cartaNatura.interaction import (
@@ -56,6 +61,12 @@ PRICE_OPTIONS = (
     {"label": "Prezzo ombra: 303 EUR/t", "value": 303},
     {"label": "Mercato regolamentato: 82 EUR/t", "value": 82},
     {"label": "Mercato volontario: 20 EUR/t", "value": 20},
+)
+
+STUDY_TASKS = (
+    {"id": "area_co2", "label": "CO2 area selezionata"},
+    {"id": "municipalities_report", "label": "Report comuni"},
+    {"id": "economic_valuation", "label": "Valutazione economica"},
 )
 
 
@@ -105,6 +116,41 @@ def _serialize_interaction_response(response) -> dict[str, object]:
     }
 
 
+def _study_enabled(request) -> bool:
+    return request.GET.get("study") == "1"
+
+
+def _study_context_payload(request) -> dict[str, object] | None:
+    context = request.session.get(STUDY_CONTEXT_SESSION_KEY)
+    return context if isinstance(context, dict) else None
+
+
+def _store_study_context(request, context) -> dict[str, object]:
+    payload = {
+        "participantId": context.participantId,
+        "studySessionId": context.studySessionId,
+        "condition": context.condition,
+        "taskId": context.taskId,
+    }
+    request.session[STUDY_CONTEXT_SESSION_KEY] = payload
+    request.session.modified = True
+    return payload
+
+
+def _assistant_response_text(response) -> str:
+    for message_item in response.messages:
+        if message_item.role == "assistant":
+            return message_item.text
+    return response.audio_output_text or ""
+
+
+def _assistant_intent(response) -> str | None:
+    if response.commands:
+        return response.commands[0].intent.value
+    mode = response.ui_hints.get("mode")
+    return str(mode) if mode else None
+
+
 def _encode_sse(event_type: str, payload: dict[str, object]) -> bytes:
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n".encode("utf-8")
 
@@ -141,6 +187,12 @@ def index(request):
             "examples": [
                 "Reset sessione",
             ],
+        },
+        "study": {
+            "enabled": _study_enabled(request),
+            "sessionUrl": reverse("study_session"),
+            "currentSession": _study_context_payload(request),
+            "tasks": STUDY_TASKS,
         },
         "datasets": {
             "municipalitiesUrl": f"{static('data/campania-municipalities-32633.geojson')}?v={asset_version}",
@@ -250,6 +302,8 @@ def interact(request):
         channel=interaction_request.channel.value,
         operation="conversational_request",
         interaction_mode=str(interaction_mode),
+        user_text=interaction_request.input.primary_text(),
+        user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
         details={"messageLength": len(interaction_request.input.primary_text())},
     )
     logger.info(
@@ -308,6 +362,10 @@ def interact(request):
         channel=interaction_request.channel.value,
         operation=str(response.ui_hints.get("mode") or "conversational_request"),
         interaction_mode=str(interaction_mode),
+        intent=_assistant_intent(response),
+        user_text=interaction_request.input.primary_text(),
+        user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
+        assistant_response=_assistant_response_text(response),
         details={
             "analysisId": (response.analysis_result or {}).get("analysisId"),
             "providerMode": response.ui_hints.get("providerMode"),
@@ -343,6 +401,8 @@ def interact_stream(request):
         channel=interaction_request.channel.value,
         operation="conversational_request",
         interaction_mode=str(interaction_mode),
+        user_text=interaction_request.input.primary_text(),
+        user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
         details={"messageLength": len(interaction_request.input.primary_text())},
     )
     logger.info(
@@ -407,6 +467,12 @@ def interact_stream(request):
                     channel=interaction_request.channel.value,
                     operation=str(final_response.ui_hints.get("mode") or "conversational_request"),
                     interaction_mode=str(interaction_mode),
+                    intent=_assistant_intent(final_response),
+                    user_text=interaction_request.input.primary_text(),
+                    user_transcript=(
+                        interaction_request.input.primary_text() if interaction_mode == "voice" else None
+                    ),
+                    assistant_response=_assistant_response_text(final_response),
                     details={
                         "analysisId": (final_response.analysis_result or {}).get("analysisId"),
                         "providerMode": final_response.ui_hints.get("providerMode"),
@@ -481,6 +547,7 @@ def voice_transcribe(request):
         operation="voice_transcription",
         interaction_mode="voice",
         duration_ms=duration_ms,
+        user_transcript=transcript,
         details={"transcriptLength": len(transcript)},
     )
     return JsonResponse({"transcript": transcript})
@@ -514,6 +581,72 @@ def experiment_log(request):
         task_id=str(payload.get("taskId") or ""),
         status=str(payload.get("status") or ""),
         error=str(payload.get("error") or ""),
+        intent=str(payload.get("intent") or ""),
+        user_text=str(payload.get("userText") or ""),
+        user_transcript=str(payload.get("userTranscript") or ""),
+        assistant_response=str(payload.get("assistantResponse") or ""),
         details=payload.get("details") if isinstance(payload.get("details"), dict) else {},
     )
     return JsonResponse({"event": event, "summary": export_experiment_log(request.session)["summary"]})
+
+
+@require_http_methods(["GET", "POST", "DELETE"])
+def study_session(request):
+    if request.method == "GET":
+        context = _study_context_payload(request)
+        if context is None:
+            return JsonResponse({"active": False, "export": None})
+        if request.GET.get("format") == "jsonl":
+            body = export_study_events_jsonl(context)
+            response = HttpResponse(body, content_type="application/jsonl; charset=utf-8")
+            response["Content-Disposition"] = (
+                f'attachment; filename="{context["participantId"]}_{context["studySessionId"]}.jsonl"'
+            )
+            return response
+        return JsonResponse({"active": True, "export": export_study_session(context)})
+
+    if request.method == "DELETE":
+        context = _study_context_payload(request)
+        if context is not None:
+            record_experiment_event(
+                request.session,
+                event_type="reset_completed",
+                channel="system",
+                operation="study_session_reset",
+                interaction_mode="system",
+                status="completed",
+            )
+        request.session.pop(STUDY_CONTEXT_SESSION_KEY, None)
+        request.session.modified = True
+        return JsonResponse({"active": False})
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
+
+    if not isinstance(payload, dict):
+        return JsonResponse({"error": "Richiesta non valida: payload non supportato."}, status=400)
+
+    participant_id = str(payload.get("participantId") or "").strip()
+    condition = str(payload.get("condition") or "").strip()
+    task_id = str(payload.get("taskId") or "").strip()
+    if not participant_id:
+        return JsonResponse({"error": "Codice anonimo mancante."}, status=400)
+
+    context = create_study_session(
+        participant_id=participant_id,
+        condition=condition,
+        task_id=task_id or None,
+    )
+    context_payload = _store_study_context(request, context)
+    event = record_experiment_event(
+        request.session,
+        event_type="session_started",
+        channel="system",
+        operation="study_session_started",
+        interaction_mode="system",
+        status="active",
+        details={"taskId": context.taskId or ""},
+    )
+    return JsonResponse({"active": True, "session": context_payload, "event": event})
