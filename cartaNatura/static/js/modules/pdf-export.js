@@ -1,10 +1,3 @@
-import {
-  buildEconomicScenarioRows,
-  deriveSummaryMetrics,
-  formatCurrency,
-  formatRoundedNumber,
-} from "./analysis.js";
-
 function getJsPdfConstructor() {
   return window.jsPDF || window.jspdf?.jsPDF || null;
 }
@@ -37,7 +30,15 @@ function ensureSpace(doc, cursorY, requiredHeight) {
   return 20;
 }
 
-function addScenarioComparisonTable(doc, { summary, priceOptions, selectedPrice, cursorY }) {
+function addScenarioComparisonTable(doc, {
+  summary,
+  priceOptions,
+  selectedPrice,
+  cursorY,
+  buildEconomicScenarioRows,
+  formatCurrency,
+  formatRoundedNumber,
+}) {
   const rows = buildEconomicScenarioRows(summary, priceOptions, selectedPrice);
   if (!rows.length) {
     return cursorY;
@@ -80,12 +81,19 @@ export async function generatePdfReport({
   calculatedValue,
   priceOptions = [],
   mapElement,
+  analysisUtils,
 }) {
   const JsPdf = getJsPdfConstructor();
   if (!JsPdf || !window.domtoimage) {
     throw new Error("Generazione PDF non disponibile.");
   }
 
+  const {
+    buildEconomicScenarioRows,
+    deriveSummaryMetrics,
+    formatCurrency,
+    formatRoundedNumber,
+  } = analysisUtils;
   const doc = new JsPdf();
   const derivedMetrics = deriveSummaryMetrics(summary);
 
@@ -161,6 +169,9 @@ export async function generatePdfReport({
     priceOptions,
     selectedPrice,
     cursorY: cursorY + 6,
+    buildEconomicScenarioRows,
+    formatCurrency,
+    formatRoundedNumber,
   });
 
   doc.addPage();

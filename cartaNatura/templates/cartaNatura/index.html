@@ -54,14 +54,29 @@
           </div>
         </div>
 
-        <div class="navbar-actions-shell">
-          <button id="butSelezionaComune" title="Apri selezione comuni" class="btn btn-sm app-btn app-btn-secondary">Comuni</button>
-          <button id="eseguiClipBut" title="Esegui analisi GIS" class="btn btn-sm app-btn app-btn-primary">Analizza</button>
-          <button id="mostraInfoBut" title="Apri report" class="btn btn-sm app-btn app-btn-secondary">Report</button>
-          <button id="openHistoryPanel" title="Apri storico analisi" aria-controls="analysisHistoryPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Storico</button>
-          <button id="openAssistantPanel" title="Apri assistente" aria-controls="assistantPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Assistente</button>
-          <button id="infoApp" title="Apri guida" class="btn btn-sm app-btn app-btn-ghost">Guida</button>
-          <button id="resetMapState" title="Cancella selezioni e risultati" class="btn btn-sm app-btn app-btn-ghost">Reset</button>
+        <div class="navbar-actions-shell" aria-label="Navigazione principale">
+          <div class="nav-action-group">
+            <span class="nav-action-label">Area</span>
+            <div class="nav-action-buttons">
+              <button id="butSelezionaComune" data-panel-nav="municipality" title="Apri selezione comuni" aria-controls="navListaComuni" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Comuni</button>
+              <button id="eseguiClipBut" title="Esegui analisi GIS" class="btn btn-sm app-btn app-btn-primary">Analizza</button>
+            </div>
+          </div>
+          <div class="nav-action-group">
+            <span class="nav-action-label">Risultati</span>
+            <div class="nav-action-buttons">
+              <button id="mostraInfoBut" data-panel-nav="report" title="Apri report" aria-controls="popup" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Report</button>
+              <button id="openHistoryPanel" data-panel-nav="history" title="Apri storico analisi" aria-controls="analysisHistoryPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Storico</button>
+            </div>
+          </div>
+          <div class="nav-action-group">
+            <span class="nav-action-label">Supporto</span>
+            <div class="nav-action-buttons">
+              <button id="openAssistantPanel" data-panel-nav="assistant" title="Apri assistente" aria-controls="assistantPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Assistente</button>
+              <button id="infoApp" title="Apri guida" class="btn btn-sm app-btn app-btn-ghost">Guida</button>
+              <button id="resetMapState" title="Cancella selezioni e risultati" class="btn btn-sm app-btn app-btn-ghost">Reset</button>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -121,7 +136,15 @@
           </div>
         </section>
 
-        <aside class="workspace-sidebar">
+        <aside class="workspace-sidebar" aria-label="Pannelli operativi">
+          <div class="workspace-panel-header">
+            <div>
+              <div class="workspace-panel-eyebrow">Area di lavoro</div>
+              <h2 id="workspacePanelTitle">Pannello</h2>
+            </div>
+            <p id="workspacePanelDescription">Sezione operativa attiva.</p>
+          </div>
+
           <nav id="navListaComuni" class="sidebar-card comuni-panel nascondiListaComuni" aria-label="Selezione comuni">
             <div class="comuni-panel-header">
               <div class="comuni-panel-eyebrow">Selezione territoriale</div>

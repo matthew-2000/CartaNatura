@@ -67,7 +67,12 @@ function metric(value, unit) {
   return `${formatNumber(value)} ${unit}`;
 }
 
-export function renderAnalysisHistoryList({ items, selectedIds }) {
+export function renderAnalysisHistoryList({
+  items,
+  selectedIds,
+  renamingId = null,
+  pendingDeleteId = null,
+}) {
   if (!items.length) {
     return `
       <div class="analysis-history-empty">
@@ -83,6 +88,8 @@ export function renderAnalysisHistoryList({ items, selectedIds }) {
         .map((item) => {
           const checked = selectedIds.has(item.id) ? "checked" : "";
           const summary = item.summary || {};
+          const isRenaming = item.id === renamingId;
+          const isPendingDelete = item.id === pendingDeleteId;
           return `
             <article class="analysis-history-item">
               <div class="analysis-history-item-main">
@@ -102,13 +109,40 @@ export function renderAnalysisHistoryList({ items, selectedIds }) {
                 <span><strong>${escapeHtml(formatCategory(summary.topCategory))}</strong><small>Prevalente</small></span>
               </div>
               <div class="analysis-history-actions">
-                <button type="button" data-history-rename="${escapeHtml(item.id)}">Rinomina</button>
-                <button type="button" data-history-delete="${escapeHtml(item.id)}">Elimina</button>
+                ${isRenaming ? renderRenameControls(item) : `<button type="button" data-history-rename="${escapeHtml(item.id)}">Rinomina</button>`}
+                ${isPendingDelete ? renderDeleteControls(item) : `<button type="button" data-history-delete="${escapeHtml(item.id)}">Elimina</button>`}
               </div>
             </article>
           `;
         })
         .join("")}
+    </div>
+  `;
+}
+
+function renderRenameControls(item) {
+  return `
+    <div class="analysis-history-inline-form">
+      <label>
+        <span>Etichetta</span>
+        <input type="text" value="${escapeHtml(item.label || item.id)}" data-history-rename-input="${escapeHtml(item.id)}">
+      </label>
+      <div class="analysis-history-inline-actions">
+        <button type="button" data-history-rename-save="${escapeHtml(item.id)}">Salva</button>
+        <button type="button" data-history-rename-cancel="${escapeHtml(item.id)}">Annulla</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderDeleteControls(item) {
+  return `
+    <div class="analysis-history-confirm">
+      <span>Eliminare "${escapeHtml(item.label || item.id)}"?</span>
+      <div class="analysis-history-inline-actions">
+        <button type="button" data-history-delete-confirm="${escapeHtml(item.id)}">Conferma</button>
+        <button type="button" data-history-delete-cancel="${escapeHtml(item.id)}">Annulla</button>
+      </div>
     </div>
   `;
 }

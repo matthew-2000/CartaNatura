@@ -42,6 +42,24 @@ const ALLOWED_ASSISTANT_UI_ACTIONS = new Set([
   "show_legend",
   "focus_map_results",
 ]);
+const PANEL_COPY = {
+  municipality: {
+    title: "Selezione area",
+    description: "Cerca comuni, seleziona territori e combina la scelta con geometrie disegnate.",
+  },
+  report: {
+    title: "Report analitico",
+    description: "Risultati GIS, categorie forestali, CO2 annua stimata, scenari economici ed export.",
+  },
+  history: {
+    title: "Storico e confronto",
+    description: "Gestisci analisi salvate, rinomina o elimina elementi e confronta scenari.",
+  },
+  assistant: {
+    title: "Assistente conversazionale",
+    description: "Interroga l'app con testo o voce senza perdere il contesto della mappa.",
+  },
+};
 
 async function loadModules() {
   const [
@@ -108,6 +126,9 @@ const state = {
     items: [],
     selectedIds: new Set(),
     comparison: null,
+    renamingId: null,
+    pendingDeleteId: null,
+    confirmClear: false,
     busy: false,
   },
   study: {
@@ -156,6 +177,8 @@ const elements = {
   appInfoModal: document.getElementById("infoApplicazione"),
   closeAppInfoTopButton: document.getElementById("closeInfoAppTop"),
   closeAppInfoButton: document.getElementById("closeInfoApp"),
+  workspacePanelTitle: document.getElementById("workspacePanelTitle"),
+  workspacePanelDescription: document.getElementById("workspacePanelDescription"),
   statusContent: document.getElementById("statusContent"),
   legendContent: document.getElementById("legendContent"),
   statusPanel: document.getElementById("mapStatusPanel"),
@@ -218,14 +241,44 @@ function restoreAssistantPanelWidth() {
   setAssistantPanelWidth(storedWidth || 390, { persist: false });
 }
 
+function getActivePanelName() {
+  if (elements.municipalityPanel.classList.contains("visualizzaListaComuni")) {
+    return "municipality";
+  }
+  if (elements.popup.classList.contains("open-popup")) {
+    return "report";
+  }
+  if (elements.analysisHistoryPanel.classList.contains("is-open")) {
+    return "history";
+  }
+  if (elements.assistantPanel.classList.contains("is-open")) {
+    return "assistant";
+  }
+  return null;
+}
+
+function syncPanelChrome(activePanelName) {
+  const panelCopy = activePanelName ? PANEL_COPY[activePanelName] : null;
+  if (panelCopy) {
+    elements.workspacePanelTitle.textContent = panelCopy.title;
+    elements.workspacePanelDescription.textContent = panelCopy.description;
+  }
+
+  for (const button of document.querySelectorAll("[data-panel-nav]")) {
+    const isActive = button.dataset.panelNav === activePanelName;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  }
+}
+
 function syncSidePanelLayout(mapController = null) {
-  document.body.classList.toggle(
-    "side-panel-open",
-    elements.municipalityPanel.classList.contains("visualizzaListaComuni") ||
-      elements.popup.classList.contains("open-popup") ||
-      elements.analysisHistoryPanel.classList.contains("is-open") ||
-      elements.assistantPanel.classList.contains("is-open")
-  );
+  const activePanelName = getActivePanelName();
+  document.body.classList.toggle("side-panel-open", Boolean(activePanelName));
+  document.body.classList.toggle("municipality-workbench-open", activePanelName === "municipality");
+  document.body.classList.toggle("report-workbench-open", activePanelName === "report");
+  document.body.classList.toggle("history-workbench-open", activePanelName === "history");
+  document.body.classList.toggle("assistant-workbench-open", activePanelName === "assistant");
+  syncPanelChrome(activePanelName);
 
   if (mapController) {
     window.requestAnimationFrame(() => {
@@ -309,12 +362,14 @@ function openPopup(mapController) {
   closeAppInfo();
   elements.popup.classList.add("open-popup");
   elements.popup.setAttribute("aria-hidden", "false");
+  elements.infoButton?.setAttribute("aria-expanded", "true");
   syncSidePanelLayout(mapController);
 }
 
 function closePopup(mapController) {
   elements.popup.classList.remove("open-popup");
   elements.popup.setAttribute("aria-hidden", "true");
+  elements.infoButton?.setAttribute("aria-expanded", "false");
   syncSidePanelLayout(mapController);
 }
 
@@ -420,12 +475,14 @@ function toggleMunicipalityPanel(mapController = null) {
   closeHistoryPanel();
   closeAppInfo();
   elements.municipalityPanel.classList.toggle("visualizzaListaComuni", shouldOpen);
+  elements.selectMunicipalityButton?.setAttribute("aria-expanded", String(shouldOpen));
   syncMunicipalityPanelState();
   syncSidePanelLayout(mapController);
 }
 
 function closeMunicipalityPanel(mapController = null) {
   elements.municipalityPanel.classList.remove("visualizzaListaComuni");
+  elements.selectMunicipalityButton?.setAttribute("aria-expanded", "false");
   syncMunicipalityPanelState();
   syncSidePanelLayout(mapController);
 }
@@ -494,16 +551,25 @@ function renderHistoryPanel() {
       selectedIds.delete(id);
     }
   }
+  if (state.analysisHistory.renamingId && !validIds.has(state.analysisHistory.renamingId)) {
+    state.analysisHistory.renamingId = null;
+  }
+  if (state.analysisHistory.pendingDeleteId && !validIds.has(state.analysisHistory.pendingDeleteId)) {
+    state.analysisHistory.pendingDeleteId = null;
+  }
 
   elements.analysisHistoryList.innerHTML = renderAnalysisHistoryList({
     items: state.analysisHistory.items,
     selectedIds,
+    renamingId: state.analysisHistory.renamingId,
+    pendingDeleteId: state.analysisHistory.pendingDeleteId,
   });
   elements.analysisHistoryComparison.innerHTML = renderAnalysisComparison(
     state.analysisHistory.comparison
   );
   elements.compareHistoryButton.disabled = state.analysisHistory.busy;
   elements.clearHistoryButton.disabled = state.analysisHistory.items.length === 0 || state.analysisHistory.busy;
+  elements.clearHistoryButton.textContent = state.analysisHistory.confirmClear ? "Conferma" : "Svuota";
   elements.refreshHistoryButton.disabled = state.analysisHistory.busy;
 }
 
@@ -526,15 +592,21 @@ async function loadAnalysisHistory() {
 }
 
 async function renameHistoryItem(analysisId) {
+  state.analysisHistory.renamingId = analysisId;
+  state.analysisHistory.pendingDeleteId = null;
+  state.analysisHistory.confirmClear = false;
+  renderHistoryPanel();
+}
+
+async function saveHistoryRename(analysisId) {
   const current = state.analysisHistory.items.find((item) => item.id === analysisId);
   if (!current) {
     return;
   }
-  const nextLabel = window.prompt("Nuova etichetta analisi", current.label || "");
-  if (nextLabel === null) {
-    return;
-  }
-  const cleanLabel = nextLabel.trim();
+  const input = elements.analysisHistoryPanel.querySelector(
+    `[data-history-rename-input="${CSS.escape(analysisId)}"]`
+  );
+  const cleanLabel = String(input?.value || "").trim();
   if (!cleanLabel) {
     showNotice("Inserisci un'etichetta valida.", "warning");
     return;
@@ -551,15 +623,30 @@ async function renameHistoryItem(analysisId) {
       details: { analysisId },
     });
     showNotice("Analisi rinominata.", "success");
+    state.analysisHistory.renamingId = null;
     await loadAnalysisHistory();
   } catch (error) {
     showNotice(error.message || "Rinomina non completata.", "error");
   }
 }
 
-async function deleteHistoryItem(analysisId) {
+function cancelHistoryRename(analysisId) {
+  if (state.analysisHistory.renamingId === analysisId) {
+    state.analysisHistory.renamingId = null;
+    renderHistoryPanel();
+  }
+}
+
+function deleteHistoryItem(analysisId) {
+  state.analysisHistory.pendingDeleteId = analysisId;
+  state.analysisHistory.renamingId = null;
+  state.analysisHistory.confirmClear = false;
+  renderHistoryPanel();
+}
+
+async function confirmDeleteHistoryItem(analysisId) {
   const item = state.analysisHistory.items.find((entry) => entry.id === analysisId);
-  if (!item || !window.confirm(`Eliminare "${item.label || analysisId}" dallo storico?`)) {
+  if (!item) {
     return;
   }
 
@@ -567,6 +654,7 @@ async function deleteHistoryItem(analysisId) {
     await deleteAnalysisHistoryItem(appConfig.analysisHistoryUrl, analysisId);
     state.analysisHistory.selectedIds.delete(analysisId);
     state.analysisHistory.comparison = null;
+    state.analysisHistory.pendingDeleteId = null;
     recordExperiment({
       eventType: "interaction_completed",
       channel: "web_map",
@@ -582,8 +670,24 @@ async function deleteHistoryItem(analysisId) {
   }
 }
 
+function cancelDeleteHistoryItem(analysisId) {
+  if (state.analysisHistory.pendingDeleteId === analysisId) {
+    state.analysisHistory.pendingDeleteId = null;
+    renderHistoryPanel();
+  }
+}
+
 async function clearHistory() {
-  if (!state.analysisHistory.items.length || !window.confirm("Svuotare tutto lo storico analisi?")) {
+  if (!state.analysisHistory.items.length) {
+    return;
+  }
+
+  if (!state.analysisHistory.confirmClear) {
+    state.analysisHistory.confirmClear = true;
+    state.analysisHistory.pendingDeleteId = null;
+    state.analysisHistory.renamingId = null;
+    renderHistoryPanel();
+    showNotice("Premi Conferma per svuotare lo storico.", "warning");
     return;
   }
 
@@ -592,6 +696,7 @@ async function clearHistory() {
     state.analysisHistory.items = [];
     state.analysisHistory.selectedIds.clear();
     state.analysisHistory.comparison = null;
+    state.analysisHistory.confirmClear = false;
     recordExperiment({
       eventType: "reset_completed",
       channel: "web_map",
@@ -1660,49 +1765,62 @@ function renderInfoSummary() {
 
   elements.infoContainer.innerHTML = `
     <div class="summary-section analysis-summary">
-      <div class="analysis-metrics-grid">
-        <article class="analysis-metric-card">
-          <span class="analysis-metric-label">CO2 annua stimata</span>
-          <strong class="analysis-metric-value">${formatRoundedNumber(state.summary.totalCo2)} t</strong>
-        </article>
-        <article class="analysis-metric-card">
-          <span class="analysis-metric-label">Superficie analizzata</span>
-          <strong class="analysis-metric-value">${formatRoundedNumber(derivedMetrics.totalHectares)} ha</strong>
-        </article>
-        <article class="analysis-metric-card">
-          <span class="analysis-metric-label">Categorie rilevate</span>
-          <strong class="analysis-metric-value">${state.summary.items.length}</strong>
-        </article>
-        <article class="analysis-metric-card">
-          <span class="analysis-metric-label">Categoria prevalente</span>
-          <strong class="analysis-metric-value">${escapeHtml(derivedMetrics.topCategory?.label || "-")}</strong>
-        </article>
-      </div>
-      <div class="analysis-section">
-        <div class="analysis-section-header">
-          <h4>Ripartizione della vegetazione</h4>
-          <span class="analysis-section-meta">${formatRoundedNumber(derivedMetrics.totalHectares)} ha complessivi</span>
+      <div class="analysis-report-intro">
+        <div>
+          <span class="analysis-metric-label">Analisi corrente</span>
+          <h3>Quadro sintetico dell'area</h3>
         </div>
-        <ul class="analysis-breakdown-list">${summaryRows}</ul>
+        <span class="analysis-report-badge">${state.intersectedMunicipalities.length} comuni interessati</span>
       </div>
-      ${municipalitiesHtml}
-      <div class="analysis-note-card">
-        <strong>Assorbimento annuo stimato:</strong> ${formatRoundedNumber(state.summary.totalCo2)} tonnellate di CO2.
-      </div>
-      <div class="analysis-valuation-card">
-        <div class="analysis-section-header">
-          <h4>Valorizzazione economica</h4>
-          <span class="analysis-section-meta">Valore stimato in base al prezzo scelto</span>
+      <div class="analysis-report-layout">
+        <div class="analysis-report-primary">
+          <div class="analysis-metrics-grid">
+            <article class="analysis-metric-card">
+              <span class="analysis-metric-label">CO2 annua stimata</span>
+              <strong class="analysis-metric-value">${formatRoundedNumber(state.summary.totalCo2)} t</strong>
+            </article>
+            <article class="analysis-metric-card">
+              <span class="analysis-metric-label">Superficie analizzata</span>
+              <strong class="analysis-metric-value">${formatRoundedNumber(derivedMetrics.totalHectares)} ha</strong>
+            </article>
+            <article class="analysis-metric-card">
+              <span class="analysis-metric-label">Categorie rilevate</span>
+              <strong class="analysis-metric-value">${state.summary.items.length}</strong>
+            </article>
+            <article class="analysis-metric-card">
+              <span class="analysis-metric-label">Categoria prevalente</span>
+              <strong class="analysis-metric-value">${escapeHtml(derivedMetrics.topCategory?.label || "-")}</strong>
+            </article>
+          </div>
+          <div class="analysis-section">
+            <div class="analysis-section-header">
+              <h4>Ripartizione della vegetazione</h4>
+              <span class="analysis-section-meta">${formatRoundedNumber(derivedMetrics.totalHectares)} ha complessivi</span>
+            </div>
+            <ul class="analysis-breakdown-list">${summaryRows}</ul>
+          </div>
+          ${municipalitiesHtml}
+          <div class="analysis-note-card">
+            <strong>Assorbimento annuo stimato:</strong> ${formatRoundedNumber(state.summary.totalCo2)} tonnellate di CO2.
+          </div>
         </div>
-        <div class="value-row">
-          <select id="testoValore">${renderPriceOptions()}</select>
-          <button id="butcalcolavalore" type="button" class="btn btn-info btn-sm text-light">
-            Calcola
-          </button>
-        </div>
-        <div id="valoreTotaleCalcolato" class="value-result"></div>
-        <div id="scenarioComparison" class="scenario-comparison-root">
-          ${renderScenarioComparisonTable(state.selectedEconomicPrice ?? priceOptions[0]?.value)}
+        <div class="analysis-report-secondary">
+          <div class="analysis-valuation-card">
+            <div class="analysis-section-header">
+              <h4>Valorizzazione economica</h4>
+              <span class="analysis-section-meta">Prezzo scelto</span>
+            </div>
+            <div class="value-row">
+              <select id="testoValore">${renderPriceOptions()}</select>
+              <button id="butcalcolavalore" type="button" class="btn btn-info btn-sm text-light">
+                Calcola
+              </button>
+            </div>
+            <div id="valoreTotaleCalcolato" class="value-result"></div>
+            <div id="scenarioComparison" class="scenario-comparison-root">
+              ${renderScenarioComparisonTable(state.selectedEconomicPrice ?? priceOptions[0]?.value)}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1767,6 +1885,12 @@ function renderInfoSummary() {
           calculatedValue: state.calculatedValue,
           priceOptions,
           mapElement: elements.map,
+          analysisUtils: {
+            buildEconomicScenarioRows,
+            deriveSummaryMetrics,
+            formatCurrency,
+            formatRoundedNumber,
+          },
         });
         recordExperiment({
           eventType: "report_generated",
@@ -2278,18 +2402,39 @@ async function bootstrap() {
       state.analysisHistory.selectedIds.delete(analysisId);
     }
     state.analysisHistory.comparison = null;
+    state.analysisHistory.confirmClear = false;
     renderHistoryPanel();
   });
 
   elements.analysisHistoryPanel.addEventListener("click", (event) => {
     const renameButton = event.target.closest("[data-history-rename]");
+    const renameSaveButton = event.target.closest("[data-history-rename-save]");
+    const renameCancelButton = event.target.closest("[data-history-rename-cancel]");
     const deleteButton = event.target.closest("[data-history-delete]");
+    const deleteConfirmButton = event.target.closest("[data-history-delete-confirm]");
+    const deleteCancelButton = event.target.closest("[data-history-delete-cancel]");
     if (renameButton) {
       renameHistoryItem(renameButton.dataset.historyRename);
       return;
     }
+    if (renameSaveButton) {
+      saveHistoryRename(renameSaveButton.dataset.historyRenameSave);
+      return;
+    }
+    if (renameCancelButton) {
+      cancelHistoryRename(renameCancelButton.dataset.historyRenameCancel);
+      return;
+    }
     if (deleteButton) {
       deleteHistoryItem(deleteButton.dataset.historyDelete);
+      return;
+    }
+    if (deleteConfirmButton) {
+      confirmDeleteHistoryItem(deleteConfirmButton.dataset.historyDeleteConfirm);
+      return;
+    }
+    if (deleteCancelButton) {
+      cancelDeleteHistoryItem(deleteCancelButton.dataset.historyDeleteCancel);
     }
   });
 
