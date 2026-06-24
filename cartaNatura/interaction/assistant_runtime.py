@@ -29,6 +29,8 @@ MODEL_TOOL_ANALYZE_MUNICIPALITIES = "analyze_municipalities"
 MODEL_TOOL_ANALYZE_CURRENT_SELECTION = "analyze_current_selection"
 MODEL_TOOL_GET_LAST_ANALYSIS = "get_last_analysis"
 MODEL_TOOL_COMPARE_RECENT_ANALYSES = "compare_recent_analyses"
+MODEL_TOOL_LIST_RECENT_ANALYSES = "list_recent_analyses"
+MODEL_TOOL_COMPARE_SAVED_ANALYSES = "compare_saved_analyses"
 MODEL_TOOL_GET_METHODOLOGY = "get_methodology"
 MODEL_TOOL_RESET_ANALYSIS_CONTEXT = "reset_analysis_context"
 
@@ -38,6 +40,8 @@ MODEL_TOOL_NAMES = (
     MODEL_TOOL_ANALYZE_CURRENT_SELECTION,
     MODEL_TOOL_GET_LAST_ANALYSIS,
     MODEL_TOOL_COMPARE_RECENT_ANALYSES,
+    MODEL_TOOL_LIST_RECENT_ANALYSES,
+    MODEL_TOOL_COMPARE_SAVED_ANALYSES,
     MODEL_TOOL_GET_METHODOLOGY,
     MODEL_TOOL_RESET_ANALYSIS_CONTEXT,
 )
@@ -190,7 +194,36 @@ class AssistantToolExecutor:
             )
 
         if tool_name == MODEL_TOOL_COMPARE_RECENT_ANALYSES:
-            payload = self._tool_registry.execute(ToolName.COMPARE_RECENT_ANALYSES)
+            payload = self._tool_registry.execute(
+                ToolName.COMPARE_RECENT_ANALYSES,
+                limit=int(arguments.get("recent_count") or 2),
+            )
+            return ToolExecutionOutcome(
+                payload=payload,
+                analysis_result=payload,
+                intent=InteractionIntent.COMPARE_ANALYSES,
+            )
+
+        if tool_name == MODEL_TOOL_LIST_RECENT_ANALYSES:
+            payload = self._tool_registry.execute(
+                ToolName.LIST_RECENT_ANALYSES,
+                limit=int(arguments.get("limit") or 10),
+            )
+            return ToolExecutionOutcome(
+                payload=payload,
+                intent=InteractionIntent.EXPLAIN_LAST_ANALYSIS,
+            )
+
+        if tool_name == MODEL_TOOL_COMPARE_SAVED_ANALYSES:
+            selectors = [
+                str(item)
+                for item in arguments.get("selectors", [])
+                if str(item).strip()
+            ]
+            payload = self._tool_registry.execute(
+                ToolName.COMPARE_SAVED_ANALYSES,
+                selectors=selectors,
+            )
             return ToolExecutionOutcome(
                 payload=payload,
                 analysis_result=payload,
@@ -806,12 +839,11 @@ class OpenAiAssistantRuntime:
                 },
             }
 
-        if tool_name == MODEL_TOOL_COMPARE_RECENT_ANALYSES:
-            return {
-                "current": payload.get("current"),
-                "previous": payload.get("previous"),
-                "delta": payload.get("delta"),
-            }
+        if tool_name in {
+            MODEL_TOOL_COMPARE_RECENT_ANALYSES,
+            MODEL_TOOL_COMPARE_SAVED_ANALYSES,
+        }:
+            return payload
 
         return payload
 
@@ -944,7 +976,10 @@ class OpenAiAssistantRuntime:
             "Non mostrare precisione grezza lunga da float. "
             "Se utente cita comuni in modo parziale o ambiguo, usa prima search_municipalities. "
             "Se utente chiede analisi su selezione corrente, usa analyze_current_selection solo se selezione disponibile. "
-            "Se utente chiede spiegazioni o confronto di risultati recenti, usa get_last_analysis o compare_recent_analyses. "
+            "Se utente chiede spiegazioni usa get_last_analysis. "
+            "Se chiede elenco storico o analisi recenti usa list_recent_analyses. "
+            "Se chiede confronto di risultati recenti usa compare_recent_analyses: ultime due per default, ultime tre se richiesto. "
+            "Se cita id, label o comune di analisi salvate usa compare_saved_analyses; se ambiguo lista le analisi e chiedi chiarimento. "
             "Classifica intenti finali in operazioni di dominio: analisi area/comuni, informazioni forestali, stima CO2, "
             "scenari economici, report, spiegazione risultati, guida workflow. "
             "Per report o scenari economici senza calcolo nuovo, spiega cosa usare in UI e mantieni verifica in mappa. "
@@ -990,7 +1025,8 @@ class OpenAiAssistantRuntime:
                 "rules": [
                     "Numeri GIS solo da tool backend.",
                     "Selezione corrente disponibile solo se hasCurrentSelection e true.",
-                    "Confronti recenti basati sulle ultime due analisi in sessione.",
+                    "Confronti recenti basati sulle ultime due analisi in sessione, o ultime N se esplicitato.",
+                    "Confronti salvati possono risolvere id, label o comuni presenti nello storico.",
                 ],
             },
         }
@@ -1103,12 +1139,45 @@ class OpenAiAssistantRuntime:
             {
                 "type": "function",
                 "name": MODEL_TOOL_COMPARE_RECENT_ANALYSES,
-                "description": "Use this when utente chiede confronto tra ultime due analisi recenti.",
+                "description": "Use this when utente chiede confronto tra analisi recenti: default ultime due, oppure ultime N se richiesto.",
                 "strict": True,
                 "parameters": {
                     "type": "object",
-                    "properties": {},
-                    "required": [],
+                    "properties": {
+                        "recent_count": {"type": "integer"},
+                    },
+                    "required": ["recent_count"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": MODEL_TOOL_LIST_RECENT_ANALYSES,
+                "description": "Use this when utente chiede storico, elenco o analisi recenti salvate nella sessione.",
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer"},
+                    },
+                    "required": ["limit"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": MODEL_TOOL_COMPARE_SAVED_ANALYSES,
+                "description": "Use this when utente chiede confronto tra analisi salvate citando id, label o comune.",
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "selectors": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["selectors"],
                     "additionalProperties": False,
                 },
             },

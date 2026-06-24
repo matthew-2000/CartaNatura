@@ -1,4 +1,9 @@
-import { deriveSummaryMetrics, formatCurrency, formatRoundedNumber } from "./analysis.js";
+import {
+  buildEconomicScenarioRows,
+  deriveSummaryMetrics,
+  formatCurrency,
+  formatRoundedNumber,
+} from "./analysis.js";
 
 function getJsPdfConstructor() {
   return window.jsPDF || window.jspdf?.jsPDF || null;
@@ -23,11 +28,57 @@ function addSectionTitle(doc, title, x, y) {
   doc.text(title, x, y);
 }
 
+function ensureSpace(doc, cursorY, requiredHeight) {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  if (cursorY + requiredHeight <= pageHeight - 18) {
+    return cursorY;
+  }
+  doc.addPage();
+  return 20;
+}
+
+function addScenarioComparisonTable(doc, { summary, priceOptions, selectedPrice, cursorY }) {
+  const rows = buildEconomicScenarioRows(summary, priceOptions, selectedPrice);
+  if (!rows.length) {
+    return cursorY;
+  }
+
+  cursorY = ensureSpace(doc, cursorY, 18 + rows.length * 9);
+  addSectionTitle(doc, "Confronto scenari economici", 14, cursorY);
+  cursorY += 9;
+
+  doc.setFontSize(8);
+  doc.setTextColor(98, 108, 102);
+  doc.text("Scenario", 14, cursorY);
+  doc.text("Prezzo", 98, cursorY);
+  doc.text("Valore stimato", 132, cursorY);
+  doc.text("Stato", 178, cursorY, { align: "right" });
+  cursorY += 4;
+  doc.setDrawColor(224, 229, 225);
+  doc.line(14, cursorY, 196, cursorY);
+  cursorY += 6;
+
+  for (const row of rows) {
+    cursorY = ensureSpace(doc, cursorY, 10);
+    doc.setFontSize(9);
+    doc.setTextColor(22, 38, 31);
+    const scenarioLines = doc.splitTextToSize(row.label, 78);
+    doc.text(scenarioLines, 14, cursorY);
+    doc.text(`${formatRoundedNumber(row.price)} EUR/tCO2`, 98, cursorY);
+    doc.text(formatCurrency(row.value), 132, cursorY);
+    doc.text(row.selected ? "Selezionato" : "", 178, cursorY, { align: "right" });
+    cursorY += Math.max(8, scenarioLines.length * 5);
+  }
+
+  return cursorY + 3;
+}
+
 export async function generatePdfReport({
   summary,
   intersectedMunicipalities,
   selectedPrice,
   calculatedValue,
+  priceOptions = [],
   mapElement,
 }) {
   const JsPdf = getJsPdfConstructor();
@@ -100,9 +151,17 @@ export async function generatePdfReport({
     cursorY += 6;
   }
 
-  if (calculatedValue > 0) {
+  if (Number.isFinite(Number(calculatedValue))) {
     doc.text(`Valore stimato: ${formatCurrency(calculatedValue)}`, 14, cursorY);
+    cursorY += 8;
   }
+
+  cursorY = addScenarioComparisonTable(doc, {
+    summary,
+    priceOptions,
+    selectedPrice,
+    cursorY: cursorY + 6,
+  });
 
   doc.addPage();
   doc.setFontSize(18);

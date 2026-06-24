@@ -9,7 +9,9 @@ from cartaNatura.interaction.analysis_store import AnalysisStore
 from .analysis_history import (
     compare_analyses,
     compare_recent_analyses,
+    compare_saved_history_analyses,
     get_last_analysis,
+    get_recent_analyses,
     reset_analysis_context,
 )
 from .contracts import ToolName
@@ -48,8 +50,16 @@ def build_default_tool_registry(analysis_store: AnalysisStore) -> ToolRegistry:
         lambda **kwargs: compare_recent_analyses(analysis_store=analysis_store, **kwargs),
     )
     registry.register(
+        ToolName.COMPARE_SAVED_ANALYSES,
+        lambda **kwargs: compare_saved_history_analyses(analysis_store=analysis_store, **kwargs),
+    )
+    registry.register(
         ToolName.GET_LAST_ANALYSIS,
         lambda **kwargs: get_last_analysis(analysis_store=analysis_store, **kwargs),
+    )
+    registry.register(
+        ToolName.LIST_RECENT_ANALYSES,
+        lambda **kwargs: get_recent_analyses(analysis_store=analysis_store, **kwargs),
     )
     registry.register(
         ToolName.RESET_ANALYSIS_CONTEXT,

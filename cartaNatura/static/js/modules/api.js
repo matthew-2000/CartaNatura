@@ -102,6 +102,76 @@ export async function requestSpatialAnalysis(apiUrl, payload) {
   return handleJsonResponse(response);
 }
 
+export async function fetchAnalysisHistory(analysisHistoryUrl) {
+  const response = await fetch(analysisHistoryUrl, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function fetchAnalysisHistoryDetail(analysisHistoryUrl, analysisId) {
+  const response = await fetch(`${analysisHistoryUrl}/${encodeURIComponent(analysisId)}`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function renameAnalysisHistoryItem(analysisHistoryUrl, analysisId, label) {
+  const response = await fetch(`${analysisHistoryUrl}/${encodeURIComponent(analysisId)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCsrfToken(),
+    },
+    body: JSON.stringify({ label }),
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function deleteAnalysisHistoryItem(analysisHistoryUrl, analysisId) {
+  const response = await fetch(`${analysisHistoryUrl}/${encodeURIComponent(analysisId)}`, {
+    method: "DELETE",
+    headers: {
+      "X-CSRFToken": getCsrfToken(),
+    },
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function clearAnalysisHistory(analysisHistoryUrl) {
+  const response = await fetch(analysisHistoryUrl, {
+    method: "DELETE",
+    headers: {
+      "X-CSRFToken": getCsrfToken(),
+    },
+  });
+
+  return handleJsonResponse(response);
+}
+
+export async function compareAnalysisHistory(analysisHistoryUrl, ids) {
+  const response = await fetch(`${analysisHistoryUrl}/compare`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCsrfToken(),
+    },
+    body: JSON.stringify({ ids }),
+  });
+
+  return handleJsonResponse(response);
+}
+
 export async function sendExperimentEvent(experimentLogUrl, payload) {
   if (!experimentLogUrl) {
     return null;

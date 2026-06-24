@@ -4,6 +4,12 @@ const versionedPath = (path) =>
 
 let requestSpatialAnalysis;
 let fetchGeoJson;
+let fetchAnalysisHistory;
+let fetchAnalysisHistoryDetail;
+let renameAnalysisHistoryItem;
+let deleteAnalysisHistoryItem;
+let clearAnalysisHistory;
+let compareAnalysisHistory;
 let sendExperimentEvent;
 let startStudySession;
 let clearStudySession;
@@ -13,6 +19,7 @@ let sendInteractionMessage;
 let sendInteractionMessageStream;
 let deriveSummaryMetrics;
 let summarizeClippedFeatures;
+let buildEconomicScenarioRows;
 let formatCurrency;
 let formatRoundedNumber;
 let appConfig;
@@ -22,6 +29,8 @@ let categoryByCode;
 let priceOptions;
 let MapController;
 let generatePdfReport;
+let renderAnalysisHistoryList;
+let renderAnalysisComparison;
 
 const ASSISTANT_PANEL_WIDTH_KEY = "cartaNatura.assistantPanelWidth";
 const ASSISTANT_PANEL_MIN_WIDTH = 320;
@@ -35,18 +44,32 @@ const ALLOWED_ASSISTANT_UI_ACTIONS = new Set([
 ]);
 
 async function loadModules() {
-  const [apiModule, analysisModule, configModule, mapControllerModule, pdfExportModule] =
+  const [
+    apiModule,
+    analysisModule,
+    configModule,
+    mapControllerModule,
+    pdfExportModule,
+    analysisHistoryModule,
+  ] =
     await Promise.all([
       import(versionedPath("./modules/api.js")),
       import(versionedPath("./modules/analysis.js")),
       import(versionedPath("./modules/config.js")),
       import(versionedPath("./modules/map-controller.js")),
       import(versionedPath("./modules/pdf-export.js")),
+      import(versionedPath("./modules/analysis-history.js")),
     ]);
 
   ({
     requestSpatialAnalysis,
     fetchGeoJson,
+    fetchAnalysisHistory,
+    fetchAnalysisHistoryDetail,
+    renameAnalysisHistoryItem,
+    deleteAnalysisHistoryItem,
+    clearAnalysisHistory,
+    compareAnalysisHistory,
     sendExperimentEvent,
     startStudySession,
     clearStudySession,
@@ -55,11 +78,12 @@ async function loadModules() {
     sendInteractionMessage,
     sendInteractionMessageStream,
   } = apiModule);
-  ({ deriveSummaryMetrics, summarizeClippedFeatures, formatCurrency, formatRoundedNumber } =
+  ({ deriveSummaryMetrics, summarizeClippedFeatures, buildEconomicScenarioRows, formatCurrency, formatRoundedNumber } =
     analysisModule);
   ({ appConfig, assistantConfig, categories, categoryByCode, priceOptions } = configModule);
   ({ MapController } = mapControllerModule);
   ({ generatePdfReport } = pdfExportModule);
+  ({ renderAnalysisHistoryList, renderAnalysisComparison } = analysisHistoryModule);
 }
 
 const state = {
@@ -67,6 +91,8 @@ const state = {
   clipped: null,
   intersectedMunicipalities: [],
   calculatedValue: 0,
+  economicValueCalculated: false,
+  selectedEconomicPrice: null,
   analysisContext: null,
   noticeTimer: null,
   assistantMessages: [
@@ -78,6 +104,12 @@ const state = {
   assistantBusy: false,
   voiceListening: false,
   voiceTimer: null,
+  analysisHistory: {
+    items: [],
+    selectedIds: new Set(),
+    comparison: null,
+    busy: false,
+  },
   study: {
     panel: null,
     session: null,
@@ -88,6 +120,7 @@ const elements = {
   navbar: document.querySelector(".navbar"),
   selectMunicipalityButton: document.getElementById("butSelezionaComune"),
   resetButton: document.getElementById("resetMapState"),
+  openHistoryButton: document.getElementById("openHistoryPanel"),
   openAssistantButton: document.getElementById("openAssistantPanel"),
   runAnalysisButton: document.getElementById("eseguiClipBut"),
   infoButton: document.getElementById("mostraInfoBut"),
@@ -99,6 +132,14 @@ const elements = {
   loadingOverlay: document.querySelector(".loading"),
   appNotice: document.getElementById("appNotice"),
   popup: document.getElementById("popup"),
+  analysisHistoryPanel: document.getElementById("analysisHistoryPanel"),
+  analysisHistoryStatus: document.getElementById("analysisHistoryStatus"),
+  analysisHistoryList: document.getElementById("analysisHistoryList"),
+  analysisHistoryComparison: document.getElementById("analysisHistoryComparison"),
+  refreshHistoryButton: document.getElementById("refreshHistoryList"),
+  compareHistoryButton: document.getElementById("compareHistorySelection"),
+  clearHistoryButton: document.getElementById("clearHistoryList"),
+  closeHistoryButton: document.getElementById("closeHistoryPanel"),
   assistantPanel: document.getElementById("assistantPanel"),
   assistantTitle: document.querySelector(".assistant-panel-title"),
   assistantStatus: document.getElementById("assistantStatus"),
@@ -146,6 +187,7 @@ function setBusy(mapController, busy) {
   elements.selectMunicipalityButton.disabled = busy;
   elements.runAnalysisButton.disabled = busy;
   elements.infoButton.disabled = busy;
+  elements.openHistoryButton.disabled = busy;
   elements.appInfoButton.disabled = busy;
   elements.runAnalysisButton.textContent = busy ? "Analisi..." : "Analizza";
   mapController.setInteractionDisabled(busy);
@@ -181,6 +223,7 @@ function syncSidePanelLayout(mapController = null) {
     "side-panel-open",
     elements.municipalityPanel.classList.contains("visualizzaListaComuni") ||
       elements.popup.classList.contains("open-popup") ||
+      elements.analysisHistoryPanel.classList.contains("is-open") ||
       elements.assistantPanel.classList.contains("is-open")
   );
 
@@ -262,6 +305,7 @@ function initializeAssistantResize(mapController) {
 function openPopup(mapController) {
   closeMunicipalityPanel();
   closeAssistantPanel();
+  closeHistoryPanel();
   closeAppInfo();
   elements.popup.classList.add("open-popup");
   elements.popup.setAttribute("aria-hidden", "false");
@@ -278,6 +322,7 @@ function openAppInfo(mapController) {
   closeMunicipalityPanel();
   closePopup();
   closeAssistantPanel();
+  closeHistoryPanel();
   elements.appInfoModal.classList.add("open-infoApp");
   elements.appInfoModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("guide-modal-open");
@@ -297,6 +342,7 @@ function openAssistantPanel(mapController = null) {
   }
   closeMunicipalityPanel();
   closePopup();
+  closeHistoryPanel();
   closeAppInfo();
   elements.assistantPanel.classList.add("is-open");
   elements.assistantPanel.setAttribute("aria-hidden", "false");
@@ -314,6 +360,34 @@ function closeAssistantPanel(mapController = null) {
   syncSidePanelLayout(mapController);
 }
 
+function openHistoryPanel(mapController = null) {
+  closeMunicipalityPanel();
+  closePopup();
+  closeAssistantPanel();
+  closeAppInfo();
+  elements.analysisHistoryPanel.classList.add("is-open");
+  elements.analysisHistoryPanel.setAttribute("aria-hidden", "false");
+  elements.openHistoryButton?.setAttribute("aria-expanded", "true");
+  syncSidePanelLayout(mapController);
+  recordExperiment({
+    eventType: "interaction_started",
+    channel: "web_map",
+    operation: "analysis_history_opened",
+    interactionMode: "map",
+    stepCount: 1,
+  });
+  loadAnalysisHistory().catch((error) => {
+    setHistoryStatus(error.message || "Storico non caricato.", "error");
+  });
+}
+
+function closeHistoryPanel(mapController = null) {
+  elements.analysisHistoryPanel.classList.remove("is-open");
+  elements.analysisHistoryPanel.setAttribute("aria-hidden", "true");
+  elements.openHistoryButton?.setAttribute("aria-expanded", "false");
+  syncSidePanelLayout(mapController);
+}
+
 function toggleAssistantPanel(mapController = null) {
   if (elements.assistantPanel.classList.contains("is-open")) {
     closeAssistantPanel(mapController);
@@ -321,6 +395,15 @@ function toggleAssistantPanel(mapController = null) {
   }
 
   openAssistantPanel(mapController);
+}
+
+function toggleHistoryPanel(mapController = null) {
+  if (elements.analysisHistoryPanel.classList.contains("is-open")) {
+    closeHistoryPanel(mapController);
+    return;
+  }
+
+  openHistoryPanel(mapController);
 }
 
 function syncMunicipalityPanelState() {
@@ -334,6 +417,7 @@ function toggleMunicipalityPanel(mapController = null) {
   const shouldOpen = !elements.municipalityPanel.classList.contains("visualizzaListaComuni");
   closePopup();
   closeAssistantPanel();
+  closeHistoryPanel();
   closeAppInfo();
   elements.municipalityPanel.classList.toggle("visualizzaListaComuni", shouldOpen);
   syncMunicipalityPanelState();
@@ -395,6 +479,179 @@ function recordExperiment(event) {
   sendExperimentEvent(appConfig.experimentLogUrl, payload).catch((error) => {
     console.debug("Experiment event not recorded", error);
   });
+}
+
+function setHistoryStatus(message, tone = "info") {
+  elements.analysisHistoryStatus.textContent = message;
+  elements.analysisHistoryStatus.dataset.tone = tone;
+}
+
+function renderHistoryPanel() {
+  const selectedIds = state.analysisHistory.selectedIds;
+  const validIds = new Set(state.analysisHistory.items.map((item) => item.id));
+  for (const id of [...selectedIds]) {
+    if (!validIds.has(id)) {
+      selectedIds.delete(id);
+    }
+  }
+
+  elements.analysisHistoryList.innerHTML = renderAnalysisHistoryList({
+    items: state.analysisHistory.items,
+    selectedIds,
+  });
+  elements.analysisHistoryComparison.innerHTML = renderAnalysisComparison(
+    state.analysisHistory.comparison
+  );
+  elements.compareHistoryButton.disabled = state.analysisHistory.busy;
+  elements.clearHistoryButton.disabled = state.analysisHistory.items.length === 0 || state.analysisHistory.busy;
+  elements.refreshHistoryButton.disabled = state.analysisHistory.busy;
+}
+
+async function loadAnalysisHistory() {
+  if (!appConfig.analysisHistoryUrl) {
+    return;
+  }
+
+  state.analysisHistory.busy = true;
+  setHistoryStatus("Caricamento...");
+  renderHistoryPanel();
+  try {
+    const payload = await fetchAnalysisHistory(appConfig.analysisHistoryUrl);
+    state.analysisHistory.items = Array.isArray(payload.items) ? payload.items : [];
+    setHistoryStatus(`${state.analysisHistory.items.length} analisi salvate`);
+  } finally {
+    state.analysisHistory.busy = false;
+    renderHistoryPanel();
+  }
+}
+
+async function renameHistoryItem(analysisId) {
+  const current = state.analysisHistory.items.find((item) => item.id === analysisId);
+  if (!current) {
+    return;
+  }
+  const nextLabel = window.prompt("Nuova etichetta analisi", current.label || "");
+  if (nextLabel === null) {
+    return;
+  }
+  const cleanLabel = nextLabel.trim();
+  if (!cleanLabel) {
+    showNotice("Inserisci un'etichetta valida.", "warning");
+    return;
+  }
+
+  try {
+    await renameAnalysisHistoryItem(appConfig.analysisHistoryUrl, analysisId, cleanLabel);
+    recordExperiment({
+      eventType: "interaction_completed",
+      channel: "web_map",
+      operation: "analysis_history_rename",
+      interactionMode: "map",
+      stepCount: 1,
+      details: { analysisId },
+    });
+    showNotice("Analisi rinominata.", "success");
+    await loadAnalysisHistory();
+  } catch (error) {
+    showNotice(error.message || "Rinomina non completata.", "error");
+  }
+}
+
+async function deleteHistoryItem(analysisId) {
+  const item = state.analysisHistory.items.find((entry) => entry.id === analysisId);
+  if (!item || !window.confirm(`Eliminare "${item.label || analysisId}" dallo storico?`)) {
+    return;
+  }
+
+  try {
+    await deleteAnalysisHistoryItem(appConfig.analysisHistoryUrl, analysisId);
+    state.analysisHistory.selectedIds.delete(analysisId);
+    state.analysisHistory.comparison = null;
+    recordExperiment({
+      eventType: "interaction_completed",
+      channel: "web_map",
+      operation: "analysis_history_delete",
+      interactionMode: "map",
+      stepCount: 1,
+      details: { analysisId },
+    });
+    showNotice("Analisi eliminata.", "success");
+    await loadAnalysisHistory();
+  } catch (error) {
+    showNotice(error.message || "Eliminazione non completata.", "error");
+  }
+}
+
+async function clearHistory() {
+  if (!state.analysisHistory.items.length || !window.confirm("Svuotare tutto lo storico analisi?")) {
+    return;
+  }
+
+  try {
+    await clearAnalysisHistory(appConfig.analysisHistoryUrl);
+    state.analysisHistory.items = [];
+    state.analysisHistory.selectedIds.clear();
+    state.analysisHistory.comparison = null;
+    recordExperiment({
+      eventType: "reset_completed",
+      channel: "web_map",
+      operation: "analysis_history_clear",
+      interactionMode: "map",
+      stepCount: 1,
+    });
+    setHistoryStatus("0 analisi salvate");
+    renderHistoryPanel();
+    showNotice("Storico svuotato.", "success");
+  } catch (error) {
+    showNotice(error.message || "Storico non svuotato.", "error");
+  }
+}
+
+async function compareSelectedHistory() {
+  const ids = [...state.analysisHistory.selectedIds];
+  if (ids.length < 2) {
+    showNotice("Seleziona almeno due analisi da confrontare.", "warning");
+    return;
+  }
+
+  state.analysisHistory.busy = true;
+  setHistoryStatus("Confronto in corso...");
+  renderHistoryPanel();
+  recordExperiment({
+    eventType: "interaction_started",
+    channel: "web_map",
+    operation: "analysis_history_compare",
+    interactionMode: "map",
+    stepCount: ids.length,
+  });
+  try {
+    state.analysisHistory.comparison = await compareAnalysisHistory(
+      appConfig.analysisHistoryUrl,
+      ids
+    );
+    recordExperiment({
+      eventType: "interaction_completed",
+      channel: "web_map",
+      operation: "analysis_history_compare",
+      interactionMode: "map",
+      stepCount: ids.length,
+    });
+    setHistoryStatus(`Confrontate ${ids.length} analisi`);
+    showNotice("Confronto completato.", "success");
+  } catch (error) {
+    recordExperiment({
+      eventType: "error",
+      channel: "web_map",
+      operation: "analysis_history_compare",
+      interactionMode: "map",
+      stepCount: ids.length,
+      error: error.message || "history_compare_failed",
+    });
+    showNotice(error.message || "Confronto non completato.", "error");
+  } finally {
+    state.analysisHistory.busy = false;
+    renderHistoryPanel();
+  }
 }
 
 function isStudyConsoleEnabled() {
@@ -1165,6 +1422,8 @@ function applyAnalysisResult(mapController, analysisResult, analysisContext = nu
     analysisResult.summary ||
     summarizeClippedFeatures(analysisResult.clipped, categories, categoryByCode);
   state.calculatedValue = 0;
+  state.economicValueCalculated = false;
+  state.selectedEconomicPrice = priceOptions[0]?.value ?? null;
   state.analysisContext =
     analysisContext ||
     {
@@ -1185,6 +1444,11 @@ function applyAnalysisResult(mapController, analysisResult, analysisContext = nu
   });
   updateActionStates(mapController);
   renderInfoSummary();
+  if (elements.analysisHistoryPanel.classList.contains("is-open")) {
+    loadAnalysisHistory().catch((error) => {
+      setHistoryStatus(error.message || "Storico non aggiornato.", "error");
+    });
+  }
 }
 
 function updateActionStates(mapController) {
@@ -1295,6 +1559,59 @@ function renderPriceOptions() {
     .join("");
 }
 
+function renderScenarioComparisonTable(selectedPrice) {
+  const rows = buildEconomicScenarioRows(state.summary, priceOptions, selectedPrice);
+  if (!rows.length) {
+    return "";
+  }
+
+  return `
+    <div class="scenario-comparison-card">
+      <div class="analysis-section-header">
+        <h4>Confronto scenari economici</h4>
+        <span class="analysis-section-meta">${formatRoundedNumber(state.summary?.totalCo2 || 0)} tCO2/anno</span>
+      </div>
+      <div class="scenario-table-wrap">
+        <table class="scenario-table">
+          <thead>
+            <tr>
+              <th>Scenario</th>
+              <th>Prezzo</th>
+              <th>Valore stimato</th>
+              <th>Stato</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (row) => `
+                  <tr class="${row.selected ? "is-selected" : ""}">
+                    <td>
+                      <strong>${escapeHtml(row.label)}</strong>
+                      ${row.description ? `<small>${escapeHtml(row.description)}</small>` : ""}
+                    </td>
+                    <td>${formatRoundedNumber(row.price)} €/tCO2</td>
+                    <td>${formatCurrency(row.value)}</td>
+                    <td>${row.selected ? "Selezionato" : ""}</td>
+                  </tr>
+                `
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function updateScenarioComparison(selectedPrice) {
+  const comparisonRoot = document.getElementById("scenarioComparison");
+  if (!comparisonRoot || !state.summary) {
+    return;
+  }
+  comparisonRoot.innerHTML = renderScenarioComparisonTable(selectedPrice);
+}
+
 function renderInfoSummary() {
   if (!state.summary) {
     elements.infoContainer.innerHTML = `
@@ -1384,21 +1701,25 @@ function renderInfoSummary() {
           </button>
         </div>
         <div id="valoreTotaleCalcolato" class="value-result"></div>
+        <div id="scenarioComparison" class="scenario-comparison-root">
+          ${renderScenarioComparisonTable(state.selectedEconomicPrice ?? priceOptions[0]?.value)}
+        </div>
       </div>
     </div>
   `;
 
+  const priceSelect = document.getElementById("testoValore");
   const calculateButton = document.getElementById("butcalcolavalore");
-  calculateButton.addEventListener("click", () => {
-    const valuationStartedAt = performance.now();
-    const selectedValue = Number(document.getElementById("testoValore").value || 0);
-    state.calculatedValue = selectedValue * state.summary.totalCo2;
+  priceSelect.value = String(state.selectedEconomicPrice ?? priceOptions[0]?.value ?? "");
+  priceSelect.addEventListener("change", () => {
+    const selectedValue = Number(priceSelect.value || 0);
+    state.selectedEconomicPrice = selectedValue;
+    updateScenarioComparison(selectedValue);
     recordExperiment({
-      eventType: "valuation_completed",
+      eventType: "interaction_completed",
       channel: "web_map",
-      operation: "economic_valuation",
+      operation: "scenario_comparison_viewed",
       interactionMode: "map",
-      durationMs: elapsedSince(valuationStartedAt),
       stepCount: 1,
       details: {
         priceEurPerTon: selectedValue,
@@ -1406,6 +1727,13 @@ function renderInfoSummary() {
       },
     });
 
+    if (state.economicValueCalculated) {
+      state.calculatedValue = selectedValue * state.summary.totalCo2;
+      renderSelectedScenarioValue(selectedValue, calculateButton);
+    }
+  });
+
+  function renderSelectedScenarioValue(selectedValue, calculateButtonRef) {
     const resultRoot = document.getElementById("valoreTotaleCalcolato");
     resultRoot.innerHTML = `
       <div class="analysis-value-total">
@@ -1423,7 +1751,7 @@ function renderInfoSummary() {
       const reportStartedAt = performance.now();
       const printButton = document.getElementById("butstampadettagli");
       const closeButton = elements.closePopupButton;
-      calculateButton.disabled = true;
+      calculateButtonRef.disabled = true;
       printButton.disabled = true;
       closeButton.disabled = true;
       resultRoot.insertAdjacentHTML(
@@ -1437,6 +1765,7 @@ function renderInfoSummary() {
           intersectedMunicipalities: state.intersectedMunicipalities,
           selectedPrice: selectedValue,
           calculatedValue: state.calculatedValue,
+          priceOptions,
           mapElement: elements.map,
         });
         recordExperiment({
@@ -1464,7 +1793,7 @@ function renderInfoSummary() {
         });
         showNotice(error.message || "Errore nella generazione del PDF.", "error");
       } finally {
-        calculateButton.disabled = false;
+        calculateButtonRef.disabled = false;
         printButton.disabled = false;
         closeButton.disabled = false;
         const status = resultRoot.querySelector(".pdf-status");
@@ -1473,6 +1802,28 @@ function renderInfoSummary() {
         }
       }
     });
+  }
+
+  calculateButton.addEventListener("click", () => {
+    const valuationStartedAt = performance.now();
+    const selectedValue = Number(priceSelect.value || 0);
+    state.selectedEconomicPrice = selectedValue;
+    state.calculatedValue = selectedValue * state.summary.totalCo2;
+    state.economicValueCalculated = true;
+    updateScenarioComparison(selectedValue);
+    recordExperiment({
+      eventType: "valuation_completed",
+      channel: "web_map",
+      operation: "economic_valuation",
+      interactionMode: "map",
+      durationMs: elapsedSince(valuationStartedAt),
+      stepCount: 1,
+      details: {
+        priceEurPerTon: selectedValue,
+        totalCo2: Number(state.summary.totalCo2 || 0),
+      },
+    });
+    renderSelectedScenarioValue(selectedValue, calculateButton);
   });
 }
 
@@ -1501,6 +1852,8 @@ function resetAnalysis(mapController) {
   state.clipped = null;
   state.intersectedMunicipalities = [];
   state.calculatedValue = 0;
+  state.economicValueCalculated = false;
+  state.selectedEconomicPrice = null;
   state.analysisContext = null;
   mapController.clearResults();
   mapController.clearUserSelections();
@@ -1513,6 +1866,7 @@ function resetAnalysis(mapController) {
   });
   closePopup(mapController);
   closeAppInfo(mapController);
+  closeHistoryPanel(mapController);
   updateActionStates(mapController);
   recordExperiment({
     eventType: "reset_completed",
@@ -1890,6 +2244,55 @@ async function bootstrap() {
     openPopup(mapController);
   });
 
+  elements.openHistoryButton.addEventListener("click", () => {
+    toggleHistoryPanel(mapController);
+  });
+
+  elements.closeHistoryButton.addEventListener("click", () => {
+    closeHistoryPanel(mapController);
+  });
+
+  elements.refreshHistoryButton.addEventListener("click", () => {
+    loadAnalysisHistory().catch((error) => {
+      showNotice(error.message || "Storico non caricato.", "error");
+    });
+  });
+
+  elements.compareHistoryButton.addEventListener("click", () => {
+    compareSelectedHistory();
+  });
+
+  elements.clearHistoryButton.addEventListener("click", () => {
+    clearHistory();
+  });
+
+  elements.analysisHistoryPanel.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-history-select]");
+    if (!checkbox) {
+      return;
+    }
+    const analysisId = checkbox.dataset.historySelect;
+    if (checkbox.checked) {
+      state.analysisHistory.selectedIds.add(analysisId);
+    } else {
+      state.analysisHistory.selectedIds.delete(analysisId);
+    }
+    state.analysisHistory.comparison = null;
+    renderHistoryPanel();
+  });
+
+  elements.analysisHistoryPanel.addEventListener("click", (event) => {
+    const renameButton = event.target.closest("[data-history-rename]");
+    const deleteButton = event.target.closest("[data-history-delete]");
+    if (renameButton) {
+      renameHistoryItem(renameButton.dataset.historyRename);
+      return;
+    }
+    if (deleteButton) {
+      deleteHistoryItem(deleteButton.dataset.historyDelete);
+    }
+  });
+
   elements.closePopupButton.addEventListener("click", () => {
     closePopup(mapController);
   });
@@ -1987,6 +2390,11 @@ async function bootstrap() {
 
     if (elements.assistantPanel.classList.contains("is-open")) {
       closeAssistantPanel(mapController);
+      return;
+    }
+
+    if (elements.analysisHistoryPanel.classList.contains("is-open")) {
+      closeHistoryPanel(mapController);
       return;
     }
 

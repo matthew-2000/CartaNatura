@@ -58,6 +58,7 @@
           <button id="butSelezionaComune" title="Apri selezione comuni" class="btn btn-sm app-btn app-btn-secondary">Comuni</button>
           <button id="eseguiClipBut" title="Esegui analisi GIS" class="btn btn-sm app-btn app-btn-primary">Analizza</button>
           <button id="mostraInfoBut" title="Apri report" class="btn btn-sm app-btn app-btn-secondary">Report</button>
+          <button id="openHistoryPanel" title="Apri storico analisi" aria-controls="analysisHistoryPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Storico</button>
           <button id="openAssistantPanel" title="Apri assistente" aria-controls="assistantPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Assistente</button>
           <button id="infoApp" title="Apri guida" class="btn btn-sm app-btn app-btn-ghost">Guida</button>
           <button id="resetMapState" title="Cancella selezioni e risultati" class="btn btn-sm app-btn app-btn-ghost">Reset</button>
@@ -195,6 +196,26 @@
             </div>
             <button id="closeInfoApp" type="button" class="btn btn-sm app-btn app-btn-secondary guide-bottom-close">Indietro alla mappa</button>
           </section>
+
+          <aside id="analysisHistoryPanel" class="sidebar-card analysis-history-panel" aria-hidden="true">
+            <div class="drawer-shell">
+              <div class="drawer-header">
+                <div>
+                  <div class="drawer-eyebrow">Storico</div>
+                  <h2>Analisi recenti</h2>
+                  <div id="analysisHistoryStatus" class="analysis-history-status">Non caricato</div>
+                </div>
+                <button id="closeHistoryPanel" type="button" class="btn btn-sm app-btn app-btn-ghost">Chiudi</button>
+              </div>
+              <div class="analysis-history-toolbar">
+                <button id="refreshHistoryList" type="button">Aggiorna</button>
+                <button id="compareHistorySelection" type="button">Confronta</button>
+                <button id="clearHistoryList" type="button" class="is-danger">Svuota</button>
+              </div>
+              <div id="analysisHistoryList" class="analysis-history-content"></div>
+              <div id="analysisHistoryComparison" class="analysis-history-content"></div>
+            </div>
+          </aside>
 
           <aside id="assistantPanel" class="sidebar-card assistant-panel" aria-hidden="true">
             <div

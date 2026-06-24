@@ -18,6 +18,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.http import require_POST
 
+from cartaNatura.domain.economics import PRICE_OPTIONS
 from cartaNatura.domain.vegetation import serialize_categories
 from cartaNatura.experiments import (
     STUDY_CONTEXT_SESSION_KEY,
@@ -36,10 +37,14 @@ from cartaNatura.interaction import (
     InteractionRequest,
     build_default_orchestrator,
 )
+from cartaNatura.interaction.analysis_store import (
+    build_analysis_label,
+)
 from cartaNatura.interaction.llm import LlmProviderUnavailableError
 from cartaNatura.interaction.session import DjangoSessionStore
 from cartaNatura.interaction.ui_context import build_interaction_context
 from cartaNatura.interaction.voice import transcribe_uploaded_audio
+from cartaNatura.services.analysis_compare import compare_saved_analyses
 
 logger = logging.getLogger(__name__)
 APP_DIR = Path(__file__).resolve().parent
@@ -55,13 +60,6 @@ def _build_asset_version() -> str:
     tracked_paths.extend((APP_DIR / "static" / "vendor").rglob("*.css"))
     return str(int(max(path.stat().st_mtime for path in tracked_paths if path.exists())))
 
-
-PRICE_OPTIONS = (
-    {"label": "Costo sociale: 138 EUR/t", "value": 138},
-    {"label": "Prezzo ombra: 303 EUR/t", "value": 303},
-    {"label": "Mercato regolamentato: 82 EUR/t", "value": 82},
-    {"label": "Mercato volontario: 20 EUR/t", "value": 20},
-)
 
 STUDY_TASKS = (
     {"id": "area_co2", "label": "CO2 area selezionata"},
@@ -81,6 +79,72 @@ def _build_request_orchestrator(request):
         session_store=DjangoSessionStore(request.session),
         analysis_store=DjangoSessionAnalysisStore(request.session),
     )
+
+
+def _analysis_history_store(request) -> DjangoSessionAnalysisStore:
+    return DjangoSessionAnalysisStore(request.session)
+
+
+def _analysis_history_municipalities(analysis) -> list[str]:
+    values = analysis.intersected_municipalities or analysis.requested_municipalities
+    return [str(item) for item in values if str(item).strip()]
+
+
+def _analysis_history_label(analysis) -> str:
+    if analysis.label:
+        return analysis.label
+    return build_analysis_label(
+        selection_kind=analysis.selection_kind,
+        requested_municipalities=analysis.requested_municipalities,
+        intersected_municipalities=analysis.intersected_municipalities,
+        created_at=analysis.created_at,
+    )
+
+
+def _compact_summary(summary: dict[str, object]) -> dict[str, object]:
+    return {
+        "totalCo2": summary.get("totalCo2"),
+        "totalHectares": summary.get("totalHectares"),
+        "topCategory": summary.get("topCategory"),
+        "hasSupportedVegetation": bool(summary.get("hasSupportedVegetation")),
+        "items": summary.get("items", []) if isinstance(summary.get("items"), list) else [],
+    }
+
+
+def _serialize_analysis_history_item(analysis) -> dict[str, object]:
+    return {
+        "id": analysis.analysis_id,
+        "createdAt": analysis.created_at,
+        "label": _analysis_history_label(analysis),
+        "selectionKind": analysis.selection_kind,
+        "municipalities": _analysis_history_municipalities(analysis),
+        "hasDrawnGeometry": analysis.has_drawn_geometry,
+        "summary": _compact_summary(analysis.summary),
+        "metadata": analysis.metadata,
+    }
+
+
+def _serialize_analysis_history_detail(analysis) -> dict[str, object]:
+    payload = _serialize_analysis_history_item(analysis)
+    payload.update(
+        {
+            "source": analysis.source,
+            "requestedMunicipalities": list(analysis.requested_municipalities),
+            "intersectedMunicipalities": list(analysis.intersected_municipalities),
+            "selectionPayload": analysis.selection_payload,
+        }
+    )
+    return payload
+
+
+def _read_json_body(request) -> dict[str, object]:
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError("Richiesta non valida: formato JSON errato.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Richiesta non valida: payload non supportato.")
+    return payload
 
 
 def _build_text_interaction_request(request, payload: dict[str, object]) -> InteractionRequest:
@@ -171,6 +235,7 @@ def index(request):
         "apiUrl": reverse("gis"),
         "interactionUrl": reverse("interact"),
         "interactionStreamUrl": reverse("interact_stream"),
+        "analysisHistoryUrl": reverse("analysis_history"),
         "voiceTranscriptionUrl": reverse("voice_transcribe"),
         "experimentLogUrl": reverse("experiment_log"),
         "csrfToken": get_token(request),
@@ -275,6 +340,80 @@ def gis(request):
         },
     )
     return JsonResponse(response.analysis_result)
+
+
+@require_http_methods(["GET", "DELETE"])
+def analysis_history(request):
+    store = _analysis_history_store(request)
+
+    if request.method == "DELETE":
+        store.clear()
+        return JsonResponse({"items": [], "count": 0})
+
+    items = [
+        _serialize_analysis_history_item(item)
+        for item in store.list_recent()
+    ]
+    return JsonResponse({"items": items, "count": len(items)})
+
+
+@require_POST
+def analysis_history_compare(request):
+    try:
+        payload = _read_json_body(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    raw_ids = payload.get("ids")
+    if not isinstance(raw_ids, list):
+        return JsonResponse({"error": "Lista analisi mancante."}, status=400)
+
+    analysis_ids: list[str] = []
+    for raw_id in raw_ids:
+        analysis_id = str(raw_id or "").strip()
+        if analysis_id and analysis_id not in analysis_ids:
+            analysis_ids.append(analysis_id)
+
+    if len(analysis_ids) < 2:
+        return JsonResponse({"error": "Servono almeno due analisi da confrontare."}, status=400)
+
+    store = _analysis_history_store(request)
+    records = []
+    for analysis_id in analysis_ids:
+        analysis = store.get(analysis_id)
+        if analysis is None:
+            return JsonResponse({"error": f"Analisi non trovata: {analysis_id}."}, status=404)
+        records.append(analysis)
+
+    try:
+        return JsonResponse(compare_saved_analyses(records, price_options=PRICE_OPTIONS))
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_http_methods(["GET", "POST", "PATCH", "DELETE"])
+def analysis_history_detail(request, analysis_id: str):
+    store = _analysis_history_store(request)
+    analysis = store.get(analysis_id)
+    if analysis is None:
+        return JsonResponse({"error": "Analisi non trovata."}, status=404)
+
+    if request.method == "GET":
+        return JsonResponse(_serialize_analysis_history_detail(analysis))
+
+    if request.method == "DELETE":
+        store.delete(analysis_id)
+        return JsonResponse({"deleted": True, "id": analysis_id})
+
+    try:
+        payload = _read_json_body(request)
+        renamed = store.rename(analysis_id, str(payload.get("label") or ""))
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    if renamed is None:
+        return JsonResponse({"error": "Analisi non trovata."}, status=404)
+    return JsonResponse(_serialize_analysis_history_detail(renamed))
 
 
 @require_POST

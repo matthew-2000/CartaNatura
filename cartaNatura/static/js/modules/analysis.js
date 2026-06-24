@@ -56,3 +56,20 @@ export function formatCurrency(value) {
     currency: "EUR",
   });
 }
+
+export function buildEconomicScenarioRows(summary, priceOptions, selectedPrice) {
+  const totalCo2 = Number(summary?.totalCo2 || 0);
+  const selectedValue = Number(selectedPrice || priceOptions?.[0]?.value || 0);
+
+  return (priceOptions || []).map((option) => {
+    const price = Number(option.value || 0);
+    return {
+      label: option.label || "",
+      description: option.description || option.note || "",
+      price,
+      totalCo2,
+      value: totalCo2 * price,
+      selected: price === selectedValue,
+    };
+  });
+}

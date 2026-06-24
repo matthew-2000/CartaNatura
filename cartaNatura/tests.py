@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import geopandas
+from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, override_settings
 from shapely.geometry import box
@@ -28,6 +29,8 @@ from cartaNatura.interaction.session import InMemorySessionStore
 from cartaNatura.interaction.tools import build_default_tool_registry
 from cartaNatura.interaction.tools.analysis_history import (
     compare_analyses,
+    compare_recent_analyses,
+    compare_saved_history_analyses,
     get_last_analysis,
     get_recent_analyses,
 )
@@ -41,6 +44,7 @@ from cartaNatura.services.municipality_text import (
     extract_municipality_names,
     suggest_municipality_names,
 )
+from cartaNatura.services.analysis_compare import compare_saved_analyses
 from cartaNatura.services.payloads import parse_selection_payload
 from cartaNatura.experiments import (
     create_study_session,
@@ -387,13 +391,182 @@ class GisClipServiceTests(SimpleTestCase):
         self.assertEqual(result.intersected_municipalities, [])
 
 
+class AnalysisCompareServiceTests(SimpleTestCase):
+    @staticmethod
+    def _record(
+        analysis_id: str,
+        label: str,
+        *,
+        total_co2: float | None,
+        total_hectares: float | None,
+        items: list[dict[str, object]],
+        top_category: dict[str, object] | None = None,
+    ) -> StoredAnalysis:
+        return StoredAnalysis(
+            analysis_id=analysis_id,
+            source="selection",
+            created_at=f"2026-06-24T10:0{analysis_id[-1]}:00+00:00",
+            label=label,
+            selection_kind="drawn",
+            has_drawn_geometry=True,
+            summary={
+                "totalCo2": total_co2,
+                "totalHectares": total_hectares,
+                "topCategory": top_category,
+                "hasSupportedVegetation": bool(items),
+                "items": items,
+            },
+            intersected_municipalities=(label,),
+            metadata={"channel": "web_map"},
+        )
+
+    def test_compare_saved_analyses_handles_two_records_pairwise_and_rankings(self):
+        first = self._record(
+            "analysis_1",
+            "A",
+            total_co2=100,
+            total_hectares=50,
+            top_category={"key": "faggete", "label": "Faggete"},
+            items=[
+                {"key": "faggete", "label": "Faggete", "hectares": 50, "co2PerHectare": 2}
+            ],
+        )
+        second = self._record(
+            "analysis_2",
+            "B",
+            total_co2=150,
+            total_hectares=30,
+            top_category={"key": "castagneti", "label": "Castagneti"},
+            items=[
+                {"key": "castagneti", "label": "Castagneti", "hectares": 30, "co2PerHectare": 5}
+            ],
+        )
+
+        comparison = compare_saved_analyses([first, second], price_options=({"label": "Scenario", "value": 20},))
+
+        self.assertEqual(comparison["analyses"][0]["co2PerHectare"], 2)
+        self.assertEqual(comparison["analyses"][1]["co2PerHectare"], 5)
+        self.assertEqual(comparison["rankings"]["totalCo2"][0]["id"], "analysis_2")
+        self.assertEqual(comparison["rankings"]["totalHectares"][0]["id"], "analysis_1")
+        self.assertEqual(comparison["rankings"]["co2PerHectare"][0]["id"], "analysis_2")
+        self.assertEqual(comparison["pairwise"]["totalCo2"]["absolute"], 50)
+        self.assertEqual(comparison["pairwise"]["totalCo2"]["percent"], 50)
+        self.assertEqual(comparison["pairwise"]["higherTotalCo2"]["id"], "analysis_2")
+        self.assertEqual(comparison["pairwise"]["higherCo2PerHectare"]["id"], "analysis_2")
+        self.assertEqual(comparison["economicComparison"][0]["values"][1]["value"], 3000)
+        self.assertEqual(comparison["economicComparison"][0]["ranking"][0]["id"], "analysis_2")
+
+    def test_compare_saved_analyses_handles_multiple_records_and_category_overlap(self):
+        records = [
+            self._record(
+                "analysis_1",
+                "A",
+                total_co2=100,
+                total_hectares=50,
+                items=[
+                    {"key": "faggete", "label": "Faggete", "hectares": 20, "co2PerHectare": 2},
+                    {"key": "leccete", "label": "Leccete", "hectares": 30, "co2PerHectare": 2},
+                ],
+            ),
+            self._record(
+                "analysis_2",
+                "B",
+                total_co2=60,
+                total_hectares=20,
+                items=[
+                    {"key": "faggete", "label": "Faggete", "hectares": 20, "co2PerHectare": 3},
+                ],
+            ),
+            self._record(
+                "analysis_3",
+                "C",
+                total_co2=0,
+                total_hectares=0,
+                items=[],
+            ),
+        ]
+
+        comparison = compare_saved_analyses(records)
+
+        self.assertIsNone(comparison["pairwise"])
+        self.assertEqual(comparison["rankings"]["totalCo2"][0]["id"], "analysis_1")
+        self.assertEqual(comparison["rankings"]["co2PerHectare"][0]["id"], "analysis_2")
+        self.assertIsNone(comparison["analyses"][2]["co2PerHectare"])
+        self.assertEqual(comparison["categoriesComparison"]["commonCategories"], [])
+        self.assertIn("faggete", comparison["categoriesComparison"]["partialCategories"])
+        self.assertIn("leccete", comparison["categoriesComparison"]["partialCategories"])
+
+    def test_compare_saved_analyses_rejects_less_than_two_records(self):
+        with self.assertRaisesMessage(ValueError, "almeno due analisi"):
+            compare_saved_analyses([])
+
+
 @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies")
 class ViewSmokeTests(SimpleTestCase):
+    @staticmethod
+    def _history_analysis_payload():
+        return {
+            "areas": [
+                {
+                    "kind": "drawn",
+                    "geojson": GisClipServiceTests._drawn_geojson(),
+                }
+            ]
+        }
+
+    @staticmethod
+    def _post_history_analysis(client: Client):
+        return client.post(
+            "/progettoGIS/cartaNatura/gis",
+            data=json.dumps(ViewSmokeTests._history_analysis_payload()),
+            content_type="application/json",
+        )
+
+    @staticmethod
+    def _saved_history_record(analysis_id: str, label: str, total_co2: float, total_hectares: float):
+        return StoredAnalysis(
+            analysis_id=analysis_id,
+            source="selection",
+            created_at="2026-06-24T10:00:00+00:00",
+            label=label,
+            selection_kind="drawn",
+            has_drawn_geometry=True,
+            summary={
+                "items": [
+                    {
+                        "key": "faggete",
+                        "label": "Faggete",
+                        "hectares": total_hectares,
+                        "co2PerHectare": total_co2 / total_hectares if total_hectares else 0,
+                    }
+                ]
+                if total_hectares
+                else [],
+                "totalCo2": total_co2,
+                "totalHectares": total_hectares,
+                "hasSupportedVegetation": total_hectares > 0,
+                "topCategory": {"key": "faggete", "label": "Faggete"} if total_hectares else None,
+            },
+            intersected_municipalities=(label,),
+            metadata={"channel": "web_map"},
+        )
+
+    @staticmethod
+    def _seed_history(client: Client, records: list[StoredAnalysis]):
+        session = client.session
+        session["interaction_analyses"] = [record.to_dict() for record in records]
+        session.save()
+        client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+
     def test_index_renders(self):
         response = Client().get("/progettoGIS/cartaNatura/")
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, '"apiUrl": "/progettoGIS/cartaNatura/gis"')
+        self.assertContains(
+            response,
+            '"analysisHistoryUrl": "/progettoGIS/cartaNatura/analysis/history"',
+        )
         self.assertContains(
             response,
             '"voiceTranscriptionUrl": "/progettoGIS/cartaNatura/voice/transcribe"',
@@ -407,6 +580,206 @@ class ViewSmokeTests(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_gis_completed_analysis_creates_history_record(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+        client = Client()
+
+        analysis_response = self._post_history_analysis(client)
+        history_response = client.get("/progettoGIS/cartaNatura/analysis/history")
+
+        self.assertEqual(analysis_response.status_code, 200)
+        self.assertEqual(history_response.status_code, 200)
+        items = history_response.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], analysis_response.json()["analysisId"])
+        self.assertEqual(items[0]["selectionKind"], "drawn")
+        self.assertTrue(items[0]["hasDrawnGeometry"])
+        self.assertEqual(items[0]["summary"]["totalCo2"], analysis_response.json()["summary"]["totalCo2"])
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_analysis_history_detail_rename_and_delete_work(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+        client = Client()
+        analysis_id = self._post_history_analysis(client).json()["analysisId"]
+
+        detail_response = client.get(f"/progettoGIS/cartaNatura/analysis/history/{analysis_id}")
+        rename_response = client.patch(
+            f"/progettoGIS/cartaNatura/analysis/history/{analysis_id}",
+            data='{"label":"Area pilota"}',
+            content_type="application/json",
+        )
+        delete_response = client.delete(f"/progettoGIS/cartaNatura/analysis/history/{analysis_id}")
+        missing_response = client.get(f"/progettoGIS/cartaNatura/analysis/history/{analysis_id}")
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.json()["id"], analysis_id)
+        self.assertEqual(detail_response.json()["selectionPayload"]["areas"][0]["kind"], "drawn")
+        self.assertEqual(rename_response.status_code, 200)
+        self.assertEqual(rename_response.json()["label"], "Area pilota")
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["deleted"], True)
+        self.assertEqual(missing_response.status_code, 404)
+
+    @override_settings(ANALYSIS_HISTORY_LIMIT=2)
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_analysis_history_limit_is_respected(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+        client = Client()
+
+        first_id = self._post_history_analysis(client).json()["analysisId"]
+        second_id = self._post_history_analysis(client).json()["analysisId"]
+        third_id = self._post_history_analysis(client).json()["analysisId"]
+        history_response = client.get("/progettoGIS/cartaNatura/analysis/history")
+
+        self.assertEqual(history_response.status_code, 200)
+        ids = [item["id"] for item in history_response.json()["items"]]
+        self.assertEqual(ids, [third_id, second_id])
+        self.assertNotIn(first_id, ids)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_analysis_history_does_not_store_user_text_or_personal_data(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+        client = Client()
+        client.post(
+            "/progettoGIS/cartaNatura/experiment/log",
+            data=json.dumps(
+                {
+                    "eventType": "interaction_completed",
+                    "channel": "web_chat",
+                    "operation": "conversational_request",
+                    "interactionMode": "text",
+                    "userText": "testo libero da non salvare",
+                    "userTranscript": "transcript da non salvare",
+                    "assistantResponse": "risposta da non salvare",
+                    "details": {
+                        "ip": "127.0.0.1",
+                        "userAgent": "Browser",
+                    },
+                }
+            ),
+            content_type="application/json",
+        )
+        analysis_id = self._post_history_analysis(client).json()["analysisId"]
+
+        detail_response = client.get(f"/progettoGIS/cartaNatura/analysis/history/{analysis_id}")
+        serialized = json.dumps(detail_response.json())
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertNotIn("testo libero da non salvare", serialized)
+        self.assertNotIn("transcript da non salvare", serialized)
+        self.assertNotIn("risposta da non salvare", serialized)
+        self.assertNotIn("127.0.0.1", serialized)
+        self.assertNotIn("Browser", serialized)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_analysis_history_clear_all_works(
+        self,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
+        client = Client()
+        self._post_history_analysis(client)
+
+        clear_response = client.delete("/progettoGIS/cartaNatura/analysis/history")
+        list_response = client.get("/progettoGIS/cartaNatura/analysis/history")
+
+        self.assertEqual(clear_response.status_code, 200)
+        self.assertEqual(clear_response.json()["count"], 0)
+        self.assertEqual(list_response.json()["items"], [])
+
+    def test_analysis_history_compare_endpoint_returns_deterministic_comparison(self):
+        client = Client()
+        self._seed_history(
+            client,
+            [
+                self._saved_history_record("analysis_a", "A", 100, 50),
+                self._saved_history_record("analysis_b", "B", 150, 30),
+            ],
+        )
+
+        response = client.post(
+            "/progettoGIS/cartaNatura/analysis/history/compare",
+            data='{"ids":["analysis_a","analysis_b"]}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual([item["id"] for item in payload["analyses"]], ["analysis_a", "analysis_b"])
+        self.assertEqual(payload["rankings"]["totalCo2"][0]["id"], "analysis_b")
+        self.assertEqual(payload["rankings"]["totalHectares"][0]["id"], "analysis_a")
+        self.assertEqual(payload["rankings"]["co2PerHectare"][0]["id"], "analysis_b")
+        self.assertEqual(payload["pairwise"]["totalCo2"]["absolute"], 50)
+        self.assertEqual(payload["economicComparison"][0]["priceEurPerTon"], 138)
+        self.assertEqual(payload["economicComparison"][0]["ranking"][0]["id"], "analysis_b")
+
+    def test_analysis_history_compare_endpoint_rejects_less_than_two_ids(self):
+        client = Client()
+        self._seed_history(client, [self._saved_history_record("analysis_a", "A", 100, 50)])
+
+        response = client.post(
+            "/progettoGIS/cartaNatura/analysis/history/compare",
+            data='{"ids":["analysis_a"]}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("almeno due analisi", response.json()["error"])
+
+    def test_analysis_history_compare_endpoint_returns_404_for_missing_id(self):
+        client = Client()
+        self._seed_history(client, [self._saved_history_record("analysis_a", "A", 100, 50)])
+
+        response = client.post(
+            "/progettoGIS/cartaNatura/analysis/history/compare",
+            data='{"ids":["analysis_a","missing"]}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("missing", response.json()["error"])
+
+    def test_analysis_history_compare_endpoint_deduplicates_ids_then_rejects_if_needed(self):
+        client = Client()
+        self._seed_history(client, [self._saved_history_record("analysis_a", "A", 100, 50)])
+
+        response = client.post(
+            "/progettoGIS/cartaNatura/analysis/history/compare",
+            data='{"ids":["analysis_a","analysis_a"]}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("almeno due analisi", response.json()["error"])
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -988,9 +1361,13 @@ class InteractionOrchestratorTests(SimpleTestCase):
 
         self.assertEqual(response.commands[0].intent, InteractionIntent.COMPARE_ANALYSES)
         self.assertEqual(response.messages[0].text, "Confronto LLM mockato.")
-        self.assertIn("delta", response.analysis_result)
-        self.assertEqual(response.analysis_result["left"]["requestedMunicipalities"], ["Avellino"])
-        self.assertEqual(response.analysis_result["right"]["requestedMunicipalities"], ["Benevento"])
+        self.assertIn("analyses", response.analysis_result)
+        self.assertIn("pairwise", response.analysis_result)
+        self.assertEqual(
+            [item["municipalities"] for item in response.analysis_result["analyses"]],
+            [["Avellino"], ["Benevento"]],
+        )
+        self.assertIn("totalCo2", response.analysis_result["rankings"])
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -1359,6 +1736,119 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
         self.assertEqual(response.messages[0].text, "Ultimo risultato spiegato.")
         self.assertEqual(provider.calls[3]["previous_response_id"], "resp_final_1")
 
+    def test_runtime_exposes_recent_analysis_history_tool(self):
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_tool_history",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_history",
+                            "name": "list_recent_analyses",
+                            "arguments": '{"limit":10}',
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_final_history",
+                    "output_text": (
+                        '{"intent":"explain_last_analysis","assistant_text":"Ci sono analisi recenti.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],"citations_internal":[],"follow_up_suggestions":[]}'
+                    ),
+                    "output": [],
+                },
+            ]
+        )
+        analysis_store = InMemoryAnalysisStore()
+        saved = analysis_store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 7, "totalHectares": 3, "hasSupportedVegetation": True, "topCategory": None},
+                requested_municipalities=["Avellino"],
+                intersected_municipalities=["Avellino"],
+            )
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=provider,
+            analysis_store=analysis_store,
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="runtime-history-session",
+                input=InteractionInput(text="mostrami le analisi recenti"),
+            )
+        )
+
+        tool_output = json.loads(provider.calls[1]["input"][0]["output"])
+        self.assertEqual(response.commands[0].intent, InteractionIntent.EXPLAIN_LAST_ANALYSIS)
+        self.assertEqual(tool_output["items"][0]["id"], saved.analysis_id)
+        self.assertEqual(tool_output["items"][0]["municipalities"], ["Avellino"])
+
+    def test_runtime_exposes_saved_analysis_compare_tool(self):
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_tool_compare",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_compare",
+                            "name": "compare_saved_analyses",
+                            "arguments": '{"selectors":["Castellabate","Roccadaspide"]}',
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_final_compare",
+                    "output_text": (
+                        '{"intent":"compare_analyses","assistant_text":"Confronto completato.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],"citations_internal":[],"follow_up_suggestions":[]}'
+                    ),
+                    "output": [],
+                },
+            ]
+        )
+        analysis_store = InMemoryAnalysisStore()
+        analysis_store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 7, "totalHectares": 3.5, "hasSupportedVegetation": True, "topCategory": None},
+                requested_municipalities=["Castellabate"],
+                intersected_municipalities=["Castellabate"],
+            )
+        )
+        analysis_store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 11, "totalHectares": 2, "hasSupportedVegetation": True, "topCategory": None},
+                requested_municipalities=["Roccadaspide"],
+                intersected_municipalities=["Roccadaspide"],
+            )
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=provider,
+            analysis_store=analysis_store,
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="runtime-compare-session",
+                input=InteractionInput(text="usa lo storico salvato"),
+            )
+        )
+
+        tool_output = json.loads(provider.calls[1]["input"][0]["output"])
+        self.assertEqual(response.commands[0].intent, InteractionIntent.COMPARE_ANALYSES)
+        self.assertEqual(len(tool_output["analyses"]), 2)
+        self.assertEqual(tool_output["rankings"]["totalCo2"][0]["value"], 11)
+        self.assertTrue(tool_output["economicComparison"])
+
 
 class AnalysisStoreAndToolsTests(SimpleTestCase):
     def test_inmemory_analysis_store_returns_last_saved_item(self):
@@ -1394,7 +1884,10 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
         payload = registry.execute(ToolName.GET_LAST_ANALYSIS)
 
         self.assertEqual(payload["analysisId"], saved.analysis_id)
+        self.assertEqual(payload["id"], saved.analysis_id)
+        self.assertEqual(payload["selectionKind"], "unknown")
         self.assertEqual(payload["requestedMunicipalities"], ["Avellino"])
+        self.assertEqual(payload["municipalities"], ["Avellino"])
 
     def test_get_recent_analyses_returns_newest_first(self):
         store = InMemoryAnalysisStore()
@@ -1415,8 +1908,10 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
 
         self.assertEqual(payload["items"][0]["analysisId"], second.analysis_id)
         self.assertEqual(payload["items"][1]["analysisId"], first.analysis_id)
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["items"][0]["totalCo2"], 3)
 
-    def test_compare_analyses_returns_numeric_delta(self):
+    def test_compare_analyses_returns_deterministic_comparison_payload(self):
         store = InMemoryAnalysisStore()
         left = store.save(
             create_stored_analysis(
@@ -1437,12 +1932,14 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
             right_analysis_id=right.analysis_id,
         )
 
-        self.assertEqual(comparison["delta"]["totalCo2"], 5)
-        self.assertEqual(comparison["delta"]["totalHectares"], 4)
+        self.assertEqual([item["id"] for item in comparison["analyses"]], [left.analysis_id, right.analysis_id])
+        self.assertEqual(comparison["pairwise"]["totalCo2"]["absolute"], 5)
+        self.assertEqual(comparison["pairwise"]["totalHectares"]["absolute"], 4)
+        self.assertTrue(comparison["economicComparison"])
 
     def test_compare_recent_analyses_uses_latest_two_items(self):
         store = InMemoryAnalysisStore()
-        store.save(
+        older = store.save(
             create_stored_analysis(
                 source="municipalities",
                 summary={"items": [], "totalCo2": 10, "totalHectares": 20, "hasSupportedVegetation": True, "topCategory": None},
@@ -1458,8 +1955,99 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
 
         comparison = registry.execute(ToolName.COMPARE_RECENT_ANALYSES)
 
-        self.assertEqual(comparison["right"]["analysisId"], latest.analysis_id)
-        self.assertEqual(comparison["delta"]["totalCo2"], 5)
+        self.assertEqual([item["id"] for item in comparison["analyses"]], [latest.analysis_id, older.analysis_id])
+        self.assertEqual(comparison["pairwise"]["totalCo2"]["absolute"], 5)
+        self.assertEqual(comparison["rankings"]["totalCo2"][0]["id"], latest.analysis_id)
+
+    def test_compare_recent_analyses_supports_more_than_two_items(self):
+        store = InMemoryAnalysisStore()
+        store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 1, "totalHectares": 10, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+        store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 3, "totalHectares": 20, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+        latest = store.save(
+            create_stored_analysis(
+                source="selection",
+                summary={"items": [], "totalCo2": 2, "totalHectares": 5, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+
+        comparison = compare_recent_analyses(analysis_store=store, limit=3)
+
+        self.assertEqual(len(comparison["analyses"]), 3)
+        self.assertIsNone(comparison["pairwise"])
+        self.assertEqual(comparison["analyses"][0]["id"], latest.analysis_id)
+        self.assertEqual(comparison["rankings"]["totalHectares"][0]["value"], 20)
+
+    def test_compare_recent_analyses_requires_two_records(self):
+        store = InMemoryAnalysisStore()
+        store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 1, "totalHectares": 10, "hasSupportedVegetation": True, "topCategory": None},
+            )
+        )
+
+        with self.assertRaisesMessage(ValueError, "Servono almeno due analisi recenti"):
+            compare_recent_analyses(analysis_store=store)
+
+    def test_compare_saved_history_analyses_resolves_labels_and_municipalities(self):
+        store = InMemoryAnalysisStore()
+        first = store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 10, "totalHectares": 5, "hasSupportedVegetation": True, "topCategory": None},
+                requested_municipalities=["Castellabate"],
+                intersected_municipalities=["Castellabate"],
+            )
+        )
+        second = store.save(
+            StoredAnalysis(
+                analysis_id="analysis_roccadaspide",
+                source="municipalities",
+                created_at="2026-06-24T10:00:00+00:00",
+                label="Analisi Roccadaspide",
+                selection_kind="municipalities",
+                summary={"items": [], "totalCo2": 20, "totalHectares": 10, "hasSupportedVegetation": True, "topCategory": None},
+                requested_municipalities=("Roccadaspide",),
+                intersected_municipalities=("Roccadaspide",),
+            )
+        )
+
+        comparison = compare_saved_history_analyses(
+            analysis_store=store,
+            selectors=["Castellabate", "Analisi Roccadaspide"],
+        )
+
+        self.assertEqual([item["id"] for item in comparison["analyses"]], [first.analysis_id, second.analysis_id])
+        self.assertEqual(comparison["rankings"]["totalCo2"][0]["id"], second.analysis_id)
+
+    def test_compare_saved_history_analyses_rejects_ambiguous_selector(self):
+        store = InMemoryAnalysisStore()
+        for label in ("Analisi A", "Analisi B"):
+            store.save(
+                StoredAnalysis(
+                    analysis_id=f"analysis_{label[-1].casefold()}",
+                    source="municipalities",
+                    created_at="2026-06-24T10:00:00+00:00",
+                    label=label,
+                    selection_kind="municipalities",
+                    summary={"items": [], "totalCo2": 10, "totalHectares": 5, "hasSupportedVegetation": True, "topCategory": None},
+                    requested_municipalities=("Avellino",),
+                    intersected_municipalities=("Avellino",),
+                )
+            )
+
+        with self.assertRaisesMessage(ValueError, "Riferimento ambiguo"):
+            compare_saved_history_analyses(analysis_store=store, selectors=["Avellino", "Analisi A"])
 
     @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
     def test_search_municipalities_returns_exact_and_suggested_matches(self, load_municipality_shapes):
