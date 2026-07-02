@@ -22,6 +22,7 @@ class StoredAnalysis:
     requested_municipalities: tuple[str, ...] = ()
     intersected_municipalities: tuple[str, ...] = ()
     selection_payload: dict[str, Any] | None = None
+    economic_valuation: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -36,6 +37,7 @@ class StoredAnalysis:
             "requested_municipalities": list(self.requested_municipalities),
             "intersected_municipalities": list(self.intersected_municipalities),
             "selection_payload": self.selection_payload,
+            "economic_valuation": self.economic_valuation,
             "metadata": self.metadata,
         }
 
@@ -56,6 +58,9 @@ class StoredAnalysis:
                 str(item) for item in data.get("intersected_municipalities", []) if str(item).strip()
             ),
             selection_payload=data.get("selection_payload"),
+            economic_valuation=data.get("economic_valuation")
+            if isinstance(data.get("economic_valuation"), dict)
+            else None,
             metadata=data.get("metadata") or {},
         )
 
@@ -180,6 +185,7 @@ def create_stored_analysis(
             str(item) for item in intersected_municipalities if str(item).strip()
         ),
         selection_payload=selection_payload,
+        economic_valuation=None,
         metadata=safe_metadata,
     )
 
@@ -303,6 +309,7 @@ class DjangoSessionAnalysisStore:
                     requested_municipalities=item.requested_municipalities,
                     intersected_municipalities=item.intersected_municipalities,
                     selection_payload=item.selection_payload,
+                    economic_valuation=item.economic_valuation,
                     metadata=item.metadata,
                 )
                 next_items.append(renamed)

@@ -109,6 +109,9 @@ class InteractionResponse:
     messages: tuple[InteractionMessage, ...] = ()
     commands: tuple[InteractionCommand, ...] = ()
     analysis_result: dict[str, Any] | None = None
+    economic_result: dict[str, Any] | None = None
+    scenario_comparison: dict[str, Any] | None = None
+    report_context: dict[str, Any] | None = None
     ui_hints: dict[str, Any] = field(default_factory=dict)
     audio_output_text: str | None = None
     updated_context: SessionContext | None = None

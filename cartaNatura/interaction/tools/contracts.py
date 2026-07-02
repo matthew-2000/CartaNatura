@@ -9,12 +9,15 @@ from typing import Any
 class ToolName(StrEnum):
     ANALYZE_MUNICIPALITIES = "analyze_municipalities"
     ANALYZE_SELECTION = "analyze_selection"
+    CALCULATE_ECONOMIC_VALUE = "calculate_economic_value"
+    COMPARE_ECONOMIC_SCENARIOS = "compare_economic_scenarios"
     COMPARE_ANALYSES = "compare_analyses"
     COMPARE_RECENT_ANALYSES = "compare_recent_analyses"
     COMPARE_SAVED_ANALYSES = "compare_saved_analyses"
     GET_LAST_ANALYSIS = "get_last_analysis"
     LIST_RECENT_ANALYSES = "list_recent_analyses"
     RESET_ANALYSIS_CONTEXT = "reset_analysis_context"
+    PREPARE_REPORT = "prepare_report"
     GET_METHODOLOGY = "get_methodology"
     SEARCH_MUNICIPALITIES = "search_municipalities"
 

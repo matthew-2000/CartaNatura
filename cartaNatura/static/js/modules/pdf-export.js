@@ -75,6 +75,7 @@ function addScenarioComparisonTable(doc, {
 }
 
 export async function generatePdfReport({
+  analysisId,
   summary,
   intersectedMunicipalities,
   selectedPrice,
@@ -105,6 +106,10 @@ export async function generatePdfReport({
   doc.setFontSize(10);
   doc.setTextColor(98, 108, 102);
   doc.text("Analisi GIS, assorbimento annuo stimato e valorizzazione forestale", 14, 31);
+  if (analysisId) {
+    doc.setFontSize(8);
+    doc.text(`Analisi: ${analysisId}`, 196, 31, { align: "right" });
+  }
 
   const mapImage = await window.domtoimage.toPng(mapElement);
   doc.addImage(mapImage, "PNG", 14, 38, 108, 88);

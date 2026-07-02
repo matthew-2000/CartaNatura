@@ -47,13 +47,16 @@ export function deriveSummaryMetrics(summary) {
 }
 
 export function formatRoundedNumber(value) {
-  return Math.floor(value).toLocaleString("it-IT");
+  return Number(value || 0).toLocaleString("it-IT", {
+    maximumFractionDigits: 2,
+  });
 }
 
 export function formatCurrency(value) {
-  return Math.floor(value).toLocaleString("it-IT", {
+  return Number(value || 0).toLocaleString("it-IT", {
     style: "currency",
     currency: "EUR",
+    maximumFractionDigits: 2,
   });
 }
 

@@ -105,6 +105,7 @@ async function loadModules() {
 }
 
 const state = {
+  analysisId: null,
   summary: null,
   clipped: null,
   intersectedMunicipalities: [],
@@ -969,7 +970,7 @@ function elapsedSince(startedAt) {
 function buildAnalysisEventDetails(mapController, analysisResult = null, analysisContext = null) {
   const summary = analysisResult?.summary || state.summary || {};
   return {
-    analysisId: analysisResult?.analysisId,
+    analysisId: analysisResult?.analysisId || state.analysisId,
     selectedMunicipalityCount:
       analysisContext?.selectedMunicipalityCount ?? mapController.getSelectedMunicipalityCount(),
     drawnFeatureCount: analysisContext?.drawnFeatureCount ?? mapController.getDrawnFeatureCount(),
@@ -1365,14 +1366,14 @@ function setAssistantStreamingProgress(messageIndex, progressText) {
   renderAssistantMessages();
 }
 
-function finalizeAssistantStreamingMessage(messageIndex, fallbackText = "") {
+function finalizeAssistantStreamingMessage(messageIndex, finalText = "") {
   const message = state.assistantMessages[messageIndex];
   if (!message) {
     return;
   }
 
-  if (!message.text && fallbackText) {
-    message.text = fallbackText;
+  if (finalText) {
+    message.text = finalText;
   }
 
   delete message.progressText;
@@ -1451,6 +1452,18 @@ function describeAssistantToolProgress(toolName) {
     return "Analizzo la selezione corrente...";
   }
 
+  if (toolName === "calculate_economic_value") {
+    return "Calcolo il valore economico...";
+  }
+
+  if (toolName === "compare_economic_scenarios") {
+    return "Confronto gli scenari economici...";
+  }
+
+  if (toolName === "prepare_report") {
+    return "Preparo il report esistente...";
+  }
+
   if (toolName === "get_last_analysis") {
     return "Recupero l'ultimo report...";
   }
@@ -1521,6 +1534,7 @@ function buildInteractionContext(mapController) {
 }
 
 function applyAnalysisResult(mapController, analysisResult, analysisContext = null) {
+  state.analysisId = analysisResult.analysisId || null;
   state.clipped = analysisResult.clipped;
   state.intersectedMunicipalities = analysisResult.intersectedMunicipalities || [];
   state.summary =
@@ -1552,6 +1566,37 @@ function applyAnalysisResult(mapController, analysisResult, analysisContext = nu
   if (elements.analysisHistoryPanel.classList.contains("is-open")) {
     loadAnalysisHistory().catch((error) => {
       setHistoryStatus(error.message || "Storico non aggiornato.", "error");
+    });
+  }
+}
+
+function applyEconomicResult(
+  economicResult,
+  { interactionMode = "text", recordEvent = true } = {}
+) {
+  if (!economicResult || !Number.isFinite(Number(economicResult.totalValueEur))) {
+    return;
+  }
+
+  state.analysisId = economicResult.analysisId || state.analysisId;
+  state.selectedEconomicPrice = Number(economicResult.priceEurPerTon || 0);
+  state.calculatedValue = Number(economicResult.totalValueEur || 0);
+  state.economicValueCalculated = true;
+  renderInfoSummary();
+  if (recordEvent) {
+    recordExperiment({
+      eventType: "valuation_completed",
+      channel: interactionMode === "voice" ? "voice" : "web_chat",
+      operation: "economic_valuation",
+      interactionMode,
+      stepCount: 1,
+      details: {
+        analysisId: state.analysisId,
+        scenarioKey: economicResult.scenarioKey,
+        priceEurPerTon: state.selectedEconomicPrice,
+        totalCo2: Number(economicResult.totalCo2 || state.summary?.totalCo2 || 0),
+        totalValueEur: state.calculatedValue,
+      },
     });
   }
 }
@@ -1879,6 +1924,7 @@ function renderInfoSummary() {
 
       try {
         await generatePdfReport({
+          analysisId: state.analysisId,
           summary: state.summary,
           intersectedMunicipalities: state.intersectedMunicipalities,
           selectedPrice: selectedValue,
@@ -1901,8 +1947,10 @@ function renderInfoSummary() {
           stepCount: 1,
           details: {
             reportFormat: "pdf",
+            analysisId: state.analysisId,
             priceEurPerTon: selectedValue,
             totalCo2: Number(state.summary.totalCo2 || 0),
+            totalValueEur: state.calculatedValue,
           },
         });
         showNotice("PDF generato.", "success");
@@ -1943,12 +1991,18 @@ function renderInfoSummary() {
       durationMs: elapsedSince(valuationStartedAt),
       stepCount: 1,
       details: {
+        analysisId: state.analysisId,
         priceEurPerTon: selectedValue,
         totalCo2: Number(state.summary.totalCo2 || 0),
+        totalValueEur: state.calculatedValue,
       },
     });
     renderSelectedScenarioValue(selectedValue, calculateButton);
   });
+
+  if (state.economicValueCalculated) {
+    renderSelectedScenarioValue(state.selectedEconomicPrice, calculateButton);
+  }
 }
 
 function buildAnalysisPayload(mapController) {
@@ -1972,6 +2026,7 @@ function buildAnalysisPayload(mapController) {
 }
 
 function resetAnalysis(mapController) {
+  state.analysisId = null;
   state.summary = null;
   state.clipped = null;
   state.intersectedMunicipalities = [];
@@ -2039,6 +2094,7 @@ async function runAnalysis(mapController) {
     applyAnalysisResult(
       mapController,
       {
+        analysisId: response.analysisId,
         clipped: response.clipped,
         intersectedMunicipalities: response.intersectedMunicipalities,
         summary: response.summary,
@@ -2110,6 +2166,7 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       },
     };
     let response;
+    let analysisApplied = false;
     recordExperiment({
       eventType: "task_started",
       channel: interactionMode === "voice" ? "voice" : "web_chat",
@@ -2125,7 +2182,6 @@ async function runAssistantInteraction(mapController, message, { interactionMode
 
     if (appConfig.interactionStreamUrl) {
       const streamingMessageIndex = startAssistantStreamingMessage();
-      let analysisApplied = false;
 
       try {
         response = await sendInteractionMessageStream(appConfig.interactionStreamUrl, payload, {
@@ -2213,11 +2269,19 @@ async function runAssistantInteraction(mapController, message, { interactionMode
     }
 
     setAssistantStatus(response.uiHints?.providerMode || null, assistantConfig.providerConfigured);
+    if (response.economicResult) {
+      applyEconomicResult(response.economicResult, { interactionMode });
+    } else if (response.reportContext?.economicResult) {
+      applyEconomicResult(response.reportContext.economicResult, {
+        interactionMode,
+        recordEvent: false,
+      });
+    }
     applyAssistantUiActions(mapController, response.uiHints?.uiActions);
 
     if (response.uiHints?.mode === "reset") {
       resetAnalysis(mapController);
-    } else if (response.analysisResult?.clipped) {
+    } else if (!analysisApplied && response.analysisResult?.clipped) {
       applyAnalysisResult(mapController, response.analysisResult);
     } else if (response.uiHints?.needsClarification) {
       showNotice("Serve un chiarimento per continuare.", "warning");

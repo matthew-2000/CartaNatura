@@ -41,6 +41,7 @@ def _serialize_analysis(analysis: StoredAnalysis) -> dict[str, Any]:
         "requestedMunicipalities": list(analysis.requested_municipalities),
         "intersectedMunicipalities": list(analysis.intersected_municipalities),
         "summary": _compact_summary(analysis.summary),
+        "economicEvaluation": analysis.economic_valuation,
         "metadata": analysis.metadata,
     }
 
@@ -58,6 +59,7 @@ def _serialize_compact_analysis(analysis: StoredAnalysis) -> dict[str, Any]:
         "totalHectares": summary.get("totalHectares"),
         "topCategory": summary.get("topCategory"),
         "hasSupportedVegetation": summary.get("hasSupportedVegetation"),
+        "economicEvaluation": analysis.economic_valuation,
     }
 
 

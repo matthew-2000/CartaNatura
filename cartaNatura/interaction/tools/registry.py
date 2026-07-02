@@ -15,6 +15,11 @@ from .analysis_history import (
     reset_analysis_context,
 )
 from .contracts import ToolName
+from .economic_valuation import (
+    calculate_analysis_economic_value,
+    compare_analysis_economic_scenarios,
+    prepare_analysis_report,
+)
 from .gis_analysis import analyze_municipalities, analyze_selection
 from .methodology import get_methodology
 from .municipality_lookup import search_municipalities
@@ -42,6 +47,20 @@ def build_default_tool_registry(analysis_store: AnalysisStore) -> ToolRegistry:
     registry.register(ToolName.ANALYZE_MUNICIPALITIES, analyze_municipalities)
     registry.register(ToolName.ANALYZE_SELECTION, analyze_selection)
     registry.register(
+        ToolName.CALCULATE_ECONOMIC_VALUE,
+        lambda **kwargs: calculate_analysis_economic_value(
+            analysis_store=analysis_store,
+            **kwargs,
+        ),
+    )
+    registry.register(
+        ToolName.COMPARE_ECONOMIC_SCENARIOS,
+        lambda **kwargs: compare_analysis_economic_scenarios(
+            analysis_store=analysis_store,
+            **kwargs,
+        ),
+    )
+    registry.register(
         ToolName.COMPARE_ANALYSES,
         lambda **kwargs: compare_analyses(analysis_store=analysis_store, **kwargs),
     )
@@ -64,6 +83,13 @@ def build_default_tool_registry(analysis_store: AnalysisStore) -> ToolRegistry:
     registry.register(
         ToolName.RESET_ANALYSIS_CONTEXT,
         lambda **kwargs: reset_analysis_context(analysis_store=analysis_store, **kwargs),
+    )
+    registry.register(
+        ToolName.PREPARE_REPORT,
+        lambda **kwargs: prepare_analysis_report(
+            analysis_store=analysis_store,
+            **kwargs,
+        ),
     )
     registry.register(ToolName.GET_METHODOLOGY, get_methodology)
     registry.register(ToolName.SEARCH_MUNICIPALITIES, search_municipalities)

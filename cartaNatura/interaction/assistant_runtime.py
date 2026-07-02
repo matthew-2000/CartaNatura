@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Generator
 
+from cartaNatura.domain.economics import PRICE_OPTIONS
 from cartaNatura.domain.vegetation import serialize_categories
 
 from .analysis_store import AnalysisStore, NullAnalysisStore, create_stored_analysis
@@ -27,23 +28,29 @@ from .ui_actions import ALLOWED_UI_ACTIONS, filter_ui_actions
 MODEL_TOOL_SEARCH_MUNICIPALITIES = "search_municipalities"
 MODEL_TOOL_ANALYZE_MUNICIPALITIES = "analyze_municipalities"
 MODEL_TOOL_ANALYZE_CURRENT_SELECTION = "analyze_current_selection"
+MODEL_TOOL_CALCULATE_ECONOMIC_VALUE = "calculate_economic_value"
+MODEL_TOOL_COMPARE_ECONOMIC_SCENARIOS = "compare_economic_scenarios"
 MODEL_TOOL_GET_LAST_ANALYSIS = "get_last_analysis"
 MODEL_TOOL_COMPARE_RECENT_ANALYSES = "compare_recent_analyses"
 MODEL_TOOL_LIST_RECENT_ANALYSES = "list_recent_analyses"
 MODEL_TOOL_COMPARE_SAVED_ANALYSES = "compare_saved_analyses"
 MODEL_TOOL_GET_METHODOLOGY = "get_methodology"
 MODEL_TOOL_RESET_ANALYSIS_CONTEXT = "reset_analysis_context"
+MODEL_TOOL_PREPARE_REPORT = "prepare_report"
 
 MODEL_TOOL_NAMES = (
     MODEL_TOOL_SEARCH_MUNICIPALITIES,
     MODEL_TOOL_ANALYZE_MUNICIPALITIES,
     MODEL_TOOL_ANALYZE_CURRENT_SELECTION,
+    MODEL_TOOL_CALCULATE_ECONOMIC_VALUE,
+    MODEL_TOOL_COMPARE_ECONOMIC_SCENARIOS,
     MODEL_TOOL_GET_LAST_ANALYSIS,
     MODEL_TOOL_COMPARE_RECENT_ANALYSES,
     MODEL_TOOL_LIST_RECENT_ANALYSES,
     MODEL_TOOL_COMPARE_SAVED_ANALYSES,
     MODEL_TOOL_GET_METHODOLOGY,
     MODEL_TOOL_RESET_ANALYSIS_CONTEXT,
+    MODEL_TOOL_PREPARE_REPORT,
 )
 RULE_BASED_CHAT_INTENTS = {
     InteractionIntent.ANALYZE_SELECTION,
@@ -58,6 +65,9 @@ RULE_BASED_CHAT_INTENTS = {
 class ToolExecutionOutcome:
     payload: dict[str, Any]
     analysis_result: dict[str, Any] | None = None
+    economic_result: dict[str, Any] | None = None
+    scenario_comparison: dict[str, Any] | None = None
+    report_context: dict[str, Any] | None = None
     last_analysis: dict[str, Any] | None = None
     selection_payload: dict[str, Any] | None = None
     intent: InteractionIntent | None = None
@@ -68,6 +78,9 @@ class ToolExecutionOutcome:
 class RuntimeLoopResult:
     response_body: dict[str, Any]
     latest_analysis_result: dict[str, Any] | None = None
+    latest_economic_result: dict[str, Any] | None = None
+    latest_scenario_comparison: dict[str, Any] | None = None
+    latest_report_context: dict[str, Any] | None = None
     latest_analysis: dict[str, Any] | None = None
     latest_selection_payload: dict[str, Any] | None = None
     derived_intent: InteractionIntent = InteractionIntent.UNKNOWN
@@ -187,6 +200,33 @@ class AssistantToolExecutor:
                 intent=InteractionIntent.ANALYZE_SELECTION,
             )
 
+        if tool_name == MODEL_TOOL_CALCULATE_ECONOMIC_VALUE:
+            payload = self._tool_registry.execute(
+                ToolName.CALCULATE_ECONOMIC_VALUE,
+                scenario_key=str(arguments.get("scenario_key") or ""),
+            )
+            last_analysis = dict(session_context.last_analysis or {})
+            last_analysis.update(
+                {
+                    "analysisId": payload.get("analysisId"),
+                    "economicResult": payload,
+                }
+            )
+            return ToolExecutionOutcome(
+                payload=payload,
+                economic_result=payload,
+                last_analysis=last_analysis,
+                intent=InteractionIntent.COMPARE_ECONOMIC_SCENARIOS,
+            )
+
+        if tool_name == MODEL_TOOL_COMPARE_ECONOMIC_SCENARIOS:
+            payload = self._tool_registry.execute(ToolName.COMPARE_ECONOMIC_SCENARIOS)
+            return ToolExecutionOutcome(
+                payload=payload,
+                scenario_comparison=payload,
+                intent=InteractionIntent.COMPARE_ECONOMIC_SCENARIOS,
+            )
+
         if tool_name == MODEL_TOOL_GET_LAST_ANALYSIS:
             return ToolExecutionOutcome(
                 payload=self._tool_registry.execute(ToolName.GET_LAST_ANALYSIS),
@@ -240,6 +280,14 @@ class AssistantToolExecutor:
                 payload=self._tool_registry.execute(ToolName.RESET_ANALYSIS_CONTEXT),
                 intent=InteractionIntent.RESET_SESSION,
                 clears_context=True,
+            )
+
+        if tool_name == MODEL_TOOL_PREPARE_REPORT:
+            payload = self._tool_registry.execute(ToolName.PREPARE_REPORT)
+            return ToolExecutionOutcome(
+                payload=payload,
+                report_context=payload,
+                intent=InteractionIntent.GENERATE_REPORT,
             )
 
         raise ValueError(f"Tool modello non supportato: {tool_name}.")
@@ -342,6 +390,9 @@ class OpenAiAssistantRuntime:
             )
         )
         latest_analysis_result = None
+        latest_economic_result = None
+        latest_scenario_comparison = None
+        latest_report_context = None
         latest_analysis = None
         latest_selection_payload = None
         derived_intent = InteractionIntent.UNKNOWN
@@ -369,6 +420,12 @@ class OpenAiAssistantRuntime:
                         "type": "analysis_result",
                         "analysisResult": outcome.analysis_result,
                     }
+                if outcome.economic_result is not None:
+                    latest_economic_result = outcome.economic_result
+                if outcome.scenario_comparison is not None:
+                    latest_scenario_comparison = outcome.scenario_comparison
+                if outcome.report_context is not None:
+                    latest_report_context = outcome.report_context
                 if outcome.last_analysis is not None:
                     latest_analysis = outcome.last_analysis
                 if outcome.selection_payload is not None:
@@ -410,6 +467,9 @@ class OpenAiAssistantRuntime:
             loop_result=RuntimeLoopResult(
                 response_body=response_body,
                 latest_analysis_result=latest_analysis_result,
+                latest_economic_result=latest_economic_result,
+                latest_scenario_comparison=latest_scenario_comparison,
+                latest_report_context=latest_report_context,
                 latest_analysis=latest_analysis,
                 latest_selection_payload=latest_selection_payload,
                 derived_intent=derived_intent,
@@ -466,6 +526,9 @@ class OpenAiAssistantRuntime:
         )
 
         latest_analysis_result = None
+        latest_economic_result = None
+        latest_scenario_comparison = None
+        latest_report_context = None
         latest_analysis = None
         latest_selection_payload = None
         derived_intent = InteractionIntent.UNKNOWN
@@ -499,6 +562,12 @@ class OpenAiAssistantRuntime:
                             "analysisResult": outcome.analysis_result,
                         },
                     )
+                if outcome.economic_result is not None:
+                    latest_economic_result = outcome.economic_result
+                if outcome.scenario_comparison is not None:
+                    latest_scenario_comparison = outcome.scenario_comparison
+                if outcome.report_context is not None:
+                    latest_report_context = outcome.report_context
                 if outcome.last_analysis is not None:
                     latest_analysis = outcome.last_analysis
                 if outcome.selection_payload is not None:
@@ -538,6 +607,9 @@ class OpenAiAssistantRuntime:
         return RuntimeLoopResult(
             response_body=response_body,
             latest_analysis_result=latest_analysis_result,
+            latest_economic_result=latest_economic_result,
+            latest_scenario_comparison=latest_scenario_comparison,
+            latest_report_context=latest_report_context,
             latest_analysis=latest_analysis,
             latest_selection_payload=latest_selection_payload,
             derived_intent=derived_intent,
@@ -779,15 +851,51 @@ class OpenAiAssistantRuntime:
     ) -> InteractionResponse:
         final_payload = self._parse_final_payload(loop_result.response_body)
         ui_actions = filter_ui_actions(final_payload.get("ui_actions"))
-        final_intent = self._resolve_final_intent(
-            raw_intent=final_payload.get("intent"),
-            fallback=loop_result.derived_intent,
+        follow_up_suggestions = final_payload.get("follow_up_suggestions", [])
+        authoritative_intents = {
+            InteractionIntent.COMPARE_ECONOMIC_SCENARIOS,
+            InteractionIntent.GENERATE_REPORT,
+        }
+        final_intent = (
+            loop_result.derived_intent
+            if loop_result.derived_intent in authoritative_intents
+            else self._resolve_final_intent(
+                raw_intent=final_payload.get("intent"),
+                fallback=loop_result.derived_intent,
+            )
         )
-        message_text = (
-            str(final_payload.get("assistant_text") or "").strip()
-            or str(final_payload.get("clarification_question") or "").strip()
-            or "Richiesta completata."
-        )
+        if loop_result.latest_economic_result is not None:
+            message_text = self._build_economic_message(loop_result.latest_economic_result)
+            ui_actions = self._merge_ui_actions(
+                ui_actions,
+                ["open_report_panel", "focus_map_results"],
+            )
+            follow_up_suggestions = [
+                "Confronta gli scenari economici",
+                "Apri il report",
+            ]
+        elif loop_result.latest_scenario_comparison is not None:
+            message_text = self._build_scenario_comparison_message(
+                loop_result.latest_scenario_comparison
+            )
+            ui_actions = self._merge_ui_actions(ui_actions, ["open_report_panel"])
+            follow_up_suggestions = [
+                "Calcola il valore con il costo sociale",
+                "Apri il report",
+            ]
+        elif loop_result.latest_report_context is not None:
+            message_text = self._build_report_message(loop_result.latest_report_context)
+            ui_actions = self._merge_ui_actions(
+                ui_actions,
+                ["open_report_panel", "focus_map_results"],
+            )
+            follow_up_suggestions = ["Verifica i risultati sulla mappa"]
+        else:
+            message_text = (
+                str(final_payload.get("assistant_text") or "").strip()
+                or str(final_payload.get("clarification_question") or "").strip()
+                or "Richiesta completata."
+            )
         updated_context = self._build_updated_context(
             request=request,
             session_context=session_context,
@@ -802,12 +910,15 @@ class OpenAiAssistantRuntime:
             messages=(InteractionMessage(role="assistant", text=message_text),),
             commands=(InteractionCommand(intent=final_intent),),
             analysis_result=loop_result.latest_analysis_result,
+            economic_result=loop_result.latest_economic_result,
+            scenario_comparison=loop_result.latest_scenario_comparison,
+            report_context=loop_result.latest_report_context,
             ui_hints={
                 "mode": final_intent.value,
                 "providerMode": "openai",
                 "runtime": "responses_api",
                 "needsClarification": bool(final_payload.get("needs_clarification")),
-                "followUpSuggestions": final_payload.get("follow_up_suggestions", []),
+                "followUpSuggestions": follow_up_suggestions,
                 "citationsInternal": final_payload.get("citations_internal", []),
                 "uiActions": ui_actions,
             },
@@ -845,7 +956,70 @@ class OpenAiAssistantRuntime:
         }:
             return payload
 
+        if tool_name in {
+            MODEL_TOOL_CALCULATE_ECONOMIC_VALUE,
+            MODEL_TOOL_COMPARE_ECONOMIC_SCENARIOS,
+            MODEL_TOOL_PREPARE_REPORT,
+        }:
+            return payload
+
         return payload
+
+    @staticmethod
+    def _format_number(value: Any, *, decimals: int = 2) -> str:
+        number = float(value or 0)
+        formatted = f"{number:,.{decimals}f}"
+        integer_part, decimal_part = formatted.split(".")
+        integer_part = integer_part.replace(",", ".")
+        decimal_part = decimal_part.rstrip("0")
+        return f"{integer_part},{decimal_part}" if decimal_part else integer_part
+
+    @classmethod
+    def _build_economic_message(cls, result: dict[str, Any]) -> str:
+        area = result.get("areaReference") if isinstance(result.get("areaReference"), dict) else {}
+        area_label = str(area.get("label") or result.get("analysisId") or "analisi corrente")
+        return (
+            f"Valutazione per {area_label}: "
+            f"{cls._format_number(result.get('totalCo2'))} t CO2/anno × "
+            f"{cls._format_number(result.get('priceEurPerTon'))} EUR/t "
+            f"({result.get('scenarioLabel')}) = "
+            f"{cls._format_number(result.get('totalValueEur'))} EUR. "
+            f"Analisi di riferimento: {result.get('analysisId')}."
+        )
+
+    @classmethod
+    def _build_scenario_comparison_message(cls, comparison: dict[str, Any]) -> str:
+        scenarios = comparison.get("scenarios") if isinstance(comparison.get("scenarios"), list) else []
+        values = "; ".join(
+            (
+                f"{item.get('scenarioLabel')}: "
+                f"{cls._format_number(item.get('totalValueEur'))} EUR"
+            )
+            for item in scenarios
+            if isinstance(item, dict)
+        )
+        return (
+            f"Confronto per {cls._format_number(comparison.get('totalCo2'))} t CO2/anno: "
+            f"{values}. Analisi di riferimento: {comparison.get('analysisId')}."
+        )
+
+    @classmethod
+    def _build_report_message(cls, report_context: dict[str, Any]) -> str:
+        economic_result = report_context.get("economicResult")
+        if isinstance(economic_result, dict):
+            return (
+                f"Apro il report esistente per l'analisi {report_context.get('analysisId')}, "
+                f"con valore economico {cls._format_number(economic_result.get('totalValueEur'))} EUR. "
+                "Per generare il PDF usa il pulsante Esporta PDF nel report."
+            )
+        return (
+            f"Apro il report esistente per l'analisi {report_context.get('analysisId')}. "
+            "Per generare il PDF, scegli uno scenario economico, calcola il valore e usa Esporta PDF."
+        )
+
+    @staticmethod
+    def _merge_ui_actions(current: list[str], required: list[str]) -> list[str]:
+        return list(dict.fromkeys([*current, *required]))
 
     @staticmethod
     def _serialize_response(response: InteractionResponse) -> dict[str, Any]:
@@ -858,6 +1032,9 @@ class OpenAiAssistantRuntime:
                 for message_item in response.messages
             ],
             "analysisResult": response.analysis_result,
+            "economicResult": response.economic_result,
+            "scenarioComparison": response.scenario_comparison,
+            "reportContext": response.report_context,
             "uiHints": response.ui_hints,
         }
 
@@ -977,12 +1154,15 @@ class OpenAiAssistantRuntime:
             "Se utente cita comuni in modo parziale o ambiguo, usa prima search_municipalities. "
             "Se utente chiede analisi su selezione corrente, usa analyze_current_selection solo se selezione disponibile. "
             "Se utente chiede spiegazioni usa get_last_analysis. "
+            "Se chiede valore economico con uno scenario usa calculate_economic_value. "
+            "Se chiede confronto prezzi o scenari usa compare_economic_scenarios. "
+            "Se chiede report o PDF usa prepare_report. Il tool apre il report esistente: non dichiarare mai PDF generato. "
             "Se chiede elenco storico o analisi recenti usa list_recent_analyses. "
             "Se chiede confronto di risultati recenti usa compare_recent_analyses: ultime due per default, ultime tre se richiesto. "
             "Se cita id, label o comune di analisi salvate usa compare_saved_analyses; se ambiguo lista le analisi e chiedi chiarimento. "
             "Classifica intenti finali in operazioni di dominio: analisi area/comuni, informazioni forestali, stima CO2, "
             "scenari economici, report, spiegazione risultati, guida workflow. "
-            "Per report o scenari economici senza calcolo nuovo, spiega cosa usare in UI e mantieni verifica in mappa. "
+            "Non inventare controlli, parametri, pulsanti o workflow non presenti nei tool. "
             "Per richieste metodologiche usa get_methodology prima di spiegare. "
             "Se manca contesto sufficiente, non improvvisare: chiedi chiarimento. "
             "Azioni UI consentite: show_last_analysis, open_report_panel, show_legend, focus_map_results. "
@@ -1013,6 +1193,7 @@ class OpenAiAssistantRuntime:
             },
             "grounding": {
                 "availableTools": list(MODEL_TOOL_NAMES),
+                "priceOptions": [dict(option) for option in PRICE_OPTIONS],
                 "vegetationCategories": [
                     {
                         "key": item["key"],
@@ -1126,6 +1307,35 @@ class OpenAiAssistantRuntime:
             },
             {
                 "type": "function",
+                "name": MODEL_TOOL_CALCULATE_ECONOMIC_VALUE,
+                "description": "Calcola valore economico deterministico dell'ultima analisi con uno scenario configurato.",
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "scenario_key": {
+                            "type": "string",
+                            "enum": [str(option["key"]) for option in PRICE_OPTIONS],
+                        },
+                    },
+                    "required": ["scenario_key"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": MODEL_TOOL_COMPARE_ECONOMIC_SCENARIOS,
+                "description": "Confronta tutti gli scenari economici configurati per l'ultima analisi.",
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": MODEL_TOOL_GET_LAST_ANALYSIS,
                 "description": "Use this when utente chiede spiegazione o richiamo di ultima analisi.",
                 "strict": True,
@@ -1197,6 +1407,18 @@ class OpenAiAssistantRuntime:
                 "type": "function",
                 "name": MODEL_TOOL_RESET_ANALYSIS_CONTEXT,
                 "description": "Use this when utente chiede reset esplicito di sessione o contesto analitico.",
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": MODEL_TOOL_PREPARE_REPORT,
+                "description": "Apre il report UI esistente per l'ultima analisi senza dichiarare che il PDF sia già generato.",
                 "strict": True,
                 "parameters": {
                     "type": "object",

@@ -127,6 +127,9 @@ class InteractionOrchestrator:
                     for message_item in response.messages
                 ],
                 "analysisResult": response.analysis_result,
+                "economicResult": response.economic_result,
+                "scenarioComparison": response.scenario_comparison,
+                "reportContext": response.report_context,
                 "uiHints": response.ui_hints,
             },
         }

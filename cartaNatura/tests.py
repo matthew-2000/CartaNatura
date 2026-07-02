@@ -12,6 +12,11 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, override_settings
 from shapely.geometry import box
 
+from cartaNatura.domain.economics import (
+    PRICE_OPTIONS,
+    calculate_economic_value,
+    compare_economic_scenarios,
+)
 from cartaNatura.interaction import (
     InMemoryAnalysisStore,
     InteractionChannel,
@@ -1437,6 +1442,107 @@ class InteractionOrchestratorTests(SimpleTestCase):
 
 
 class OpenAiAssistantRuntimeTests(SimpleTestCase):
+    def test_runtime_uses_authoritative_economic_tools_and_report_text(self):
+        store = InMemoryAnalysisStore()
+        saved = store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={
+                    "items": [],
+                    "totalCo2": 10,
+                    "totalHectares": 2,
+                    "hasSupportedVegetation": True,
+                    "topCategory": None,
+                },
+                requested_municipalities=["Avellino"],
+                intersected_municipalities=["Avellino"],
+            )
+        )
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_economic_tool",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_economic",
+                            "name": "calculate_economic_value",
+                            "arguments": '{"scenario_key":"social_cost"}',
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_economic_final",
+                    "output_text": (
+                        '{"intent":"guide_workflow","assistant_text":"Imposta costi e ricavi inesistenti.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],'
+                        '"citations_internal":[],"follow_up_suggestions":[]}'
+                    ),
+                    "output": [],
+                },
+                {
+                    "id": "resp_report_tool",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_report",
+                            "name": "prepare_report",
+                            "arguments": "{}",
+                        }
+                    ],
+                },
+                {
+                    "id": "resp_report_final",
+                    "output_text": (
+                        '{"intent":"generate_report","assistant_text":"PDF gia generato.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],'
+                        '"citations_internal":[],"follow_up_suggestions":[]}'
+                    ),
+                    "output": [],
+                },
+            ]
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=provider,
+            analysis_store=store,
+        )
+
+        economic_response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="economic-runtime-session",
+                input=InteractionInput(text="calcola con il costo sociale"),
+            )
+        )
+        report_response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="economic-runtime-session",
+                input=InteractionInput(text="genera il report"),
+            )
+        )
+
+        self.assertEqual(economic_response.economic_result["analysisId"], saved.analysis_id)
+        self.assertEqual(economic_response.economic_result["totalValueEur"], 1380)
+        self.assertIn("1.380 EUR", economic_response.messages[0].text)
+        self.assertIn(saved.analysis_id, economic_response.messages[0].text)
+        self.assertNotIn("costi e ricavi", economic_response.messages[0].text)
+        self.assertEqual(
+            economic_response.ui_hints["followUpSuggestions"],
+            ["Confronta gli scenari economici", "Apri il report"],
+        )
+        self.assertIn("open_report_panel", economic_response.ui_hints["uiActions"])
+        self.assertEqual(
+            store.get(saved.analysis_id).economic_valuation["totalValueEur"],
+            1380,
+        )
+        self.assertEqual(report_response.report_context["analysisId"], saved.analysis_id)
+        self.assertIn("Apro il report esistente", report_response.messages[0].text)
+        self.assertIn("Esporta PDF", report_response.messages[0].text)
+        self.assertNotIn("gia generato", report_response.messages[0].text)
+        self.assertIn("open_report_panel", report_response.ui_hints["uiActions"])
+
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
     @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
@@ -1851,6 +1957,76 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
 
 
 class AnalysisStoreAndToolsTests(SimpleTestCase):
+    def test_economic_domain_uses_configured_scenarios(self):
+        result = calculate_economic_value(total_co2=10, scenario_key="social_cost")
+        comparison = compare_economic_scenarios(total_co2=10)
+
+        self.assertEqual(result["priceEurPerTon"], 138)
+        self.assertEqual(result["totalValueEur"], 1380)
+        self.assertEqual(len(comparison), len(PRICE_OPTIONS))
+        self.assertEqual(
+            [item["priceEurPerTon"] for item in comparison],
+            [float(option["value"]) for option in PRICE_OPTIONS],
+        )
+
+    def test_economic_tools_calculate_compare_and_persist_analysis_link(self):
+        store = InMemoryAnalysisStore()
+        saved = store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={
+                    "items": [],
+                    "totalCo2": 12.5,
+                    "totalHectares": 3,
+                    "hasSupportedVegetation": True,
+                    "topCategory": None,
+                },
+                requested_municipalities=["Avellino"],
+                intersected_municipalities=["Avellino"],
+            )
+        )
+        registry = build_default_tool_registry(store)
+
+        valuation = registry.execute(
+            ToolName.CALCULATE_ECONOMIC_VALUE,
+            scenario_key="regulated_market",
+        )
+        comparison = registry.execute(ToolName.COMPARE_ECONOMIC_SCENARIOS)
+        report = registry.execute(ToolName.PREPARE_REPORT)
+
+        self.assertEqual(valuation["analysisId"], saved.analysis_id)
+        self.assertEqual(valuation["priceEurPerTon"], 82)
+        self.assertEqual(valuation["totalValueEur"], 1025)
+        self.assertEqual(comparison["analysisId"], saved.analysis_id)
+        self.assertEqual(len(comparison["scenarios"]), 4)
+        self.assertEqual(report["economicResult"], valuation)
+        self.assertEqual(
+            store.get(saved.analysis_id).economic_valuation,
+            valuation,
+        )
+
+    def test_economic_tool_rejects_unknown_scenario(self):
+        store = InMemoryAnalysisStore()
+        store.save(
+            create_stored_analysis(
+                source="selection",
+                summary={
+                    "items": [],
+                    "totalCo2": 1,
+                    "totalHectares": 1,
+                    "hasSupportedVegetation": True,
+                    "topCategory": None,
+                },
+            )
+        )
+        registry = build_default_tool_registry(store)
+
+        with self.assertRaisesMessage(ValueError, "Scenario economico non supportato"):
+            registry.execute(
+                ToolName.CALCULATE_ECONOMIC_VALUE,
+                scenario_key="invented",
+            )
+
     def test_inmemory_analysis_store_returns_last_saved_item(self):
         store = InMemoryAnalysisStore()
         first = store.save(

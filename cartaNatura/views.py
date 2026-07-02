@@ -120,6 +120,7 @@ def _serialize_analysis_history_item(analysis) -> dict[str, object]:
         "municipalities": _analysis_history_municipalities(analysis),
         "hasDrawnGeometry": analysis.has_drawn_geometry,
         "summary": _compact_summary(analysis.summary),
+        "economicEvaluation": analysis.economic_valuation,
         "metadata": analysis.metadata,
     }
 
@@ -176,6 +177,9 @@ def _serialize_interaction_response(response) -> dict[str, object]:
             for message_item in response.messages
         ],
         "analysisResult": response.analysis_result,
+        "economicResult": response.economic_result,
+        "scenarioComparison": response.scenario_comparison,
+        "reportContext": response.report_context,
         "uiHints": response.ui_hints,
     }
 
