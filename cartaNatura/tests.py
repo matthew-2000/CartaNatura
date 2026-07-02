@@ -52,6 +52,7 @@ from cartaNatura.services.municipality_text import (
 from cartaNatura.services.analysis_compare import compare_saved_analyses
 from cartaNatura.services.payloads import parse_selection_payload
 from cartaNatura.experiments import (
+    STUDY_CONTEXT_SESSION_KEY,
     create_study_session,
     export_experiment_log,
     export_study_events_jsonl,
@@ -904,6 +905,51 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertEqual(exported_events[1]["userText"], "analizza Avellino")
         self.assertEqual(exported_events[1]["assistantResponse"], "Ho analizzato Avellino.")
         self.assertContains(jsonl_response, '"userText": "analizza Avellino"')
+
+    def test_experiment_endpoint_correlates_task_run_and_restores_active_task(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            client = Client()
+            client.post(
+                "/progettoGIS/cartaNatura/experiment/study/session",
+                data='{"participantId":"participant_011","condition":"webgis"}',
+                content_type="application/json",
+            )
+            started_response = client.post(
+                "/progettoGIS/cartaNatura/experiment/log",
+                data='{"eventType":"task_started","taskId":"task_area","condition":"webgis"}',
+                content_type="application/json",
+            )
+            task_run_id = started_response.json()["event"]["taskRunId"]
+            page_response = client.get("/progettoGIS/cartaNatura/?study=1")
+            action_response = client.post(
+                "/progettoGIS/cartaNatura/experiment/log",
+                data=(
+                    '{"eventType":"ui_action","channel":"web_map","interactionMode":"map",'
+                    '"operation":"eseguiClipBut","details":{"controlId":"eseguiClipBut"}}'
+                ),
+                content_type="application/json",
+            )
+            completed_response = client.post(
+                "/progettoGIS/cartaNatura/experiment/log",
+                data=json.dumps(
+                    {
+                        "eventType": "task_completed",
+                        "taskId": "task_area",
+                        "taskRunId": task_run_id,
+                        "durationMs": 999999,
+                    }
+                ),
+                content_type="application/json",
+            )
+            exported = client.get(
+                "/progettoGIS/cartaNatura/experiment/study/session"
+            ).json()["export"]
+
+        self.assertContains(page_response, f'"taskRunId": "{task_run_id}"')
+        self.assertEqual(action_response.json()["event"]["taskRunId"], task_run_id)
+        self.assertEqual(action_response.json()["event"]["condition"], "webgis")
+        self.assertNotEqual(completed_response.json()["event"]["durationMs"], 999999)
+        self.assertEqual(exported["summary"]["tasks"][0]["status"], "completed")
 
     @patch("cartaNatura.views.transcribe_uploaded_audio")
     def test_voice_transcribe_returns_transcript(self, transcribe_uploaded_audio):
@@ -2388,6 +2434,170 @@ class ExperimentLoggingTests(SimpleTestCase):
         self.assertEqual(payload["summary"]["taskCompletionCount"], 1)
         self.assertEqual(payload["summary"]["textInteractionCount"], 2)
         self.assertEqual(payload["summary"]["reportGeneratedCount"], 1)
+
+    def test_task_runs_are_isolated_and_duration_is_server_derived(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            context = create_study_session(
+                participant_id="participant_lifecycle",
+                condition="webgis",
+                task_id="task_initial",
+                log_root=Path(temp_dir),
+            )
+            session = {
+                STUDY_CONTEXT_SESSION_KEY: {
+                    "participantId": context.participantId,
+                    "studySessionId": context.studySessionId,
+                    "condition": context.condition,
+                    "taskId": context.taskId,
+                }
+            }
+
+            first_start = record_experiment_event(
+                session,
+                event_type="task_started",
+                task_id="task_area",
+                condition="webgis",
+            )
+            record_experiment_event(
+                session,
+                event_type="ui_action",
+                channel="web_map",
+                interaction_mode="map",
+                details={"controlId": "eseguiClipBut"},
+            )
+            first_complete = record_experiment_event(
+                session,
+                event_type="task_completed",
+                task_run_id=first_start["taskRunId"],
+                duration_ms=999999,
+                details={"analysisId": "analysis_ui"},
+            )
+            duplicate_complete = record_experiment_event(
+                session,
+                event_type="task_completed",
+                task_run_id=first_start["taskRunId"],
+            )
+
+            second_start = record_experiment_event(
+                session,
+                event_type="task_started",
+                task_id="task_economic",
+                condition="webgis",
+            )
+            record_experiment_event(
+                session,
+                event_type="valuation_completed",
+                channel="web_map",
+                interaction_mode="map",
+                details={
+                    "analysisId": "analysis_economic",
+                    "scenarioKey": "social_cost",
+                    "priceEurPerTon": 138,
+                    "totalValueEur": 1380,
+                },
+            )
+            record_experiment_event(
+                session,
+                event_type="task_completed",
+                task_run_id=second_start["taskRunId"],
+            )
+            exported = export_experiment_log(session)
+            persisted = export_study_session(context, log_root=Path(temp_dir))
+
+        self.assertNotEqual(first_start["taskRunId"], second_start["taskRunId"])
+        self.assertNotEqual(first_complete["durationMs"], 999999)
+        self.assertEqual(first_complete["eventId"], duplicate_complete["eventId"])
+        self.assertEqual(exported["summary"]["taskCompletionCount"], 2)
+        self.assertEqual(len(exported["summary"]["tasks"]), 2)
+        self.assertEqual(
+            {task["taskId"] for task in exported["summary"]["tasks"]},
+            {"task_area", "task_economic"},
+        )
+        self.assertEqual(
+            exported["summary"]["tasks"][1]["analysisIds"],
+            ["analysis_economic"],
+        )
+        self.assertEqual(persisted["events"][0]["eventId"], first_start["eventId"])
+        self.assertEqual(persisted["events"][0]["taskId"], "task_area")
+        self.assertEqual(persisted["events"][0]["taskRunId"], first_start["taskRunId"])
+
+    def test_new_task_interrupts_active_task_and_conversation_events_stay_separate(self):
+        session = {}
+        first_start = record_experiment_event(
+            session,
+            event_type="task_started",
+            task_id="task_one",
+            condition="conversational",
+        )
+        second_start = record_experiment_event(
+            session,
+            event_type="task_started",
+            task_id="task_two",
+            condition="conversational",
+        )
+        record_experiment_event(
+            session,
+            event_type="chat_message",
+            channel="web_chat",
+            interaction_mode="text",
+        )
+        record_experiment_event(
+            session,
+            event_type="tool_started",
+            channel="web_chat",
+            operation="calculate_economic_value",
+            interaction_mode="text",
+            details={"toolCallId": "call_1", "toolName": "calculate_economic_value"},
+        )
+        record_experiment_event(
+            session,
+            event_type="tool_completed",
+            channel="web_chat",
+            operation="calculate_economic_value",
+            interaction_mode="text",
+            details={
+                "analysisId": "analysis_chat",
+                "toolCallId": "call_1",
+                "toolName": "calculate_economic_value",
+            },
+        )
+        record_experiment_event(
+            session,
+            event_type="task_failed",
+            task_run_id=second_start["taskRunId"],
+            error="timeout",
+        )
+        exported = export_experiment_log(session)
+
+        first_task = exported["summary"]["tasks"][0]
+        second_task = exported["summary"]["tasks"][1]
+        self.assertEqual(first_task["taskRunId"], first_start["taskRunId"])
+        self.assertEqual(first_task["status"], "interrupted")
+        self.assertEqual(second_task["status"], "failed")
+        self.assertEqual(exported["summary"]["chatMessageCount"], 1)
+        self.assertEqual(exported["summary"]["toolCallCount"], 1)
+        self.assertEqual(exported["summary"]["failedTaskCount"], 1)
+        self.assertEqual(exported["summary"]["interruptedTaskCount"], 1)
+
+    def test_controlled_task_count_does_not_mix_legacy_completions(self):
+        session = {}
+        record_experiment_event(session, event_type="task_completed", duration_ms=12)
+        started = record_experiment_event(
+            session,
+            event_type="task_started",
+            task_id="controlled_task",
+            condition="webgis",
+        )
+        record_experiment_event(
+            session,
+            event_type="task_completed",
+            task_run_id=started["taskRunId"],
+        )
+
+        summary = export_experiment_log(session)["summary"]
+
+        self.assertEqual(summary["taskCompletionCount"], 1)
+        self.assertEqual(summary["legacyTaskCompletionCount"], 1)
 
 
 class StudyLoggingTests(SimpleTestCase):

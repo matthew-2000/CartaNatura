@@ -31,6 +31,7 @@ let MapController;
 let generatePdfReport;
 let renderAnalysisHistoryList;
 let renderAnalysisComparison;
+let experimentLogQueue = Promise.resolve();
 
 const ASSISTANT_PANEL_WIDTH_KEY = "cartaNatura.assistantPanelWidth";
 const ASSISTANT_PANEL_MIN_WIDTH = 320;
@@ -135,6 +136,7 @@ const state = {
   study: {
     panel: null,
     session: null,
+    activeTask: null,
   },
 };
 
@@ -356,7 +358,7 @@ function initializeAssistantResize(mapController) {
   });
 }
 
-function openPopup(mapController) {
+function openPopup(mapController, { source = "ui" } = {}) {
   closeMunicipalityPanel();
   closeAssistantPanel();
   closeHistoryPanel();
@@ -365,6 +367,19 @@ function openPopup(mapController) {
   elements.popup.setAttribute("aria-hidden", "false");
   elements.infoButton?.setAttribute("aria-expanded", "true");
   syncSidePanelLayout(mapController);
+  if (state.analysisId) {
+    recordExperiment({
+      eventType: "report_opened",
+      channel: source === "assistant" ? "web_chat" : "web_map",
+      operation: "report_opened",
+      interactionMode: source === "assistant" ? "text" : "map",
+      stepCount: 1,
+      details: {
+        analysisId: state.analysisId,
+        eventSource: source,
+      },
+    });
+  }
 }
 
 function closePopup(mapController) {
@@ -525,7 +540,7 @@ function showNotice(message, tone = "info") {
 
 function recordExperiment(event) {
   if (!appConfig?.experimentLogUrl || !sendExperimentEvent) {
-    return;
+    return Promise.resolve(null);
   }
 
   const payload = { ...event };
@@ -533,10 +548,58 @@ function recordExperiment(event) {
   if (activeStudySession?.taskId && !payload.taskId) {
     payload.taskId = activeStudySession.taskId;
   }
+  if (activeStudySession?.condition && !payload.condition) {
+    payload.condition = activeStudySession.condition;
+  }
+  if (state.study.activeTask) {
+    payload.taskId = state.study.activeTask.taskId;
+    payload.taskRunId = payload.taskRunId || state.study.activeTask.taskRunId;
+  }
 
-  sendExperimentEvent(appConfig.experimentLogUrl, payload).catch((error) => {
-    console.debug("Experiment event not recorded", error);
-  });
+  experimentLogQueue = experimentLogQueue
+    .catch(() => null)
+    .then(() => sendExperimentEvent(appConfig.experimentLogUrl, payload))
+    .catch((error) => {
+      console.debug("Experiment event not recorded", error);
+      return null;
+    });
+  return experimentLogQueue;
+}
+
+function initializeUiActionLogging() {
+  document.addEventListener(
+    "click",
+    (event) => {
+      const control = event.target.closest("button, a, input[type='checkbox'], input[type='radio']");
+      if (!control || control.closest("#studyConsole") || control.disabled) {
+        return;
+      }
+      const controlId =
+        control.id ||
+        control.dataset.studyAction ||
+        control.getAttribute("aria-label") ||
+        control.getAttribute("name") ||
+        control.tagName.toLowerCase();
+      const controlLabel =
+        control.getAttribute("aria-label") ||
+        control.textContent?.trim() ||
+        control.getAttribute("title") ||
+        controlId;
+      recordExperiment({
+        eventType: "ui_action",
+        channel: "web_map",
+        operation: String(controlId).slice(0, 80),
+        interactionMode: "map",
+        stepCount: 1,
+        details: {
+          controlId: String(controlId).slice(0, 80),
+          controlLabel: String(controlLabel || "").slice(0, 80),
+          eventSource: "frontend",
+        },
+      });
+    },
+    { capture: true }
+  );
 }
 
 function setHistoryStatus(message, tone = "info") {
@@ -770,6 +833,7 @@ function getStudySession() {
 
 function setStudySession(session) {
   state.study.session = session || null;
+  state.study.activeTask = session?.activeTask || null;
   if (appConfig.study) {
     appConfig.study.currentSession = session || null;
   }
@@ -877,13 +941,15 @@ async function handleStudyAction(action) {
     if (action === "start-session") {
       await startCurrentStudySession();
     } else if (action === "start-task") {
-      markStudyEvent("task_started", "study_task", "started");
+      await startStudyTask();
     } else if (action === "complete-task") {
-      markStudyEvent("task_completed", "study_task", "completed");
+      await finishStudyTask("task_completed", "completed");
     } else if (action === "mark-error") {
-      markStudyEvent("error", "manual_mark", "marked", { error: "manual_error" });
+      await finishStudyTask("task_failed", "failed", { error: "manual_task_failure" });
     } else if (action === "mark-unknown") {
-      markStudyEvent("unknown_request", "manual_mark", "marked", { error: "manual_unknown_request" });
+      await markStudyEvent("unknown_request", "manual_mark", "marked", {
+        error: "manual_unknown_request",
+      });
     } else if (action === "export-json") {
       await downloadStudyExport("json");
     } else if (action === "export-jsonl") {
@@ -910,11 +976,58 @@ async function startCurrentStudySession() {
   showNotice("Sessione riservata avviata.", "success");
 }
 
-function markStudyEvent(eventType, operation, status, extra = {}) {
+async function startStudyTask() {
+  const session = getStudySession();
+  if (!session) {
+    throw new Error("Avvia prima la sessione riservata.");
+  }
+  const taskId = state.study.panel.querySelector("#studyTaskId").value;
+  const result = await recordExperiment({
+    eventType: "task_started",
+    channel: "system",
+    operation: "study_task",
+    interactionMode: "system",
+    taskId,
+    condition: session.condition,
+    status: "started",
+  });
+  const event = result?.event;
+  if (!event?.taskRunId) {
+    throw new Error("Avvio attività non registrato.");
+  }
+  state.study.activeTask = {
+    taskId: event.taskId || taskId,
+    taskRunId: event.taskRunId,
+  };
+  renderStudyStatus(`In corso: ${state.study.activeTask.taskId}`);
+}
+
+async function finishStudyTask(eventType, status, extra = {}) {
+  if (!state.study.activeTask) {
+    throw new Error("Nessuna attività in corso.");
+  }
+  const result = await recordExperiment({
+    eventType,
+    channel: "system",
+    operation: "study_task",
+    interactionMode: "system",
+    taskId: state.study.activeTask.taskId,
+    taskRunId: state.study.activeTask.taskRunId,
+    status,
+    ...extra,
+  });
+  if (!result?.event) {
+    throw new Error("Chiusura attività non registrata.");
+  }
+  state.study.activeTask = null;
+  renderStudyStatus(status === "completed" ? "Completata" : "Terminata con errore");
+}
+
+async function markStudyEvent(eventType, operation, status, extra = {}) {
   if (!getStudySession()) {
     throw new Error("Avvia prima la sessione riservata.");
   }
-  recordExperiment({
+  await recordExperiment({
     eventType,
     channel: "system",
     operation,
@@ -948,8 +1061,13 @@ async function downloadStudyExport(format) {
 }
 
 async function resetCurrentStudySession() {
+  if (state.study.activeTask) {
+    await finishStudyTask("task_interrupted", "interrupted", {
+      error: "study_session_reset",
+    });
+  }
   if (getStudySession()) {
-    recordExperiment({
+    await recordExperiment({
       eventType: "reset_completed",
       channel: "system",
       operation: "study_console_reset",
@@ -1422,10 +1540,15 @@ function applyAssistantUiActions(mapController, uiActions = []) {
     return;
   }
 
+  let reportOpened = false;
   for (const action of actions) {
     if (action === "show_last_analysis" || action === "open_report_panel") {
+      if (reportOpened) {
+        continue;
+      }
       renderInfoSummary();
-      openPopup(mapController);
+      openPopup(mapController, { source: "assistant" });
+      reportOpened = true;
     } else if (action === "show_legend") {
       setPanelCollapsed(elements.legendPanel, elements.toggleLegendPanelButton, false);
     } else if (action === "focus_map_results") {
@@ -1885,6 +2008,8 @@ function renderInfoSummary() {
       interactionMode: "map",
       stepCount: 1,
       details: {
+        analysisId: state.analysisId,
+        scenarioKey: priceOptions.find((option) => Number(option.value) === selectedValue)?.key,
         priceEurPerTon: selectedValue,
         totalCo2: Number(state.summary.totalCo2 || 0),
       },
@@ -1948,6 +2073,7 @@ function renderInfoSummary() {
           details: {
             reportFormat: "pdf",
             analysisId: state.analysisId,
+            scenarioKey: priceOptions.find((option) => Number(option.value) === selectedValue)?.key,
             priceEurPerTon: selectedValue,
             totalCo2: Number(state.summary.totalCo2 || 0),
             totalValueEur: state.calculatedValue,
@@ -1955,13 +2081,25 @@ function renderInfoSummary() {
         });
         showNotice("PDF generato.", "success");
       } catch (error) {
+        const failureStatus =
+          error?.name === "AbortError" || /timeout/i.test(error?.message || "")
+            ? "timeout"
+            : "failed";
         recordExperiment({
           eventType: "error",
           channel: "web_map",
           operation: "report_generation",
           interactionMode: "map",
           durationMs: elapsedSince(reportStartedAt),
+          status: failureStatus,
           error: error.message || "pdf_generation_failed",
+          details: {
+            analysisId: state.analysisId,
+            scenarioKey: priceOptions.find((option) => Number(option.value) === selectedValue)?.key,
+            priceEurPerTon: selectedValue,
+            totalValueEur: state.calculatedValue,
+            taskOutcome: failureStatus,
+          },
         });
         showNotice(error.message || "Errore nella generazione del PDF.", "error");
       } finally {
@@ -1992,6 +2130,7 @@ function renderInfoSummary() {
       stepCount: 1,
       details: {
         analysisId: state.analysisId,
+        scenarioKey: priceOptions.find((option) => Number(option.value) === selectedValue)?.key,
         priceEurPerTon: selectedValue,
         totalCo2: Number(state.summary.totalCo2 || 0),
         totalValueEur: state.calculatedValue,
@@ -2074,19 +2213,16 @@ async function runAnalysis(mapController) {
       channel: "web_map",
       operation: "spatial_analysis",
       interactionMode: "map",
+      status: "failed",
       error: "missing_selection",
+      details: {
+        ...buildAnalysisEventDetails(mapController),
+        taskOutcome: "failed",
+      },
     });
     return;
   }
 
-  recordExperiment({
-    eventType: "task_started",
-    channel: "web_map",
-    operation: "spatial_analysis",
-    interactionMode: "map",
-    stepCount: payload.areas.length,
-    details: buildAnalysisEventDetails(mapController),
-  });
   setBusy(mapController, true);
 
   try {
@@ -2101,16 +2237,7 @@ async function runAnalysis(mapController) {
       },
       analysisContext
     );
-    openPopup(mapController);
-    recordExperiment({
-      eventType: "task_completed",
-      channel: "web_map",
-      operation: "spatial_analysis",
-      interactionMode: "map",
-      durationMs: elapsedSince(analysisStartedAt),
-      stepCount: payload.areas.length + 2,
-      details: buildAnalysisEventDetails(mapController, response, analysisContext),
-    });
+    openPopup(mapController, { source: "analysis" });
     showNotice(
       state.summary.hasSupportedVegetation
         ? "Analisi completata. Report aggiornato."
@@ -2118,14 +2245,20 @@ async function runAnalysis(mapController) {
       state.summary.hasSupportedVegetation ? "success" : "warning"
     );
   } catch (error) {
+    const failureStatus =
+      error?.name === "AbortError" || /timeout/i.test(error?.message || "") ? "timeout" : "failed";
     recordExperiment({
       eventType: "error",
       channel: "web_map",
       operation: "spatial_analysis",
       interactionMode: "map",
       durationMs: elapsedSince(analysisStartedAt),
+      status: failureStatus,
       error: error.message || "analysis_failed",
-      details: buildAnalysisEventDetails(mapController),
+      details: {
+        ...buildAnalysisEventDetails(mapController),
+        taskOutcome: failureStatus,
+      },
     });
     showNotice(error.message || "Errore durante l'analisi.", "error");
   } finally {
@@ -2155,6 +2288,9 @@ async function runAssistantInteraction(mapController, message, { interactionMode
   elements.assistantInput.value = "";
   openAssistantPanel(mapController);
   setAssistantBusy(true);
+  let response;
+  let analysisApplied = false;
+  const activeToolCalls = new Map();
 
   try {
     const payload = {
@@ -2165,16 +2301,15 @@ async function runAssistantInteraction(mapController, message, { interactionMode
         studySessionId: getStudySession()?.studySessionId || null,
       },
     };
-    let response;
-    let analysisApplied = false;
     recordExperiment({
-      eventType: "task_started",
+      eventType: "chat_message",
       channel: interactionMode === "voice" ? "voice" : "web_chat",
       operation: "conversational_request",
       interactionMode,
       stepCount: 1,
       details: {
         messageLength: trimmedMessage.length,
+        eventSource: "frontend",
       },
       userText: trimmedMessage,
       userTranscript: interactionMode === "voice" ? trimmedMessage : "",
@@ -2203,26 +2338,32 @@ async function runAssistantInteraction(mapController, message, { interactionMode
               streamingMessageIndex,
               describeAssistantToolProgress(event.toolName)
             );
+            activeToolCalls.set(event.toolCallId || event.toolName, event.toolName);
             recordExperiment({
-              eventType: "interaction_started",
+              eventType: "tool_started",
               channel: interactionMode === "voice" ? "voice" : "web_chat",
               operation: event.toolName || "assistant_tool",
               interactionMode,
               status: "started",
               details: {
                 toolName: event.toolName || "",
+                toolCallId: event.toolCallId || "",
+                eventSource: "assistant_runtime",
               },
             });
           },
           onToolResult: (event) => {
+            activeToolCalls.delete(event.toolCallId || event.toolName);
             recordExperiment({
-              eventType: "interaction_completed",
+              eventType: "tool_completed",
               channel: interactionMode === "voice" ? "voice" : "web_chat",
               operation: event.toolName || "assistant_tool",
               interactionMode,
               status: "completed",
               details: {
                 toolName: event.toolName || "",
+                toolCallId: event.toolCallId || "",
+                eventSource: "assistant_runtime",
               },
             });
           },
@@ -2286,8 +2427,13 @@ async function runAssistantInteraction(mapController, message, { interactionMode
     } else if (response.uiHints?.needsClarification) {
       showNotice("Serve un chiarimento per continuare.", "warning");
     }
+    const responseAnalysisId =
+      response.analysisResult?.analysisId ||
+      response.economicResult?.analysisId ||
+      response.reportContext?.analysisId ||
+      state.analysisId;
     recordExperiment({
-      eventType: "task_completed",
+      eventType: "chat_response",
       channel: interactionMode === "voice" ? "voice" : "web_chat",
       operation: response.uiHints?.mode || "conversational_request",
       interactionMode,
@@ -2298,10 +2444,14 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       userTranscript: interactionMode === "voice" ? trimmedMessage : "",
       assistantResponse: extractAssistantResponseText(response),
       details: {
-        analysisId: response.analysisResult?.analysisId,
+        analysisId: responseAnalysisId,
+        scenarioKey: response.economicResult?.scenarioKey,
+        priceEurPerTon: response.economicResult?.priceEurPerTon,
+        totalValueEur: response.economicResult?.totalValueEur,
         messageLength: trimmedMessage.length,
         providerMode: response.uiHints?.providerMode,
         needsClarification: Boolean(response.uiHints?.needsClarification),
+        eventSource: "frontend",
       },
     });
     if (response.uiHints?.needsClarification || response.uiHints?.mode === "unknown") {
@@ -2318,6 +2468,24 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       });
     }
   } catch (error) {
+    const failureStatus =
+      error?.name === "AbortError" || /timeout/i.test(error?.message || "") ? "timeout" : "failed";
+    for (const [toolCallId, toolName] of activeToolCalls) {
+      recordExperiment({
+        eventType: "tool_failed",
+        channel: interactionMode === "voice" ? "voice" : "web_chat",
+        operation: toolName || "assistant_tool",
+        interactionMode,
+        status: failureStatus,
+        error: error.message || "assistant_tool_failed",
+        details: {
+          toolName: toolName || "",
+          toolCallId: toolCallId || "",
+          eventSource: "assistant_runtime",
+          taskOutcome: failureStatus,
+        },
+      });
+    }
     appendAssistantMessage(
       "assistant",
       error.message || "Errore durante la richiesta all'assistente."
@@ -2328,11 +2496,15 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       operation: "conversational_request",
       interactionMode,
       durationMs: elapsedSince(interactionStartedAt),
+      status: failureStatus,
       error: error.message || "assistant_interaction_failed",
       userText: trimmedMessage,
       userTranscript: interactionMode === "voice" ? trimmedMessage : "",
       details: {
+        analysisId: state.analysisId,
         messageLength: trimmedMessage.length,
+        eventSource: "frontend",
+        taskOutcome: failureStatus,
       },
     });
     showNotice(error.message || "Errore durante la richiesta all'assistente.", "error");
@@ -2395,6 +2567,7 @@ async function bootstrap() {
   initializeAssistantResize(mapController);
   initializeVoiceInput(mapController);
   buildStudyConsole();
+  initializeUiActionLogging();
   recordExperiment({
     eventType: "session_started",
     channel: "system",

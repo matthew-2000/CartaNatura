@@ -21,6 +21,7 @@ from django.views.decorators.http import require_POST
 from cartaNatura.domain.economics import PRICE_OPTIONS
 from cartaNatura.domain.vegetation import serialize_categories
 from cartaNatura.experiments import (
+    EXPERIMENT_ACTIVE_TASK_SESSION_KEY,
     STUDY_CONTEXT_SESSION_KEY,
     clear_experiment_log,
     create_study_session,
@@ -190,7 +191,12 @@ def _study_enabled(request) -> bool:
 
 def _study_context_payload(request) -> dict[str, object] | None:
     context = request.session.get(STUDY_CONTEXT_SESSION_KEY)
-    return context if isinstance(context, dict) else None
+    if not isinstance(context, dict):
+        return None
+    payload = dict(context)
+    active_task = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
+    payload["activeTask"] = active_task if isinstance(active_task, dict) else None
+    return payload
 
 
 def _store_study_context(request, context) -> dict[str, object]:
@@ -217,6 +223,17 @@ def _assistant_intent(response) -> str | None:
         return response.commands[0].intent.value
     mode = response.ui_hints.get("mode")
     return str(mode) if mode else None
+
+
+def _interaction_analysis_id(response) -> str | None:
+    for payload in (
+        response.analysis_result,
+        response.economic_result,
+        response.report_context,
+    ):
+        if isinstance(payload, dict) and payload.get("analysisId"):
+            return str(payload["analysisId"])
+    return None
 
 
 def _encode_sse(event_type: str, payload: dict[str, object]) -> bytes:
@@ -447,7 +464,10 @@ def interact(request):
         interaction_mode=str(interaction_mode),
         user_text=interaction_request.input.primary_text(),
         user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
-        details={"messageLength": len(interaction_request.input.primary_text())},
+        details={
+            "messageLength": len(interaction_request.input.primary_text()),
+            "eventSource": "backend",
+        },
     )
     logger.info(
         "Assistant interaction started session=%s chars=%s selected=%s",
@@ -510,9 +530,13 @@ def interact(request):
         user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
         assistant_response=_assistant_response_text(response),
         details={
-            "analysisId": (response.analysis_result or {}).get("analysisId"),
+            "analysisId": _interaction_analysis_id(response),
+            "scenarioKey": (response.economic_result or {}).get("scenarioKey"),
+            "priceEurPerTon": (response.economic_result or {}).get("priceEurPerTon"),
+            "totalValueEur": (response.economic_result or {}).get("totalValueEur"),
             "providerMode": response.ui_hints.get("providerMode"),
             "needsClarification": response.ui_hints.get("needsClarification"),
+            "eventSource": "backend",
         },
     )
 
@@ -546,7 +570,10 @@ def interact_stream(request):
         interaction_mode=str(interaction_mode),
         user_text=interaction_request.input.primary_text(),
         user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
-        details={"messageLength": len(interaction_request.input.primary_text())},
+        details={
+            "messageLength": len(interaction_request.input.primary_text()),
+            "eventSource": "backend",
+        },
     )
     logger.info(
         "Assistant stream started session=%s chars=%s",
@@ -599,6 +626,15 @@ def interact_stream(request):
             )
             yield _encode_sse("error", {"type": "error", "message": str(exc)})
         except Exception as exc:
+            record_experiment_event(
+                request.session,
+                event_type="error",
+                channel=interaction_request.channel.value,
+                operation="conversational_request",
+                interaction_mode=str(interaction_mode),
+                error=str(exc),
+                details={"eventSource": "backend"},
+            )
             logger.exception("Assistant stream failed session=%s", session_id)
             yield _encode_sse("error", {"type": "error", "message": str(exc)})
         finally:
@@ -617,9 +653,17 @@ def interact_stream(request):
                     ),
                     assistant_response=_assistant_response_text(final_response),
                     details={
-                        "analysisId": (final_response.analysis_result or {}).get("analysisId"),
+                        "analysisId": _interaction_analysis_id(final_response),
+                        "scenarioKey": (final_response.economic_result or {}).get("scenarioKey"),
+                        "priceEurPerTon": (final_response.economic_result or {}).get(
+                            "priceEurPerTon"
+                        ),
+                        "totalValueEur": (final_response.economic_result or {}).get(
+                            "totalValueEur"
+                        ),
                         "providerMode": final_response.ui_hints.get("providerMode"),
                         "needsClarification": final_response.ui_hints.get("needsClarification"),
+                        "eventSource": "backend",
                     },
                 )
                 logger.info(
@@ -722,6 +766,8 @@ def experiment_log(request):
         duration_ms=payload.get("durationMs") if isinstance(payload.get("durationMs"), int) else None,
         step_count=payload.get("stepCount") if isinstance(payload.get("stepCount"), int) else None,
         task_id=str(payload.get("taskId") or ""),
+        task_run_id=str(payload.get("taskRunId") or ""),
+        condition=str(payload.get("condition") or ""),
         status=str(payload.get("status") or ""),
         error=str(payload.get("error") or ""),
         intent=str(payload.get("intent") or ""),
@@ -751,6 +797,20 @@ def study_session(request):
     if request.method == "DELETE":
         context = _study_context_payload(request)
         if context is not None:
+            active_task = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
+            if isinstance(active_task, dict):
+                record_experiment_event(
+                    request.session,
+                    event_type="task_interrupted",
+                    channel="system",
+                    operation="study_task",
+                    interaction_mode="system",
+                    task_id=str(active_task.get("taskId") or ""),
+                    task_run_id=str(active_task.get("taskRunId") or ""),
+                    condition=str(context.get("condition") or ""),
+                    status="interrupted",
+                    error="study_session_reset",
+                )
             record_experiment_event(
                 request.session,
                 event_type="reset_completed",
@@ -777,6 +837,22 @@ def study_session(request):
     if not participant_id:
         return JsonResponse({"error": "Codice anonimo mancante."}, status=400)
 
+    previous_context = _study_context_payload(request)
+    active_task = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
+    if previous_context is not None and isinstance(active_task, dict):
+        record_experiment_event(
+            request.session,
+            event_type="task_interrupted",
+            channel="system",
+            operation="study_task",
+            interaction_mode="system",
+            task_id=str(active_task.get("taskId") or ""),
+            task_run_id=str(active_task.get("taskRunId") or ""),
+            condition=str(previous_context.get("condition") or ""),
+            status="interrupted",
+            error="study_session_replaced",
+        )
+    clear_experiment_log(request.session)
     context = create_study_session(
         participant_id=participant_id,
         condition=condition,

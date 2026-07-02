@@ -82,17 +82,28 @@ def record_study_event(
     user_text: str | None = None,
     user_transcript: str | None = None,
     assistant_response: str | None = None,
+    task_id: str | None = None,
+    task_run_id: str | None = None,
+    condition: str | None = None,
+    event_id: str | None = None,
+    timestamp: str | None = None,
     details: dict[str, Any] | None = None,
     log_root: Path | None = None,
 ) -> dict[str, Any]:
     study_context = coerce_study_context(context)
+    event_condition = _coerce_choice(
+        str(condition or study_context.condition),
+        ALLOWED_CONDITIONS,
+        study_context.condition,
+    )
     event = {
-        "eventId": f"event_{uuid4().hex[:12]}",
-        "timestamp": datetime.now(UTC).isoformat(),
+        "eventId": event_id or f"event_{uuid4().hex[:12]}",
+        "timestamp": timestamp or datetime.now(UTC).isoformat(),
         "participantId": study_context.participantId,
         "studySessionId": study_context.studySessionId,
-        "condition": study_context.condition,
-        "taskId": study_context.taskId,
+        "condition": event_condition,
+        "taskId": sanitize_identifier(task_id, prefix="task") if task_id else study_context.taskId,
+        "taskRunId": sanitize_identifier(task_run_id, prefix="taskrun") if task_run_id else None,
         "eventType": _coerce_choice(event_type, ALLOWED_EVENT_TYPES, "error"),
         "channel": _coerce_choice(channel, ALLOWED_CHANNELS, "system"),
         "interactionMode": _coerce_optional_choice(

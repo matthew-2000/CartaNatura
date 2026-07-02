@@ -1,6 +1,7 @@
 """Experimental logging support."""
 
 from .logging import (
+    EXPERIMENT_ACTIVE_TASK_SESSION_KEY,
     clear_experiment_log,
     export_experiment_log,
     record_experiment_event,
@@ -17,6 +18,7 @@ from .study_logging import (
 
 __all__ = [
     "StudySessionContext",
+    "EXPERIMENT_ACTIVE_TASK_SESSION_KEY",
     "STUDY_CONTEXT_SESSION_KEY",
     "clear_experiment_log",
     "create_study_session",

@@ -408,6 +408,7 @@ class OpenAiAssistantRuntime:
                 yield {
                     "type": "tool_start",
                     "toolName": tool_call["name"],
+                    "toolCallId": tool_call["call_id"],
                 }
                 outcome = self._execute_tool_call(
                     tool_call=tool_call,
@@ -436,6 +437,7 @@ class OpenAiAssistantRuntime:
                 yield {
                     "type": "tool_result",
                     "toolName": tool_call["name"],
+                    "toolCallId": tool_call["call_id"],
                 }
                 tool_outputs.append(
                     {
