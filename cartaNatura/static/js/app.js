@@ -114,6 +114,7 @@ const state = {
   economicValueCalculated: false,
   selectedEconomicPrice: null,
   analysisContext: null,
+  mapController: null,
   noticeTimer: null,
   assistantMessages: [
     {
@@ -840,6 +841,123 @@ function setStudySession(session) {
   renderStudyStatus();
 }
 
+function getActiveStudyCondition() {
+  return state.study.activeTask ? getStudySession()?.condition || null : null;
+}
+
+function updateStudyConditionIndicator() {
+  const toggle = state.study.panel?.querySelector(".study-console-toggle");
+  if (!toggle) {
+    return;
+  }
+  const condition = getActiveStudyCondition();
+  toggle.textContent = condition ? `Controllo · ${condition.toUpperCase()}` : "Controllo";
+}
+
+function applyConditionPolicy() {
+  const condition = getActiveStudyCondition();
+  const webgisActive = condition === "webgis";
+  const conversationalActive = condition === "conversational";
+
+  elements.openAssistantButton.disabled = webgisActive || !assistantConfig.enabled;
+  elements.assistantInput.disabled = webgisActive || state.assistantBusy;
+  elements.assistantSendButton.disabled = webgisActive || state.assistantBusy;
+  if (elements.assistantVoiceButton) {
+    elements.assistantVoiceButton.disabled =
+      webgisActive || (state.assistantBusy && !state.voiceListening);
+  }
+  elements.assistantPanel
+    ?.querySelectorAll("[data-prompt]")
+    .forEach((control) => {
+      control.disabled = webgisActive;
+    });
+  if (webgisActive) {
+    closeAssistantPanel(state.mapController);
+  }
+
+  elements.selectMunicipalityButton.disabled = conversationalActive;
+  elements.openHistoryButton.disabled = conversationalActive;
+  if (conversationalActive) {
+    closeMunicipalityPanel(state.mapController);
+    closeHistoryPanel(state.mapController);
+  }
+
+  const hasInputs =
+    state.mapController?.hasSelectedMunicipalities() || state.mapController?.hasDrawnAreas();
+  elements.runAnalysisButton.disabled = conversationalActive || !hasInputs;
+
+  const economicControls = elements.infoContainer?.querySelectorAll(
+    "#testoValore, #butcalcolavalore, #butstampadettagli"
+  );
+  economicControls?.forEach((control) => {
+    control.disabled = conversationalActive;
+    control.title = conversationalActive
+      ? "Controllo disponibile tramite assistente nella condizione conversazionale."
+      : "";
+  });
+
+  document.body.classList.toggle("study-condition-webgis", webgisActive);
+  document.body.classList.toggle("study-condition-conversational", conversationalActive);
+  updateStudyConditionIndicator();
+}
+
+function blockedProtocolAction(control) {
+  const condition = getActiveStudyCondition();
+  if (!condition || !control) {
+    return null;
+  }
+  if (
+    condition === "webgis" &&
+    (control.closest("#openAssistantPanel") || control.closest("#assistantPanel"))
+  ) {
+    return "conversational_control";
+  }
+  if (
+    condition === "conversational" &&
+    (control.closest("#butSelezionaComune") ||
+      control.closest("#eseguiClipBut") ||
+      control.closest("#navListaComuni") ||
+      control.closest(".leaflet-draw-toolbar") ||
+      control.closest("#openHistoryPanel") ||
+      control.closest("#analysisHistoryPanel") ||
+      control.closest("#testoValore") ||
+      control.closest("#butcalcolavalore") ||
+      control.closest("#butstampadettagli"))
+  ) {
+    return "graphical_completion_control";
+  }
+  return null;
+}
+
+function initializeConditionControl() {
+  document.addEventListener(
+    "click",
+    (event) => {
+      const control = event.target.closest("button, a, input, select");
+      const blockedAction = blockedProtocolAction(control);
+      if (!blockedAction) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      recordExperiment({
+        eventType: "protocol_violation",
+        channel: "system",
+        operation: blockedAction,
+        interactionMode: "system",
+        status: "blocked",
+        details: {
+          attemptedAction: control.id || control.getAttribute("aria-label") || control.tagName,
+          blockedByCondition: getActiveStudyCondition(),
+          eventSource: "frontend",
+        },
+      });
+      showNotice("Azione non consentita nella condizione sperimentale attiva.", "warning");
+    },
+    { capture: true }
+  );
+}
+
 function buildStudyTaskOptions() {
   return (appConfig.study?.tasks || [])
     .map((task) => `<option value="${escapeHtml(task.id)}">${escapeHtml(task.label)}</option>`)
@@ -973,6 +1091,12 @@ async function startCurrentStudySession() {
     taskId,
   });
   setStudySession(result.session);
+  if (state.mapController) {
+    resetAnalysis(state.mapController, { operation: "condition_transition_reset" });
+  }
+  state.assistantMessages = [{ role: "assistant", text: "Assistente pronto." }];
+  renderAssistantMessages();
+  applyConditionPolicy();
   showNotice("Sessione riservata avviata.", "success");
 }
 
@@ -982,6 +1106,11 @@ async function startStudyTask() {
     throw new Error("Avvia prima la sessione riservata.");
   }
   const taskId = state.study.panel.querySelector("#studyTaskId").value;
+  if (state.mapController) {
+    resetAnalysis(state.mapController, { operation: "task_transition_reset" });
+  }
+  state.assistantMessages = [{ role: "assistant", text: "Assistente pronto." }];
+  renderAssistantMessages();
   const result = await recordExperiment({
     eventType: "task_started",
     channel: "system",
@@ -999,7 +1128,10 @@ async function startStudyTask() {
     taskId: event.taskId || taskId,
     taskRunId: event.taskRunId,
   };
-  renderStudyStatus(`In corso: ${state.study.activeTask.taskId}`);
+  applyConditionPolicy();
+  renderStudyStatus(
+    `In corso: ${state.study.activeTask.taskId} / ${session.condition}`
+  );
 }
 
 async function finishStudyTask(eventType, status, extra = {}) {
@@ -1020,6 +1152,7 @@ async function finishStudyTask(eventType, status, extra = {}) {
     throw new Error("Chiusura attività non registrata.");
   }
   state.study.activeTask = null;
+  applyConditionPolicy();
   renderStudyStatus(status === "completed" ? "Completata" : "Terminata con errore");
 }
 
@@ -1077,6 +1210,10 @@ async function resetCurrentStudySession() {
   }
   await clearStudySession(appConfig.study.sessionUrl);
   setStudySession(null);
+  if (state.mapController) {
+    resetAnalysis(state.mapController, { operation: "condition_transition_reset" });
+  }
+  applyConditionPolicy();
   renderStudyStatus("Reset completato");
   showNotice("Sessione riservata azzerata.", "success");
 }
@@ -1124,6 +1261,7 @@ function setAssistantBusy(busy) {
     elements.assistantVoiceButton.classList.toggle("is-unavailable", !isVoiceRecordingSupported());
   }
   elements.assistantSendButton.setAttribute("aria-busy", String(busy));
+  applyConditionPolicy();
 }
 
 function setVoiceButtonState({ listening = state.voiceListening, unavailable = false } = {}) {
@@ -1727,8 +1865,10 @@ function applyEconomicResult(
 function updateActionStates(mapController) {
   const hasInputs = mapController.hasSelectedMunicipalities() || mapController.hasDrawnAreas();
   const hasSummary = Boolean(state.summary);
-  elements.runAnalysisButton.disabled = !hasInputs;
+  elements.runAnalysisButton.disabled =
+    getActiveStudyCondition() === "conversational" || !hasInputs;
   elements.infoButton.disabled = !hasSummary;
+  applyConditionPolicy();
 }
 
 function renderLegend() {
@@ -1998,6 +2138,10 @@ function renderInfoSummary() {
   const calculateButton = document.getElementById("butcalcolavalore");
   priceSelect.value = String(state.selectedEconomicPrice ?? priceOptions[0]?.value ?? "");
   priceSelect.addEventListener("change", () => {
+    if (getActiveStudyCondition() === "conversational") {
+      applyConditionPolicy();
+      return;
+    }
     const selectedValue = Number(priceSelect.value || 0);
     state.selectedEconomicPrice = selectedValue;
     updateScenarioComparison(selectedValue);
@@ -2036,6 +2180,9 @@ function renderInfoSummary() {
     `;
 
     document.getElementById("butstampadettagli").addEventListener("click", async () => {
+      if (getActiveStudyCondition() === "conversational") {
+        return;
+      }
       const reportStartedAt = performance.now();
       const printButton = document.getElementById("butstampadettagli");
       const closeButton = elements.closePopupButton;
@@ -2115,6 +2262,9 @@ function renderInfoSummary() {
   }
 
   calculateButton.addEventListener("click", () => {
+    if (getActiveStudyCondition() === "conversational") {
+      return;
+    }
     const valuationStartedAt = performance.now();
     const selectedValue = Number(priceSelect.value || 0);
     state.selectedEconomicPrice = selectedValue;
@@ -2142,6 +2292,7 @@ function renderInfoSummary() {
   if (state.economicValueCalculated) {
     renderSelectedScenarioValue(state.selectedEconomicPrice, calculateButton);
   }
+  applyConditionPolicy();
 }
 
 function buildAnalysisPayload(mapController) {
@@ -2164,7 +2315,7 @@ function buildAnalysisPayload(mapController) {
   return { areas };
 }
 
-function resetAnalysis(mapController) {
+function resetAnalysis(mapController, { operation = "reset_analysis_workspace" } = {}) {
   state.analysisId = null;
   state.summary = null;
   state.clipped = null;
@@ -2189,7 +2340,7 @@ function resetAnalysis(mapController) {
   recordExperiment({
     eventType: "reset_completed",
     channel: "web_map",
-    operation: "reset_analysis_workspace",
+    operation,
     interactionMode: "map",
     stepCount: 1,
   });
@@ -2197,6 +2348,22 @@ function resetAnalysis(mapController) {
 
 async function runAnalysis(mapController) {
   const analysisStartedAt = performance.now();
+  if (getActiveStudyCondition() === "conversational") {
+    recordExperiment({
+      eventType: "protocol_violation",
+      channel: "web_map",
+      operation: "spatial_analysis_ui",
+      interactionMode: "map",
+      status: "blocked",
+      details: {
+        attemptedAction: "spatial_analysis_ui",
+        blockedByCondition: "conversational",
+        eventSource: "frontend",
+      },
+    });
+    showNotice("Analisi disponibile tramite assistente in questa condizione.", "warning");
+    return;
+  }
   closePopup(mapController);
   closeAppInfo(mapController);
   closeMunicipalityPanel();
@@ -2269,6 +2436,22 @@ async function runAnalysis(mapController) {
 
 async function runAssistantInteraction(mapController, message, { interactionMode = "text" } = {}) {
   const interactionStartedAt = performance.now();
+  if (getActiveStudyCondition() === "webgis") {
+    recordExperiment({
+      eventType: "protocol_violation",
+      channel: interactionMode === "voice" ? "voice" : "web_chat",
+      operation: "conversational_request",
+      interactionMode,
+      status: "blocked",
+      details: {
+        attemptedAction: "conversational_request",
+        blockedByCondition: "webgis",
+        eventSource: "frontend",
+      },
+    });
+    showNotice("Assistente non consentito nella condizione WebGIS.", "warning");
+    return;
+  }
   if (!assistantConfig.enabled) {
     showNotice("Assistente non disponibile in questa configurazione.", "warning");
     return;
@@ -2556,6 +2739,7 @@ async function bootstrap() {
     categoryByCode,
     onSelectionChange: (selectionState) => refreshSelectionStatus(selectionState),
   });
+  state.mapController = mapController;
 
   renderLegend();
   renderStatusPanel();
@@ -2567,7 +2751,9 @@ async function bootstrap() {
   initializeAssistantResize(mapController);
   initializeVoiceInput(mapController);
   buildStudyConsole();
+  initializeConditionControl();
   initializeUiActionLogging();
+  applyConditionPolicy();
   recordExperiment({
     eventType: "session_started",
     channel: "system",

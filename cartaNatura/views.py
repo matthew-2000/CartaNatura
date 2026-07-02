@@ -236,6 +236,56 @@ def _interaction_analysis_id(response) -> str | None:
     return None
 
 
+def _active_task_condition(request) -> str | None:
+    active_task = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
+    context = request.session.get(STUDY_CONTEXT_SESSION_KEY)
+    if not isinstance(active_task, dict) or not isinstance(context, dict):
+        return None
+    condition = str(active_task.get("condition") or context.get("condition") or "")
+    return condition if condition in {"webgis", "conversational"} else None
+
+
+def _condition_violation_response(
+    request,
+    *,
+    blocked_condition: str,
+    attempted_action: str,
+    channel: str,
+    interaction_mode: str,
+) -> JsonResponse | None:
+    active_condition = _active_task_condition(request)
+    if active_condition != blocked_condition:
+        return None
+    record_experiment_event(
+        request.session,
+        event_type="protocol_violation",
+        channel=channel,
+        operation=attempted_action,
+        interaction_mode=interaction_mode,
+        status="blocked",
+        error="condition_action_blocked",
+        details={
+            "attemptedAction": attempted_action,
+            "blockedByCondition": active_condition,
+            "eventSource": "backend",
+        },
+    )
+    return JsonResponse(
+        {
+            "error": "Azione non consentita nella condizione sperimentale attiva.",
+            "condition": active_condition,
+            "violation": "condition_action_blocked",
+        },
+        status=403,
+    )
+
+
+def _clear_operational_state_for_task(request) -> None:
+    request.session.pop("interaction_context", None)
+    request.session.pop("interaction_analyses", None)
+    request.session.modified = True
+
+
 def _encode_sse(event_type: str, payload: dict[str, object]) -> bytes:
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n".encode("utf-8")
 
@@ -301,6 +351,16 @@ def gis(request):
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
         return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
+
+    violation_response = _condition_violation_response(
+        request,
+        blocked_condition="conversational",
+        attempted_action="spatial_analysis_ui",
+        channel=InteractionChannel.WEB_MAP.value,
+        interaction_mode="map",
+    )
+    if violation_response is not None:
+        return violation_response
 
     record_experiment_event(
         request.session,
@@ -442,6 +502,16 @@ def interact(request):
     if not settings.AI_ASSISTANT_ENABLED:
         return HttpResponseNotFound()
 
+    violation_response = _condition_violation_response(
+        request,
+        blocked_condition="webgis",
+        attempted_action="conversational_request",
+        channel=InteractionChannel.WEB_CHAT.value,
+        interaction_mode="text",
+    )
+    if violation_response is not None:
+        return violation_response
+
     if not os.getenv("OPENAI_API_KEY", "").strip():
         return JsonResponse(
             {"error": "Assistente AI non configurato. Imposta OPENAI_API_KEY."},
@@ -547,6 +617,16 @@ def interact(request):
 def interact_stream(request):
     if not settings.AI_ASSISTANT_ENABLED:
         return HttpResponseNotFound()
+
+    violation_response = _condition_violation_response(
+        request,
+        blocked_condition="webgis",
+        attempted_action="conversational_request",
+        channel=InteractionChannel.WEB_CHAT.value,
+        interaction_mode="text",
+    )
+    if violation_response is not None:
+        return violation_response
 
     if not os.getenv("OPENAI_API_KEY", "").strip():
         return JsonResponse(
@@ -685,6 +765,16 @@ def voice_transcribe(request):
     if not settings.AI_ASSISTANT_ENABLED:
         return HttpResponseNotFound()
 
+    violation_response = _condition_violation_response(
+        request,
+        blocked_condition="webgis",
+        attempted_action="voice_input",
+        channel=InteractionChannel.VOICE.value,
+        interaction_mode="voice",
+    )
+    if violation_response is not None:
+        return violation_response
+
     if not os.getenv("OPENAI_API_KEY", "").strip():
         return JsonResponse(
             {"error": "Trascrizione vocale non configurata. Imposta OPENAI_API_KEY."},
@@ -757,6 +847,12 @@ def experiment_log(request):
     if not isinstance(payload, dict):
         return JsonResponse({"error": "Richiesta non valida: payload non supportato."}, status=400)
 
+    active_task_before = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
+    previous_task_run_id = (
+        str(active_task_before.get("taskRunId") or "")
+        if isinstance(active_task_before, dict)
+        else ""
+    )
     event = record_experiment_event(
         request.session,
         event_type=str(payload.get("eventType") or ""),
@@ -776,6 +872,11 @@ def experiment_log(request):
         assistant_response=str(payload.get("assistantResponse") or ""),
         details=payload.get("details") if isinstance(payload.get("details"), dict) else {},
     )
+    if (
+        event.get("eventType") == "task_started"
+        and event.get("taskRunId") != previous_task_run_id
+    ):
+        _clear_operational_state_for_task(request)
     return JsonResponse({"event": event, "summary": export_experiment_log(request.session)["summary"]})
 
 
@@ -820,6 +921,7 @@ def study_session(request):
                 status="completed",
             )
         request.session.pop(STUDY_CONTEXT_SESSION_KEY, None)
+        _clear_operational_state_for_task(request)
         request.session.modified = True
         return JsonResponse({"active": False})
 
@@ -853,6 +955,7 @@ def study_session(request):
             error="study_session_replaced",
         )
     clear_experiment_log(request.session)
+    _clear_operational_state_for_task(request)
     context = create_study_session(
         participant_id=participant_id,
         condition=condition,

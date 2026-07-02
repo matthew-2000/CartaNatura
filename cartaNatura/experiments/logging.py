@@ -27,6 +27,7 @@ ALLOWED_EVENT_TYPES = {
     "tool_started",
     "tool_completed",
     "tool_failed",
+    "protocol_violation",
     "selection_changed",
     "analysis_started",
     "analysis_completed",
@@ -250,6 +251,7 @@ def summarize_experiment_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "toolCallCount": _count_events(events, "tool_started"),
         "failedTaskCount": _count_events(events, "task_failed"),
         "interruptedTaskCount": _count_events(events, "task_interrupted"),
+        "protocolViolationCount": _count_events(events, "protocol_violation"),
         "tasks": _summarize_tasks(events),
     }
 
@@ -415,6 +417,8 @@ def _sanitize_details(details: dict[str, Any]) -> dict[str, Any]:
         "controlLabel",
         "eventSource",
         "taskOutcome",
+        "attemptedAction",
+        "blockedByCondition",
     }
     return {
         key: _safe_detail_value(value)

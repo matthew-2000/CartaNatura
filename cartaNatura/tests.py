@@ -951,6 +951,85 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertNotEqual(completed_response.json()["event"]["durationMs"], 999999)
         self.assertEqual(exported["summary"]["tasks"][0]["status"], "completed")
 
+    def test_webgis_task_blocks_chat_and_clears_previous_operational_state(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            client = Client()
+            client.post(
+                "/progettoGIS/cartaNatura/experiment/study/session",
+                data='{"participantId":"participant_webgis","condition":"webgis"}',
+                content_type="application/json",
+            )
+            session = client.session
+            session["interaction_context"] = {"last_intent": "generate_report"}
+            session["interaction_analyses"] = [{"analysis_id": "analysis_previous"}]
+            session.save()
+            started = client.post(
+                "/progettoGIS/cartaNatura/experiment/log",
+                data='{"eventType":"task_started","taskId":"area_co2","condition":"webgis"}',
+                content_type="application/json",
+            ).json()["event"]
+
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+                blocked = client.post(
+                    "/progettoGIS/cartaNatura/interact",
+                    data='{"message":"analizza Avellino"}',
+                    content_type="application/json",
+                )
+            exported = client.get(
+                "/progettoGIS/cartaNatura/experiment/study/session"
+            ).json()["export"]
+
+        self.assertEqual(blocked.status_code, 403)
+        self.assertNotIn("interaction_context", client.session)
+        self.assertNotIn("interaction_analyses", client.session)
+        violation = exported["events"][-1]
+        self.assertEqual(violation["eventType"], "protocol_violation")
+        self.assertEqual(violation["condition"], "webgis")
+        self.assertEqual(violation["taskRunId"], started["taskRunId"])
+        self.assertEqual(exported["summary"]["protocolViolationCount"], 1)
+
+    def test_conversational_task_blocks_traditional_gis_endpoint_only(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            client = Client()
+            client.post(
+                "/progettoGIS/cartaNatura/experiment/study/session",
+                data='{"participantId":"participant_chat","condition":"conversational"}',
+                content_type="application/json",
+            )
+            started = client.post(
+                "/progettoGIS/cartaNatura/experiment/log",
+                data=(
+                    '{"eventType":"task_started","taskId":"area_co2",'
+                    '"condition":"conversational"}'
+                ),
+                content_type="application/json",
+            ).json()["event"]
+            blocked = client.post(
+                "/progettoGIS/cartaNatura/gis",
+                data='{"areas":[]}',
+                content_type="application/json",
+            )
+            with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+                allowed_channel = client.post(
+                    "/progettoGIS/cartaNatura/interact",
+                    data='{"message":"analizza Avellino"}',
+                    content_type="application/json",
+                )
+            exported = client.get(
+                "/progettoGIS/cartaNatura/experiment/study/session"
+            ).json()["export"]
+
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(allowed_channel.status_code, 503)
+        violation = next(
+            event
+            for event in exported["events"]
+            if event.get("eventType") == "protocol_violation"
+        )
+        self.assertEqual(violation["condition"], "conversational")
+        self.assertEqual(violation["taskRunId"], started["taskRunId"])
+        self.assertEqual(violation["details"]["attemptedAction"], "spatial_analysis_ui")
+
     @patch("cartaNatura.views.transcribe_uploaded_audio")
     def test_voice_transcribe_returns_transcript(self, transcribe_uploaded_audio):
         transcribe_uploaded_audio.return_value = "analizza Avellino"
