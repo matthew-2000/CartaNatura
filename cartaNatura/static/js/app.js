@@ -887,7 +887,7 @@ function applyConditionPolicy() {
   elements.runAnalysisButton.disabled = conversationalActive || !hasInputs;
 
   const economicControls = elements.infoContainer?.querySelectorAll(
-    "#testoValore, #butcalcolavalore, #butstampadettagli"
+    "#testoValore, #butcalcolavalore"
   );
   economicControls?.forEach((control) => {
     control.disabled = conversationalActive;
@@ -921,8 +921,7 @@ function blockedProtocolAction(control) {
       control.closest("#openHistoryPanel") ||
       control.closest("#analysisHistoryPanel") ||
       control.closest("#testoValore") ||
-      control.closest("#butcalcolavalore") ||
-      control.closest("#butstampadettagli"))
+      control.closest("#butcalcolavalore"))
   ) {
     return "graphical_completion_control";
   }
@@ -2180,9 +2179,6 @@ function renderInfoSummary() {
     `;
 
     document.getElementById("butstampadettagli").addEventListener("click", async () => {
-      if (getActiveStudyCondition() === "conversational") {
-        return;
-      }
       const reportStartedAt = performance.now();
       const printButton = document.getElementById("butstampadettagli");
       const closeButton = elements.closePopupButton;

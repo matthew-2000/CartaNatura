@@ -13,7 +13,8 @@ La mappa resta l'ambiente principale per selezionare aree, verificare risultati,
 - chat testuale con intenti applicativi di dominio
 - input vocale via registrazione browser e trascrizione OpenAI
 - report analitico e PDF con mappa, metriche e comuni interessati
-- logging sperimentale esportabile in JSON
+- logging sperimentale esportabile in JSON/JSONL
+- protocollo pilot ASITA 2026 versionato
 
 ## Stack
 
@@ -61,7 +62,7 @@ Variabili principali:
 - `OPENAI_TRANSCRIPTION_MODEL`
 - `OPENAI_BASE_URL`
 
-Gli scenari di prezzo CO2 sono configurati in [cartaNatura/views.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/views.py:47) come `PRICE_OPTIONS` e inviati al frontend via config applicativa.
+Gli scenari di prezzo CO2 sono configurati in [cartaNatura/domain/economics.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/domain/economics.py:8) come `PRICE_OPTIONS` e inviati al frontend via config applicativa.
 
 ## Architettura
 
@@ -108,6 +109,12 @@ Endpoint:
 Metriche raccolte: tempo completamento task, numero interazioni, passaggi operativi, errori, richieste non comprese, uso testo/voce, operazioni completate, generazione report. Il log evita testo libero, transcript, identificativi personali e dati browser.
 
 Dettaglio: [docs/experimental-logging.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/experimental-logging.md:1).
+
+## Pilot ASITA 2026
+
+Protocollo operativo: [docs/asita-2026-pilot-protocol.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/asita-2026-pilot-protocol.md:1).
+
+Task sheet operatore: [docs/asita-2026-task-sheet.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/asita-2026-task-sheet.md:1).
 
 ## Test
 

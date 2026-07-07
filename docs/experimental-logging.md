@@ -36,11 +36,21 @@ Eventi ammessi:
 - `session_started`
 - `task_started`
 - `task_completed`
+- `task_failed`
+- `task_interrupted`
+- `ui_action`
+- `chat_message`
+- `chat_response`
+- `tool_started`
+- `tool_completed`
+- `tool_failed`
+- `protocol_violation`
 - `selection_changed`
 - `analysis_started`
 - `analysis_completed`
 - `valuation_completed`
 - `report_generated`
+- `report_opened`
 - `interaction_started`
 - `interaction_completed`
 - `voice_started`
@@ -63,6 +73,13 @@ Eventi ammessi:
 - `voiceInteractionCount`
 - `completedOperations`
 - `reportGeneratedCount`
+- `uiActionCount`
+- `chatMessageCount`
+- `toolCallCount`
+- `failedTaskCount`
+- `interruptedTaskCount`
+- `protocolViolationCount`
+- `tasks`
 
 ## Minimizzazione Dati
 
@@ -93,16 +110,20 @@ Ogni evento persistente include contesto sessione (`participantId`, `studySessio
 
 Nel log ordinario sono ammessi solo metadati operativi: conteggi, durate, stato, canale, operazione, numero categorie, CO2 totale, scenario prezzo.
 
+## Protocollo Pilot ASITA 2026
+
+Il protocollo operativo versionato è in [asita-2026-pilot-protocol.md](asita-2026-pilot-protocol.md).
+Il foglio operativo per l'operatore è in [asita-2026-task-sheet.md](asita-2026-task-sheet.md).
+
 ## Workflow Studio
 
 Per ogni partecipante:
 
-1. svuotare log con `DELETE`
-2. assegnare task sperimentale
-3. far completare task in modalità WebGIS
-4. esportare log JSON
-5. svuotare log
-6. far completare task equivalente in modalità conversazionale
-7. esportare log JSON
+1. assegnare ordine condizioni dal protocollo
+2. avviare sessione persistente in `?study=1`
+3. avviare ogni task con `Inizia attività`
+4. chiudere ogni task con `Completa`, `Errore` o `Non compresa`
+5. esportare JSON e JSONL a fine condizione
+6. fare reset prima della condizione successiva
 
 Ordine delle condizioni da controbilanciare tra partecipanti.

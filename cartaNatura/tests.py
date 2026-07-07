@@ -868,6 +868,19 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertContains(study_response, '"study": {"enabled": true')
         self.assertContains(study_response, '"sessionUrl": "/progettoGIS/cartaNatura/experiment/study/session"')
 
+    def test_index_exposes_asita_pilot_task_ids(self):
+        response = Client().get("/progettoGIS/cartaNatura/?study=1")
+
+        for task_id in (
+            "asita_t1_area_analysis",
+            "asita_t2_forest_co2",
+            "asita_t3_economic_value",
+            "asita_t4_scenario_compare",
+            "asita_t5_report_pdf",
+            "asita_t6_map_verify",
+        ):
+            self.assertContains(response, f'"id": "{task_id}"')
+
     def test_study_session_endpoint_persists_following_experiment_events(self):
         with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
             client = Client()

@@ -63,9 +63,12 @@ def _build_asset_version() -> str:
 
 
 STUDY_TASKS = (
-    {"id": "area_co2", "label": "CO2 area selezionata"},
-    {"id": "municipalities_report", "label": "Report comuni"},
-    {"id": "economic_valuation", "label": "Valutazione economica"},
+    {"id": "asita_t1_area_analysis", "label": "T1 - Analisi comuni/area"},
+    {"id": "asita_t2_forest_co2", "label": "T2 - Categorie forestali e CO2"},
+    {"id": "asita_t3_economic_value", "label": "T3 - Valore economico"},
+    {"id": "asita_t4_scenario_compare", "label": "T4 - Confronto scenari"},
+    {"id": "asita_t5_report_pdf", "label": "T5 - Report e PDF"},
+    {"id": "asita_t6_map_verify", "label": "T6 - Verifica in mappa"},
 )
 
 
