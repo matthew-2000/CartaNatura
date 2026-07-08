@@ -387,7 +387,8 @@ class OpenAiAssistantRuntime:
                     session_context=session_context,
                 ),
                 previous_response_id=self._previous_response_id(session_context),
-            )
+            ),
+            phase="planning",
         )
         latest_analysis_result = None
         latest_economic_result = None
@@ -453,6 +454,12 @@ class OpenAiAssistantRuntime:
                     }
                 )
 
+            yield {
+                "type": "status",
+                "stage": "synthesizing_response",
+                "phase": "synthesis",
+                "message": "Strumenti completati. Preparo la risposta finale.",
+            }
             response_body = yield from self._stream_response_body_events(
                 request=request,
                 payload=self._build_openai_request_payload(
@@ -460,7 +467,8 @@ class OpenAiAssistantRuntime:
                     session_context=session_context,
                     response_input=tool_outputs,
                     previous_response_id=str(response_body.get("id") or ""),
-                )
+                ),
+                phase="synthesis",
             )
 
         response = self._build_interaction_response(
@@ -759,6 +767,7 @@ class OpenAiAssistantRuntime:
         *,
         request: InteractionRequest,
         payload: dict[str, Any],
+        phase: str = "planning",
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         extractor = AssistantTextDeltaExtractor()
         started_at = start_timer()
@@ -771,6 +780,8 @@ class OpenAiAssistantRuntime:
                     yield {
                         "type": "status",
                         "stage": "model_created",
+                        "phase": phase,
+                        "message": self._stream_model_created_message(phase),
                         "responseId": getattr(response, "id", None),
                     }
                 elif event_type == "response.output_item.added":
@@ -800,6 +811,12 @@ class OpenAiAssistantRuntime:
             status="ok",
         )
         return final_payload
+
+    @staticmethod
+    def _stream_model_created_message(phase: str) -> str:
+        if phase == "synthesis":
+            return "L'assistente sta scrivendo la risposta finale."
+        return "L'assistente sta interpretando la richiesta."
 
     def _build_openai_input(
         self,

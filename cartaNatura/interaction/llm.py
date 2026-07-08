@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from openai import OpenAI
@@ -75,9 +76,22 @@ def build_optional_llm_provider() -> LlmProvider | None:
     if not api_key:
         return None
 
+    model = os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
+    base_url = (
+        os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
+        or "https://api.openai.com/v1"
+    )
+    return _cached_openai_provider(api_key, model, base_url)
+
+
+@lru_cache(maxsize=4)
+def _cached_openai_provider(
+    api_key: str,
+    model: str,
+    base_url: str,
+) -> OpenAiResponsesLlmProvider:
     return OpenAiResponsesLlmProvider(
         api_key=api_key,
-        model=os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini",
-        base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
-        or "https://api.openai.com/v1",
+        model=model,
+        base_url=base_url,
     )

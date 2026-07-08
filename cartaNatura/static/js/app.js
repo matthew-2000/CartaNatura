@@ -1699,48 +1699,30 @@ function extractAssistantResponseText(response) {
   return assistantMessage?.text || "";
 }
 
-function describeAssistantToolProgress(toolName) {
-  if (toolName === "search_municipalities") {
-    return "Cerco i comuni indicati...";
+function describeAssistantToolProgress(toolName, stage = "running") {
+  const labels = {
+    search_municipalities: "verifica dei comuni indicati",
+    analyze_municipalities: "analisi GIS dei comuni",
+    analyze_current_selection: "analisi GIS della selezione",
+    calculate_economic_value: "calcolo del valore economico",
+    compare_economic_scenarios: "confronto degli scenari economici",
+    prepare_report: "preparazione del report esistente",
+    get_last_analysis: "recupero dell'ultimo report",
+    compare_recent_analyses: "confronto degli ultimi report",
+    get_methodology: "recupero della metodologia",
+    reset_analysis_context: "azzeramento della sessione",
+  };
+  const label = labels[toolName] || "strumento richiesto";
+
+  if (stage === "pending") {
+    return `L'assistente ha scelto lo strumento: ${label}...`;
   }
 
-  if (toolName === "analyze_municipalities") {
-    return "Analizzo i comuni richiesti...";
+  if (stage === "completed") {
+    return `Completato: ${label}.`;
   }
 
-  if (toolName === "analyze_current_selection") {
-    return "Analizzo la selezione corrente...";
-  }
-
-  if (toolName === "calculate_economic_value") {
-    return "Calcolo il valore economico...";
-  }
-
-  if (toolName === "compare_economic_scenarios") {
-    return "Confronto gli scenari economici...";
-  }
-
-  if (toolName === "prepare_report") {
-    return "Preparo il report esistente...";
-  }
-
-  if (toolName === "get_last_analysis") {
-    return "Recupero l'ultimo report...";
-  }
-
-  if (toolName === "compare_recent_analyses") {
-    return "Confronto gli ultimi report...";
-  }
-
-  if (toolName === "get_methodology") {
-    return "Recupero la metodologia...";
-  }
-
-  if (toolName === "reset_analysis_context") {
-    return "Azzero la sessione...";
-  }
-
-  return "Elaboro la richiesta...";
+  return `Eseguo ${label}...`;
 }
 
 function renderAssistantMessages() {
@@ -2501,21 +2483,32 @@ async function runAssistantInteraction(mapController, message, { interactionMode
         response = await sendInteractionMessageStream(appConfig.interactionStreamUrl, payload, {
           onStatus: (event) => {
             if (event.stage === "started") {
-              setAssistantStreamingProgress(streamingMessageIndex, "Richiesta ricevuta...");
+              setAssistantStreamingProgress(
+                streamingMessageIndex,
+                event.message || "Richiesta ricevuta..."
+              );
             } else if (event.stage === "model_created") {
-              setAssistantStreamingProgress(streamingMessageIndex, "Preparo la risposta...");
+              setAssistantStreamingProgress(
+                streamingMessageIndex,
+                event.message || "L'assistente sta elaborando la richiesta..."
+              );
+            } else if (event.stage === "synthesizing_response") {
+              setAssistantStreamingProgress(
+                streamingMessageIndex,
+                event.message || "Preparo la risposta finale..."
+              );
             }
           },
           onToolPending: (event) => {
             setAssistantStreamingProgress(
               streamingMessageIndex,
-              describeAssistantToolProgress(event.toolName)
+              describeAssistantToolProgress(event.toolName, "pending")
             );
           },
           onToolStart: (event) => {
             setAssistantStreamingProgress(
               streamingMessageIndex,
-              describeAssistantToolProgress(event.toolName)
+              describeAssistantToolProgress(event.toolName, "running")
             );
             activeToolCalls.set(event.toolCallId || event.toolName, event.toolName);
             recordExperiment({
@@ -2533,6 +2526,10 @@ async function runAssistantInteraction(mapController, message, { interactionMode
           },
           onToolResult: (event) => {
             activeToolCalls.delete(event.toolCallId || event.toolName);
+            setAssistantStreamingProgress(
+              streamingMessageIndex,
+              describeAssistantToolProgress(event.toolName, "completed")
+            );
             recordExperiment({
               eventType: "tool_completed",
               channel: interactionMode === "voice" ? "voice" : "web_chat",
