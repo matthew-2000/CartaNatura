@@ -67,6 +67,7 @@ Variabili principali:
 - `OPENAI_BASE_URL`
 - `OLLAMA_MODEL`: richiesto se `LLM_PROVIDER=ollama` e `LLM_MODEL` è vuoto
 - `OLLAMA_BASE_URL`: richiesto se `LLM_PROVIDER=ollama` e `LLM_BASE_URL` è vuoto
+- `OLLAMA_THINK`: `false` per disattivare il reasoning dei modelli Ollama che lo supportano
 
 Gli scenari di prezzo CO2 sono configurati in [cartaNatura/domain/economics.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/domain/economics.py:8) come `PRICE_OPTIONS` e inviati al frontend via config applicativa.
 
@@ -85,6 +86,7 @@ Esempio Ollama:
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=llama3.1
+OLLAMA_THINK=false
 ```
 
 La scelta del provider è esplicita: se il provider selezionato è incompleto o non disponibile, l'app restituisce un errore controllato e non passa automaticamente all'altro provider.

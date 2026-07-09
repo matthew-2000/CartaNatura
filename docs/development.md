@@ -46,7 +46,7 @@ Il flusso vocale usa `MediaRecorder` lato browser e OpenAI Audio Transcriptions 
 Il flusso conversazionale testuale usa il provider selezionato con `LLM_PROVIDER`:
 
 - `openai`: richiede `OPENAI_API_KEY`; modello da `LLM_MODEL` o `OPENAI_MODEL`; URL da `LLM_BASE_URL` o `OPENAI_BASE_URL`.
-- `ollama`: richiede `LLM_MODEL` o `OLLAMA_MODEL`; URL da `LLM_BASE_URL` o `OLLAMA_BASE_URL`.
+- `ollama`: richiede `LLM_MODEL` o `OLLAMA_MODEL`; URL da `LLM_BASE_URL` o `OLLAMA_BASE_URL`; `OLLAMA_THINK=false` riduce la latenza dei modelli con reasoning.
 
 Non aggiungere fallback impliciti tra provider. Errori di configurazione o incompatibilità modello devono restare visibili e testabili.
 

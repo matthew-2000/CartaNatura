@@ -218,6 +218,7 @@ class LlmProviderConfigurationTests(SimpleTestCase):
                 "LLM_BASE_URL": "",
                 "OLLAMA_MODEL": "llama3.1",
                 "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+                "OLLAMA_THINK": "false",
                 "OPENAI_API_KEY": "test-key",
             },
         ):
@@ -226,8 +227,10 @@ class LlmProviderConfigurationTests(SimpleTestCase):
 
         self.assertEqual(provider.provider_name, "ollama")
         self.assertEqual(provider.model, "llama3.1")
+        self.assertFalse(provider.think)
         self.assertTrue(status["configured"])
         self.assertEqual(status["provider"], "ollama")
+        self.assertFalse(status["think"])
 
     def test_selected_ollama_provider_does_not_fallback_to_openai(self):
         with patch.dict(
@@ -270,6 +273,30 @@ class LlmProviderConfigurationTests(SimpleTestCase):
         self.assertEqual(body["output"][0]["type"], "function_call")
         self.assertEqual(body["output"][0]["name"], "get_methodology")
         self.assertEqual(body["usage"]["total_tokens"], 5)
+
+    def test_ollama_payload_can_disable_thinking(self):
+        provider = OllamaChatLlmProvider(
+            model="qwen3.5:9b",
+            base_url="http://127.0.0.1:11434",
+            think=False,
+        )
+
+        payload = provider._build_chat_payload(
+            {
+                "instructions": "Rispondi in italiano.",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "ciao"}],
+                    }
+                ],
+                "tools": [],
+            },
+            stream=False,
+        )
+
+        self.assertEqual(payload["model"], "qwen3.5:9b")
+        self.assertFalse(payload["think"])
 
 
 class PayloadParsingTests(SimpleTestCase):

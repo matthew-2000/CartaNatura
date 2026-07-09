@@ -41,6 +41,7 @@ class LlmProviderConfig:
     base_url: str
     api_key: str = ""
     timeout_seconds: float = 60.0
+    think: bool | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -130,6 +131,7 @@ class OllamaChatLlmProvider:
     model: str
     base_url: str
     timeout_seconds: float = 60.0
+    think: bool | None = None
 
     provider_name = "ollama"
     runtime_name = "ollama_chat"
@@ -177,6 +179,8 @@ class OllamaChatLlmProvider:
             "stream": stream,
             "options": {"temperature": 0},
         }
+        if self.think is not None:
+            body["think"] = self.think
         if tools:
             body["tools"] = tools
 
@@ -369,7 +373,12 @@ def build_optional_llm_provider() -> LlmProvider | None:
     if config.provider == "openai":
         return _cached_openai_provider(config.api_key, config.model, config.base_url)
     if config.provider == "ollama":
-        return _cached_ollama_provider(config.model, config.base_url, config.timeout_seconds)
+        return _cached_ollama_provider(
+            config.model,
+            config.base_url,
+            config.timeout_seconds,
+            config.think,
+        )
     raise _configuration_error(config)
 
 
@@ -399,6 +408,7 @@ def load_llm_provider_config() -> LlmProviderConfig:
             model=generic_model or _env_or_setting("OLLAMA_MODEL", "").strip(),
             base_url=generic_base_url or _env_or_setting("OLLAMA_BASE_URL", "").strip(),
             timeout_seconds=timeout_seconds,
+            think=_load_ollama_think_config(),
         )
 
     return LlmProviderConfig(provider=provider, model=generic_model, base_url=generic_base_url)
@@ -414,6 +424,7 @@ def get_llm_provider_status() -> dict[str, Any]:
         "model": config.model,
         "base_url": config.base_url,
         "configured": config.is_configured,
+        "think": config.think,
         "error": error,
     }
 
@@ -464,11 +475,13 @@ def _cached_ollama_provider(
     model: str,
     base_url: str,
     timeout_seconds: float,
+    think: bool | None,
 ) -> OllamaChatLlmProvider:
     return OllamaChatLlmProvider(
         model=model,
         base_url=base_url,
         timeout_seconds=timeout_seconds,
+        think=think,
     )
 
 
@@ -486,6 +499,22 @@ def _coerce_float(value: str, *, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default
+
+
+def _coerce_optional_bool(value: str) -> bool | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _load_ollama_think_config() -> bool | None:
+    generic_value = _env_or_setting("LLM_THINK", "").strip()
+    if generic_value:
+        return _coerce_optional_bool(generic_value)
+    return _coerce_optional_bool(_env_or_setting("OLLAMA_THINK", ""))
 
 
 def _without_provider_only_payload(payload: dict[str, Any]) -> dict[str, Any]:

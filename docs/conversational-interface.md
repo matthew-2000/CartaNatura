@@ -45,7 +45,7 @@ Regola: il modello non calcola direttamente superfici, CO2 o valori GIS. Deve ch
 Il provider conversazionale si seleziona da variabili d'ambiente:
 
 - `LLM_PROVIDER=openai`: usa OpenAI remoto. Richiede `OPENAI_API_KEY`; usa `LLM_MODEL` o `OPENAI_MODEL` e `LLM_BASE_URL` o `OPENAI_BASE_URL`.
-- `LLM_PROVIDER=ollama`: usa un modello locale esposto da Ollama. Richiede `LLM_MODEL` o `OLLAMA_MODEL` e `LLM_BASE_URL` o `OLLAMA_BASE_URL`.
+- `LLM_PROVIDER=ollama`: usa un modello locale esposto da Ollama. Richiede `LLM_MODEL` o `OLLAMA_MODEL` e `LLM_BASE_URL` o `OLLAMA_BASE_URL`. `OLLAMA_THINK=false` disattiva il reasoning per i modelli che supportano il flag `think`.
 
 OpenAI e Ollama sono normalizzati nello stesso contratto runtime: testo, tool calling, output JSON strutturato, streaming e cronologia. Non esiste fallback automatico tra provider: errori di configurazione, indisponibilità o modelli non compatibili producono errori espliciti.
 
