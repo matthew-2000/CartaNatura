@@ -33,6 +33,7 @@ from cartaNatura.interaction.llm import (
     OllamaChatLlmProvider,
     build_optional_llm_provider,
     get_llm_provider_status,
+    _build_ollama_messages,
 )
 from cartaNatura.interaction.orchestrator import build_default_orchestrator
 from cartaNatura.interaction.resolvers import RuleBasedIntentResolver
@@ -297,6 +298,100 @@ class LlmProviderConfigurationTests(SimpleTestCase):
 
         self.assertEqual(payload["model"], "qwen3.5:9b")
         self.assertFalse(payload["think"])
+
+    def test_ollama_does_not_force_json_format_while_planning_tool_calls(self):
+        provider = OllamaChatLlmProvider(
+            model="qwen3.5:4b",
+            base_url="http://127.0.0.1:11434",
+        )
+        payload = {
+            "instructions": "Usa i tool quando servono.",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "analizza Avellino"}],
+                }
+            ],
+            "tools": [
+                {
+                    "name": "search_municipalities",
+                    "description": "Cerca comuni.",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "text": {
+                "format": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {"assistant_text": {"type": "string"}},
+                    }
+                }
+            },
+            "provider_metadata": {"ollama_response_phase": "tool_planning"},
+        }
+
+        planning_body = provider._build_chat_payload(payload, stream=False)
+        final_body = provider._build_chat_payload(
+            {
+                **payload,
+                "provider_metadata": {"ollama_response_phase": "final"},
+            },
+            stream=False,
+        )
+
+        self.assertNotIn("format", planning_body)
+        self.assertIn("format", final_body)
+
+    def test_ollama_rebuilds_current_tool_turn_for_stateless_chat_api(self):
+        messages = _build_ollama_messages(
+            {
+                "instructions": "Sistema.",
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_search",
+                        "output": '{"matches":["Avellino"]}',
+                    }
+                ],
+                "provider_metadata": {
+                    "ollama_current_turn_input": [
+                        {
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "analizza Avellino"}],
+                        }
+                    ],
+                    "ollama_tool_exchanges": [
+                        {
+                            "tool_calls": [
+                                {
+                                    "call_id": "call_search",
+                                    "name": "search_municipalities",
+                                    "arguments": {"query": "Avellino", "limit": 5},
+                                }
+                            ],
+                            "tool_outputs": [
+                                {
+                                    "type": "function_call_output",
+                                    "call_id": "call_search",
+                                    "output": '{"matches":["Avellino"]}',
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[1]["role"], "user")
+        self.assertEqual(messages[1]["content"], "analizza Avellino")
+        self.assertEqual(messages[2]["role"], "assistant")
+        self.assertEqual(
+            messages[2]["tool_calls"][0]["function"]["name"],
+            "search_municipalities",
+        )
+        self.assertEqual(messages[3]["role"], "tool")
+        self.assertEqual(messages[3]["tool_call_id"], "call_search")
 
 
 class PayloadParsingTests(SimpleTestCase):
@@ -1703,6 +1798,66 @@ class InteractionOrchestratorTests(SimpleTestCase):
 
 
 class OpenAiAssistantRuntimeTests(SimpleTestCase):
+    def test_runtime_falls_back_to_plain_text_when_final_json_is_invalid(self):
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_plain_text",
+                    "output_text": "Ho bisogno di un comune piu specifico.",
+                    "output": [],
+                }
+            ]
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=provider,
+            analysis_store=InMemoryAnalysisStore(),
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="plain-text-final-session",
+                input=InteractionInput(text="analizza san"),
+            )
+        )
+
+        self.assertEqual(response.messages[0].text, "Ho bisogno di un comune piu specifico.")
+        self.assertTrue(response.ui_hints["needsClarification"])
+
+    def test_runtime_extracts_assistant_text_from_malformed_final_json(self):
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_malformed_text",
+                    "output_text": (
+                        '{"intent":"analyze_municipalities","assistant_text":"Specifica '
+                        'quale comune San vuoi analizzare'
+                    ),
+                    "output": [],
+                }
+            ]
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=provider,
+            analysis_store=InMemoryAnalysisStore(),
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="malformed-final-session",
+                input=InteractionInput(text="analizza san"),
+            )
+        )
+
+        self.assertEqual(
+            response.messages[0].text,
+            "Specifica quale comune San vuoi analizzare",
+        )
+        self.assertTrue(response.ui_hints["needsClarification"])
+
     def test_runtime_uses_provider_identity_and_history_with_ollama(self):
         provider = FakeOllamaStyleProvider(
             [

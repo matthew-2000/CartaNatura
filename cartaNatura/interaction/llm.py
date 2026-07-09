@@ -173,6 +173,11 @@ class OllamaChatLlmProvider:
     def _build_chat_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:
         messages = _build_ollama_messages(payload)
         tools = [_to_ollama_tool(tool) for tool in payload.get("tools", [])]
+        provider_metadata = (
+            payload.get("provider_metadata")
+            if isinstance(payload.get("provider_metadata"), dict)
+            else {}
+        )
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -185,7 +190,10 @@ class OllamaChatLlmProvider:
             body["tools"] = tools
 
         schema = _extract_json_schema(payload)
-        if schema:
+        if schema and _should_send_ollama_json_format(
+            has_tools=bool(tools),
+            provider_metadata=provider_metadata,
+        ):
             body["format"] = schema
         return body
 
@@ -538,6 +546,11 @@ def _build_ollama_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if role in {"user", "assistant", "tool"} and content:
                 messages.append({"role": role, "content": content})
 
+    metadata = payload.get("provider_metadata")
+    if isinstance(metadata, dict) and metadata.get("ollama_tool_exchanges"):
+        messages.extend(_build_ollama_current_turn_messages(metadata))
+        return messages
+
     for input_item in payload.get("input", []) or []:
         if not isinstance(input_item, dict):
             continue
@@ -556,6 +569,56 @@ def _build_ollama_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if role in {"user", "assistant"} and content:
             messages.append({"role": role, "content": content})
     return messages
+
+
+def _build_ollama_current_turn_messages(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for input_item in metadata.get("ollama_current_turn_input", []) or []:
+        if not isinstance(input_item, dict):
+            continue
+        role = str(input_item.get("role") or "user")
+        content = _input_content_to_text(input_item.get("content"))
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content})
+
+    for exchange in metadata.get("ollama_tool_exchanges", []) or []:
+        if not isinstance(exchange, dict):
+            continue
+        tool_calls = [
+            _to_ollama_chat_tool_call(tool_call)
+            for tool_call in exchange.get("tool_calls", []) or []
+            if isinstance(tool_call, dict)
+        ]
+        if tool_calls:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tool_calls,
+                }
+            )
+        for output_item in exchange.get("tool_outputs", []) or []:
+            if not isinstance(output_item, dict):
+                continue
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": str(output_item.get("output") or ""),
+                    "tool_call_id": str(output_item.get("call_id") or ""),
+                }
+            )
+
+    return messages
+
+
+def _to_ollama_chat_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(tool_call.get("call_id") or ""),
+        "function": {
+            "name": str(tool_call.get("name") or ""),
+            "arguments": tool_call.get("arguments") or {},
+        },
+    }
 
 
 def _input_content_to_text(content: Any) -> str:
@@ -589,6 +652,16 @@ def _extract_json_schema(payload: dict[str, Any]) -> dict[str, Any] | None:
     format_config = text_config.get("format") if isinstance(text_config.get("format"), dict) else {}
     schema = format_config.get("schema")
     return schema if isinstance(schema, dict) else None
+
+
+def _should_send_ollama_json_format(
+    *,
+    has_tools: bool,
+    provider_metadata: dict[str, Any],
+) -> bool:
+    if not has_tools:
+        return True
+    return provider_metadata.get("ollama_response_phase") == "final"
 
 
 def _normalize_ollama_message(

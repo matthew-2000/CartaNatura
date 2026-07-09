@@ -391,16 +391,23 @@ class AssistantRuntime:
             "stage": "started",
             "message": "Richiesta ricevuta.",
         }
+        current_turn_input = self._build_model_input(
+            request=request,
+            session_context=session_context,
+        )
+        provider_tool_exchanges: list[dict[str, Any]] = []
         response_body = yield from self._stream_response_body_events(
             request=request,
             payload=self._build_model_request_payload(
                 request=request,
                 session_context=session_context,
-                response_input=self._build_model_input(
-                    request=request,
-                    session_context=session_context,
-                ),
+                response_input=current_turn_input,
                 previous_response_id=self._previous_response_id(session_context),
+                provider_metadata=self._build_provider_metadata(
+                    current_turn_input=current_turn_input,
+                    tool_exchanges=provider_tool_exchanges,
+                    response_phase="tool_planning",
+                ),
             ),
             phase="planning",
         )
@@ -419,6 +426,7 @@ class AssistantRuntime:
                 break
 
             tool_outputs = []
+            tool_outcomes = []
             for tool_call in tool_calls:
                 yield {
                     "type": "tool_start",
@@ -430,6 +438,7 @@ class AssistantRuntime:
                     request=request,
                     session_context=session_context,
                 )
+                tool_outcomes.append(outcome)
                 if outcome.analysis_result is not None:
                     latest_analysis_result = outcome.analysis_result
                     yield {
@@ -468,11 +477,18 @@ class AssistantRuntime:
                     }
                 )
 
+            provider_tool_exchanges.append(
+                {
+                    "tool_calls": tool_calls,
+                    "tool_outputs": tool_outputs,
+                }
+            )
+            response_phase = self._next_response_phase(tool_calls, tool_outcomes)
             yield {
                 "type": "status",
                 "stage": "synthesizing_response",
-                "phase": "synthesis",
-                "message": "Strumenti completati. Preparo la risposta finale.",
+                "phase": response_phase,
+                "message": self._tool_completion_message(response_phase),
             }
             response_body = yield from self._stream_response_body_events(
                 request=request,
@@ -481,8 +497,13 @@ class AssistantRuntime:
                     session_context=session_context,
                     response_input=tool_outputs,
                     previous_response_id=str(response_body.get("id") or ""),
+                    provider_metadata=self._build_provider_metadata(
+                        current_turn_input=current_turn_input,
+                        tool_exchanges=provider_tool_exchanges,
+                        response_phase=response_phase,
+                    ),
                 ),
-                phase="synthesis",
+                phase=response_phase,
             )
 
         response = self._build_interaction_response(
@@ -540,15 +561,22 @@ class AssistantRuntime:
         session_context: SessionContext,
         event_callback: Callable[[dict[str, Any]], None] | None,
     ) -> RuntimeLoopResult:
+        current_turn_input = self._build_model_input(
+            request=request,
+            session_context=session_context,
+        )
+        provider_tool_exchanges: list[dict[str, Any]] = []
         response_body = self._request_response_body(
             request=request,
             session_context=session_context,
-            response_input=self._build_model_input(
-                request=request,
-                session_context=session_context,
-            ),
+            response_input=current_turn_input,
             previous_response_id=self._previous_response_id(session_context),
             event_callback=event_callback,
+            provider_metadata=self._build_provider_metadata(
+                current_turn_input=current_turn_input,
+                tool_exchanges=provider_tool_exchanges,
+                response_phase="tool_planning",
+            ),
         )
 
         latest_analysis_result = None
@@ -566,6 +594,7 @@ class AssistantRuntime:
                 break
 
             tool_outputs = []
+            tool_outcomes = []
             for tool_call in tool_calls:
                 self._emit_event(
                     event_callback,
@@ -579,6 +608,7 @@ class AssistantRuntime:
                     request=request,
                     session_context=session_context,
                 )
+                tool_outcomes.append(outcome)
                 if outcome.analysis_result is not None:
                     latest_analysis_result = outcome.analysis_result
                     self._emit_event(
@@ -622,12 +652,23 @@ class AssistantRuntime:
                     }
                 )
 
+            provider_tool_exchanges.append(
+                {
+                    "tool_calls": tool_calls,
+                    "tool_outputs": tool_outputs,
+                }
+            )
             response_body = self._request_response_body(
                 request=request,
                 session_context=session_context,
                 response_input=tool_outputs,
                 previous_response_id=str(response_body.get("id") or ""),
                 event_callback=event_callback,
+                provider_metadata=self._build_provider_metadata(
+                    current_turn_input=current_turn_input,
+                    tool_exchanges=provider_tool_exchanges,
+                    response_phase=self._next_response_phase(tool_calls, tool_outcomes),
+                ),
             )
 
         return RuntimeLoopResult(
@@ -650,12 +691,14 @@ class AssistantRuntime:
         response_input: list[dict[str, Any]],
         previous_response_id: str | None,
         event_callback: Callable[[dict[str, Any]], None] | None,
+        provider_metadata: dict[str, Any] | None,
     ) -> dict[str, Any]:
         payload = self._build_model_request_payload(
             request=request,
             session_context=session_context,
             response_input=response_input,
             previous_response_id=previous_response_id,
+            provider_metadata=provider_metadata,
         )
         if event_callback is None:
             started_at = start_timer()
@@ -838,9 +881,59 @@ class AssistantRuntime:
 
     @staticmethod
     def _stream_model_created_message(phase: str) -> str:
-        if phase == "synthesis":
+        if phase in {"synthesis", "final"}:
             return "L'assistente sta scrivendo la risposta finale."
         return "L'assistente sta interpretando la richiesta."
+
+    @staticmethod
+    def _tool_completion_message(phase: str) -> str:
+        if phase == "tool_planning":
+            return "Strumenti completati. Continuo l'elaborazione."
+        return "Strumenti completati. Preparo la risposta finale."
+
+    @staticmethod
+    def _next_response_phase(
+        tool_calls: list[dict[str, Any]],
+        tool_outcomes: list[ToolExecutionOutcome],
+    ) -> str:
+        if tool_calls and all(
+            str(tool_call.get("name") or "") == MODEL_TOOL_SEARCH_MUNICIPALITIES
+            for tool_call in tool_calls
+        ):
+            if all(
+                AssistantRuntime._search_outcome_has_single_candidate(outcome)
+                for outcome in tool_outcomes
+            ):
+                return "tool_planning"
+            return "final"
+        return "final"
+
+    @staticmethod
+    def _search_outcome_has_single_candidate(outcome: ToolExecutionOutcome) -> bool:
+        exact_matches = (
+            outcome.payload.get("exactMatches")
+            if isinstance(outcome.payload.get("exactMatches"), list)
+            else []
+        )
+        matches = (
+            outcome.payload.get("matches")
+            if isinstance(outcome.payload.get("matches"), list)
+            else []
+        )
+        return len(exact_matches) == 1 or len(matches) == 1
+
+    @staticmethod
+    def _build_provider_metadata(
+        *,
+        current_turn_input: list[dict[str, Any]],
+        tool_exchanges: list[dict[str, Any]],
+        response_phase: str,
+    ) -> dict[str, Any]:
+        return {
+            "ollama_current_turn_input": current_turn_input,
+            "ollama_tool_exchanges": tool_exchanges,
+            "ollama_response_phase": response_phase,
+        }
 
     def _build_model_input(
         self,
@@ -870,6 +963,7 @@ class AssistantRuntime:
         session_context: SessionContext,
         response_input: list[dict[str, Any]],
         previous_response_id: str | None,
+        provider_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "instructions": self._build_instructions(),
@@ -879,6 +973,7 @@ class AssistantRuntime:
             "parallel_tool_calls": False,
             "previous_response_id": previous_response_id,
             "conversation_messages": self._conversation_messages(session_context),
+            "provider_metadata": provider_metadata or {},
             "text": {
                 "format": self._build_final_response_format(),
                 "verbosity": "low",
@@ -1214,12 +1309,51 @@ class AssistantRuntime:
         try:
             payload = json.loads(raw_text)
         except json.JSONDecodeError as exc:
+            text = AssistantRuntime._fallback_text_from_invalid_json(raw_text)
+            if text:
+                return {
+                    "intent": InteractionIntent.UNKNOWN.value,
+                    "assistant_text": text,
+                    "needs_clarification": True,
+                    "clarification_question": text,
+                    "ui_actions": [],
+                    "citations_internal": [],
+                    "follow_up_suggestions": [],
+                }
             raise LlmProviderUnavailableError(
                 "Il modello LLM non ha rispettato il formato JSON richiesto."
             ) from exc
         if not isinstance(payload, dict):
             raise LlmProviderUnavailableError("Il modello LLM ha restituito un payload strutturato non valido.")
         return payload
+
+    @staticmethod
+    def _fallback_text_from_invalid_json(raw_text: str) -> str:
+        raw_text = raw_text.strip()
+        match = re.search(r'"assistant_text"\s*:\s*"', raw_text)
+        if not match:
+            return raw_text
+
+        start = match.end()
+        index = start
+        escaped = False
+        while index < len(raw_text):
+            char = raw_text[index]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                break
+            index += 1
+
+        raw_value = raw_text[start:index]
+        while raw_value:
+            try:
+                return json.loads(f'"{raw_value}"').strip()
+            except json.JSONDecodeError:
+                raw_value = raw_value[:-1]
+        return raw_text
 
     @staticmethod
     def _resolve_final_intent(
@@ -1244,15 +1378,19 @@ class AssistantRuntime:
             "valori finali devono arrivare solo dai tool. "
             "Quando citi numeri, formatta in italiano e arrotonda a massimo 2 decimali. "
             "Non mostrare precisione grezza lunga da float. "
+            "Se il messaggio corrente nomina uno o più comuni e chiede situazione, dati, boschi, CO2 o analisi, "
+            "risolvi quei comuni e usa analyze_municipalities; non rispondere con l'ultima analisi salvo richiesta esplicita. "
             "Se utente cita comuni in modo parziale o ambiguo, usa prima search_municipalities. "
-            "Se utente chiede analisi su selezione corrente, usa analyze_current_selection solo se selezione disponibile. "
-            "Se utente chiede spiegazioni usa get_last_analysis. "
+            "Usa analyze_current_selection solo quando il messaggio dice selezione corrente, area corrente o mappa corrente. "
+            "Se utente chiede spiegazioni, dettagli o approfondimenti senza nominare nuovi comuni usa get_last_analysis. "
             "Se chiede valore economico con uno scenario usa calculate_economic_value. "
             "Se chiede confronto prezzi o scenari usa compare_economic_scenarios. "
             "Se chiede report o PDF usa prepare_report. Il tool apre il report esistente: non dichiarare mai PDF generato. "
             "Se chiede elenco storico o analisi recenti usa list_recent_analyses. "
             "Se chiede confronto di risultati recenti usa compare_recent_analyses: ultime due per default, ultime tre se richiesto. "
             "Se cita id, label o comune di analisi salvate usa compare_saved_analyses; se ambiguo lista le analisi e chiedi chiarimento. "
+            "Quando non servono altri tool, rispondi solo con JSON valido con i campi: intent, assistant_text, "
+            "needs_clarification, clarification_question, ui_actions, citations_internal, follow_up_suggestions. "
             "Classifica intenti finali in operazioni di dominio: analisi area/comuni, informazioni forestali, stima CO2, "
             "scenari economici, report, spiegazione risultati, guida workflow. "
             "Non inventare controlli, parametri, pulsanti o workflow non presenti nei tool. "
@@ -1298,6 +1436,7 @@ class AssistantRuntime:
                 "methodology": get_methodology(),
                 "rules": [
                     "Numeri GIS solo da tool backend.",
+                    "Comuni nominati nel messaggio corrente hanno priorita su lastAnalysis e selectedMunicipalities.",
                     "Selezione corrente disponibile solo se hasCurrentSelection e true.",
                     "Confronti recenti basati sulle ultime due analisi in sessione, o ultime N se esplicitato.",
                     "Confronti salvati possono risolvere id, label o comuni presenti nello storico.",
@@ -1372,7 +1511,11 @@ class AssistantRuntime:
             {
                 "type": "function",
                 "name": MODEL_TOOL_ANALYZE_MUNICIPALITIES,
-                "description": "Use this when utente chiede analisi di uno o più comuni già risolti in modo affidabile.",
+                "description": (
+                    "Use this when the current user message asks for analysis, situazione, quadro forestale, "
+                    "boschi, CO2 or dati for one or more resolved municipalities. This has priority over "
+                    "lastAnalysis when municipality_names come from the current message."
+                ),
                 "strict": True,
                 "parameters": {
                     "type": "object",
@@ -1389,7 +1532,10 @@ class AssistantRuntime:
             {
                 "type": "function",
                 "name": MODEL_TOOL_ANALYZE_CURRENT_SELECTION,
-                "description": "Use this when utente vuole analizzare la selezione mappa corrente già presente nel contesto UI.",
+                "description": (
+                    "Use this only when the current user message explicitly asks for selezione corrente, "
+                    "area corrente or mappa corrente already present in UI context."
+                ),
                 "strict": True,
                 "parameters": {
                     "type": "object",
@@ -1430,7 +1576,10 @@ class AssistantRuntime:
             {
                 "type": "function",
                 "name": MODEL_TOOL_GET_LAST_ANALYSIS,
-                "description": "Use this when utente chiede spiegazione o richiamo di ultima analisi.",
+                "description": (
+                    "Use this when utente chiede spiegazione o richiamo di ultima analisi. Do not use this "
+                    "when the current user message names a new municipality to analyze."
+                ),
                 "strict": True,
                 "parameters": {
                     "type": "object",
