@@ -151,3 +151,11 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
 AI_ASSISTANT_ENABLED = os.getenv("AI_ASSISTANT_ENABLED", "true").lower() == "true"
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", os.getenv("AI_LLM_PROVIDER", "openai")).strip().lower()
+LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").strip()
+LLM_TIMEOUT_SECONDS = os.getenv("LLM_TIMEOUT_SECONDS", "60").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini").strip()
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "").strip()

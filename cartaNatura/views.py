@@ -41,7 +41,11 @@ from cartaNatura.interaction import (
 from cartaNatura.interaction.analysis_store import (
     build_analysis_label,
 )
-from cartaNatura.interaction.llm import LlmProviderUnavailableError
+from cartaNatura.interaction.llm import (
+    LlmProviderUnavailableError,
+    get_llm_provider_status,
+    require_llm_provider_configured,
+)
 from cartaNatura.interaction.session import DjangoSessionStore
 from cartaNatura.interaction.ui_context import build_interaction_context
 from cartaNatura.interaction.voice import transcribe_uploaded_audio
@@ -188,6 +192,18 @@ def _serialize_interaction_response(response) -> dict[str, object]:
     }
 
 
+def _llm_status() -> dict[str, object]:
+    return get_llm_provider_status()
+
+
+def _llm_log_details(response) -> dict[str, object]:
+    return {
+        "providerMode": response.ui_hints.get("providerMode"),
+        "providerModel": response.ui_hints.get("providerModel"),
+        "needsClarification": response.ui_hints.get("needsClarification"),
+    }
+
+
 def _study_enabled(request) -> bool:
     return request.GET.get("study") == "1"
 
@@ -305,6 +321,7 @@ def _save_stream_session_if_needed(request) -> None:
 @ensure_csrf_cookie
 def index(request):
     asset_version = _build_asset_version()
+    llm_status = _llm_status()
     app_config = {
         "apiUrl": reverse("gis"),
         "interactionUrl": reverse("interact"),
@@ -320,9 +337,11 @@ def index(request):
             "zoom": 8,
         },
         "assistant": {
-            "enabled": settings.AI_ASSISTANT_ENABLED and bool(os.getenv("OPENAI_API_KEY", "").strip()),
+            "enabled": settings.AI_ASSISTANT_ENABLED and bool(llm_status["configured"]),
             "title": "Assistente Carta Natura",
-            "providerConfigured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+            "providerConfigured": bool(llm_status["configured"]),
+            "provider": llm_status["provider"],
+            "model": llm_status["model"],
             "examples": [
                 "Reset sessione",
             ],
@@ -515,9 +534,11 @@ def interact(request):
     if violation_response is not None:
         return violation_response
 
-    if not os.getenv("OPENAI_API_KEY", "").strip():
+    try:
+        require_llm_provider_configured()
+    except LlmProviderUnavailableError as exc:
         return JsonResponse(
-            {"error": "Assistente AI non configurato. Imposta OPENAI_API_KEY."},
+            {"error": str(exc)},
             status=503,
         )
 
@@ -540,6 +561,8 @@ def interact(request):
         details={
             "messageLength": len(interaction_request.input.primary_text()),
             "eventSource": "backend",
+            "providerMode": _llm_status()["provider"],
+            "providerModel": _llm_status()["model"],
         },
     )
     logger.info(
@@ -607,8 +630,7 @@ def interact(request):
             "scenarioKey": (response.economic_result or {}).get("scenarioKey"),
             "priceEurPerTon": (response.economic_result or {}).get("priceEurPerTon"),
             "totalValueEur": (response.economic_result or {}).get("totalValueEur"),
-            "providerMode": response.ui_hints.get("providerMode"),
-            "needsClarification": response.ui_hints.get("needsClarification"),
+            **_llm_log_details(response),
             "eventSource": "backend",
         },
     )
@@ -631,9 +653,11 @@ def interact_stream(request):
     if violation_response is not None:
         return violation_response
 
-    if not os.getenv("OPENAI_API_KEY", "").strip():
+    try:
+        require_llm_provider_configured()
+    except LlmProviderUnavailableError as exc:
         return JsonResponse(
-            {"error": "Assistente AI non configurato. Imposta OPENAI_API_KEY."},
+            {"error": str(exc)},
             status=503,
         )
 
@@ -656,6 +680,8 @@ def interact_stream(request):
         details={
             "messageLength": len(interaction_request.input.primary_text()),
             "eventSource": "backend",
+            "providerMode": _llm_status()["provider"],
+            "providerModel": _llm_status()["model"],
         },
     )
     logger.info(
@@ -744,8 +770,7 @@ def interact_stream(request):
                         "totalValueEur": (final_response.economic_result or {}).get(
                             "totalValueEur"
                         ),
-                        "providerMode": final_response.ui_hints.get("providerMode"),
-                        "needsClarification": final_response.ui_hints.get("needsClarification"),
+                        **_llm_log_details(final_response),
                         "eventSource": "backend",
                     },
                 )

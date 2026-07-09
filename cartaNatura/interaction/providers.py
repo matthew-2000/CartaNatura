@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class LlmProvider(Protocol):
+    provider_name: str
+    model: str
+
     def complete(self, prompt: str) -> str:
         """Generate text from a prompt."""
+
+    def create_response(self, **payload: Any) -> dict[str, Any]:
+        """Generate a normalized assistant response."""
+
+    def stream_response(self, **payload: Any):
+        """Stream a normalized assistant response."""
 
 
 class SpeechToTextProvider(Protocol):

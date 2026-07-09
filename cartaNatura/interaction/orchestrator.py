@@ -8,7 +8,7 @@ from .analysis_store import AnalysisStore, NullAnalysisStore
 from .assistant_runtime import (
     RULE_BASED_CHAT_INTENTS,
     AssistantToolExecutor,
-    OpenAiAssistantRuntime,
+    AssistantRuntime,
 )
 from .handlers import (
     AnalyzeMunicipalitiesHandler,
@@ -36,7 +36,7 @@ class InteractionOrchestrator:
         self,
         resolver: IntentResolver,
         handlers: tuple[CommandHandler, ...],
-        chat_runtime: OpenAiAssistantRuntime | None = None,
+        chat_runtime: AssistantRuntime | None = None,
         session_store: SessionStore | None = None,
         analysis_store: AnalysisStore | None = None,
     ):
@@ -155,7 +155,7 @@ def build_default_orchestrator(
     tool_registry = build_default_tool_registry(analysis_store)
     chat_runtime = None
     if llm_provider is not None and hasattr(llm_provider, "create_response"):
-        chat_runtime = OpenAiAssistantRuntime(
+        chat_runtime = AssistantRuntime(
             llm_provider=llm_provider,
             tool_executor=AssistantToolExecutor(
                 tool_registry=tool_registry,

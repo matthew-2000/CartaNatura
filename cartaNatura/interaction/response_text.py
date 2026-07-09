@@ -7,6 +7,10 @@ from .assistant_text import AssistantTextResult
 from .providers import LlmProvider
 
 
+def _provider_mode(llm_provider: LlmProvider) -> str:
+    return str(getattr(llm_provider, "provider_name", "openai"))
+
+
 def build_analysis_reply(
     *,
     requested_municipalities: list[str],
@@ -24,7 +28,7 @@ def build_analysis_reply(
 
     return AssistantTextResult(
         text=llm_provider.complete(prompt),
-        provider_mode="openai",
+        provider_mode=_provider_mode(llm_provider),
     )
 
 
@@ -48,7 +52,7 @@ def build_explanation_reply(
 
     return AssistantTextResult(
         text=llm_provider.complete(prompt),
-        provider_mode="openai",
+        provider_mode=_provider_mode(llm_provider),
     )
 
 
@@ -67,5 +71,5 @@ def build_comparison_reply(
 
     return AssistantTextResult(
         text=llm_provider.complete(prompt),
-        provider_mode="openai",
+        provider_mode=_provider_mode(llm_provider),
     )

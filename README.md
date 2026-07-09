@@ -23,7 +23,7 @@ La mappa resta l'ambiente principale per selezionare aree, verificare risultati,
 - GeoPandas / Pandas / Shapely
 - Leaflet + Leaflet Draw
 - JavaScript modulare vanilla
-- OpenAI Responses API per l'assistente, quando configurata
+- provider LLM configurabile: OpenAI remoto oppure Ollama locale
 
 ## Avvio Locale
 
@@ -57,12 +57,37 @@ Variabili principali:
 - `DJANGO_ALLOWED_HOSTS`
 - `DJANGO_CORS_ALLOWED_ORIGINS`
 - `AI_ASSISTANT_ENABLED`
+- `LLM_PROVIDER`: `openai` oppure `ollama`
+- `LLM_MODEL`: override generico del modello selezionato
+- `LLM_BASE_URL`: override generico dell'URL provider
+- `LLM_TIMEOUT_SECONDS`
 - `OPENAI_API_KEY`
-- `OPENAI_MODEL`
+- `OPENAI_MODEL`: default `gpt-5-mini`, usato se `LLM_PROVIDER=openai` e `LLM_MODEL` è vuoto
 - `OPENAI_TRANSCRIPTION_MODEL`
 - `OPENAI_BASE_URL`
+- `OLLAMA_MODEL`: richiesto se `LLM_PROVIDER=ollama` e `LLM_MODEL` è vuoto
+- `OLLAMA_BASE_URL`: richiesto se `LLM_PROVIDER=ollama` e `LLM_BASE_URL` è vuoto
 
 Gli scenari di prezzo CO2 sono configurati in [cartaNatura/domain/economics.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/domain/economics.py:8) come `PRICE_OPTIONS` e inviati al frontend via config applicativa.
+
+Esempio OpenAI:
+
+```env
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+Esempio Ollama:
+
+```env
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.1
+```
+
+La scelta del provider è esplicita: se il provider selezionato è incompleto o non disponibile, l'app restituisce un errore controllato e non passa automaticamente all'altro provider.
 
 ## Architettura
 

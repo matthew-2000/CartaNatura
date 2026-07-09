@@ -410,6 +410,7 @@ def _sanitize_details(details: dict[str, Any]) -> dict[str, Any]:
         "messageLength",
         "transcriptLength",
         "providerMode",
+        "providerModel",
         "needsClarification",
         "toolName",
         "toolCallId",

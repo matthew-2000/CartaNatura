@@ -67,7 +67,7 @@ Dataset locali
 - [interaction/assistant_runtime.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction/assistant_runtime.py:1)
 - intenti di dominio
 - fast path deterministici
-- runtime LLM con tool use
+- runtime LLM provider-neutral con tool use
 - stato conversazionale in sessione Django
 
 ### Supporto Vocale
@@ -113,7 +113,7 @@ flowchart TD
   B --> C["Intent resolver"]
   C --> D{"Serve LLM?"}
   D -->|no| E["Handler deterministico"]
-  D -->|si| F["Responses API + tool registry"]
+  D -->|si| F["Provider LLM configurato + tool registry"]
   E --> G["Analisi GIS"]
   F --> G
   G --> H["Risposta testuale + uiHints"]
@@ -123,7 +123,8 @@ flowchart TD
 ## Regole
 
 - Numeri GIS e CO2 arrivano solo da servizi deterministici.
-- LLM interpreta richieste, guida workflow e sintetizza risultati.
+- LLM interpreta richieste, guida workflow e sintetizza risultati tramite provider configurato (`openai` o `ollama`).
+- Il provider selezionato, il modello e gli identificativi di turno sono isolati nel layer `interaction/llm.py` e nel runtime conversazionale; orchestratore, tool e servizi GIS non dipendono da OpenAI.
 - Ogni risultato prodotto dalla conversazione deve restare verificabile su mappa.
 - Le view Django restano sottili.
 - I dataset locali sono caricati con caching.

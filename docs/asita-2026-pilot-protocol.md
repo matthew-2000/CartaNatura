@@ -459,7 +459,7 @@ Sessione non valida:
 Pre-pilot:
 
 - app avviata con `?study=1`;
-- `OPENAI_API_KEY` configurata se si testa chat/voce;
+- provider conversazionale configurato (`LLM_PROVIDER=openai` con `OPENAI_API_KEY`, oppure `LLM_PROVIDER=ollama` con `OLLAMA_BASE_URL` e modello); `OPENAI_API_KEY` resta necessaria se si testa la voce;
 - console operatore visibile;
 - lista task ASITA T1-T6 visibile;
 - export JSON/JSONL provato;

@@ -17,7 +17,7 @@ def elapsed_ms(started_at: float) -> int:
     return max(0, round((time.perf_counter() - started_at) * 1000))
 
 
-def summarize_openai_usage(response_body: dict[str, Any]) -> dict[str, int | None]:
+def summarize_provider_usage(response_body: dict[str, Any]) -> dict[str, int | None]:
     usage = response_body.get("usage")
     if not isinstance(usage, dict):
         return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
@@ -35,8 +35,15 @@ def summarize_openai_usage(response_body: dict[str, Any]) -> dict[str, int | Non
     }
 
 
+def summarize_openai_usage(response_body: dict[str, Any]) -> dict[str, int | None]:
+    """Backward-compatible alias for existing tests and callers."""
+    return summarize_provider_usage(response_body)
+
+
 def log_provider_call(
     *,
+    provider: str,
+    model: str | None,
     session_id: str,
     response_body: dict[str, Any] | None,
     previous_response_id: str | None,
@@ -45,12 +52,14 @@ def log_provider_call(
     status: str,
     error: str | None = None,
 ) -> None:
-    usage = summarize_openai_usage(response_body or {})
+    usage = summarize_provider_usage(response_body or {})
     log = logger.warning if status != "ok" else logger.info
     log(
-        "assistant.provider.%s session=%s response_id=%s previous_response_id=%s "
+        "assistant.provider.%s provider=%s model=%s session=%s response_id=%s previous_response_id=%s "
         "streaming=%s duration_ms=%s input_tokens=%s output_tokens=%s total_tokens=%s error=%s",
         status,
+        provider,
+        model,
         session_id,
         (response_body or {}).get("id"),
         previous_response_id,

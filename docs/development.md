@@ -37,10 +37,18 @@ Regole:
 - mantenere tool deterministici per numeri GIS
 - non aggiungere azioni UI fuori allowlist server/client
 - testare fast path rule-based e runtime LLM mockato
+- testare selezione provider LLM (`openai`/`ollama`), tool calling e streaming con provider mockato
 
 ## Modifica Voce
 
 Il flusso vocale usa `MediaRecorder` lato browser e OpenAI Audio Transcriptions lato Django.
+
+Il flusso conversazionale testuale usa il provider selezionato con `LLM_PROVIDER`:
+
+- `openai`: richiede `OPENAI_API_KEY`; modello da `LLM_MODEL` o `OPENAI_MODEL`; URL da `LLM_BASE_URL` o `OPENAI_BASE_URL`.
+- `ollama`: richiede `LLM_MODEL` o `OLLAMA_MODEL`; URL da `LLM_BASE_URL` o `OLLAMA_BASE_URL`.
+
+Non aggiungere fallback impliciti tra provider. Errori di configurazione o incompatibilità modello devono restare visibili e testabili.
 
 Variabili:
 

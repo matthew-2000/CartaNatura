@@ -1,4 +1,4 @@
-"""OpenAI Responses-based assistant runtime for conversational turns."""
+"""Provider-neutral assistant runtime for conversational turns."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from .models import (
     SessionContext,
 )
 from .observability import elapsed_ms, log_provider_call, log_tool_call, start_timer
+from .llm import LlmProviderUnavailableError
 from .tools import ToolName
 from .tools.methodology import get_methodology
 from .tools.registry import ToolRegistry
@@ -330,7 +331,7 @@ class AssistantToolExecutor:
         )
 
 
-class OpenAiAssistantRuntime:
+class AssistantRuntime:
     def __init__(
         self,
         *,
@@ -339,6 +340,19 @@ class OpenAiAssistantRuntime:
     ):
         self._llm_provider = llm_provider
         self._tool_executor = tool_executor
+
+    @property
+    def provider_name(self) -> str:
+        return str(getattr(self._llm_provider, "provider_name", "openai"))
+
+    @property
+    def provider_model(self) -> str | None:
+        model = getattr(self._llm_provider, "model", None)
+        return str(model) if model else None
+
+    @property
+    def runtime_name(self) -> str:
+        return str(getattr(self._llm_provider, "runtime_name", "responses_api"))
 
     def handle(
         self,
@@ -379,10 +393,10 @@ class OpenAiAssistantRuntime:
         }
         response_body = yield from self._stream_response_body_events(
             request=request,
-            payload=self._build_openai_request_payload(
+            payload=self._build_model_request_payload(
                 request=request,
                 session_context=session_context,
-                response_input=self._build_openai_input(
+                response_input=self._build_model_input(
                     request=request,
                     session_context=session_context,
                 ),
@@ -462,7 +476,7 @@ class OpenAiAssistantRuntime:
             }
             response_body = yield from self._stream_response_body_events(
                 request=request,
-                payload=self._build_openai_request_payload(
+                payload=self._build_model_request_payload(
                     request=request,
                     session_context=session_context,
                     response_input=tool_outputs,
@@ -503,7 +517,8 @@ class OpenAiAssistantRuntime:
             commands=(InteractionCommand(intent=InteractionIntent.UNKNOWN),),
             ui_hints={
                 "mode": "assistant_runtime",
-                "providerMode": "openai",
+                "providerMode": self.provider_name,
+                "providerModel": self.provider_model,
             },
             audio_output_text="Nessun input interpretabile ricevuto.",
             updated_context=self._build_updated_context(
@@ -514,6 +529,7 @@ class OpenAiAssistantRuntime:
                 latest_analysis=None,
                 latest_selection_payload=None,
                 clears_context=False,
+                assistant_text="Nessun input interpretabile ricevuto.",
             ),
         )
 
@@ -527,7 +543,7 @@ class OpenAiAssistantRuntime:
         response_body = self._request_response_body(
             request=request,
             session_context=session_context,
-            response_input=self._build_openai_input(
+            response_input=self._build_model_input(
                 request=request,
                 session_context=session_context,
             ),
@@ -635,7 +651,7 @@ class OpenAiAssistantRuntime:
         previous_response_id: str | None,
         event_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict[str, Any]:
-        payload = self._build_openai_request_payload(
+        payload = self._build_model_request_payload(
             request=request,
             session_context=session_context,
             response_input=response_input,
@@ -647,6 +663,8 @@ class OpenAiAssistantRuntime:
                 response_body = self._llm_provider.create_response(**payload)
             except Exception as exc:
                 log_provider_call(
+                    provider=self.provider_name,
+                    model=self.provider_model,
                     session_id=request.session_id,
                     response_body=None,
                     previous_response_id=previous_response_id,
@@ -657,6 +675,8 @@ class OpenAiAssistantRuntime:
                 )
                 raise
             log_provider_call(
+                provider=self.provider_name,
+                model=self.provider_model,
                 session_id=request.session_id,
                 response_body=response_body,
                 previous_response_id=previous_response_id,
@@ -753,6 +773,8 @@ class OpenAiAssistantRuntime:
             final_payload = final_response.model_dump(mode="python")
 
         log_provider_call(
+            provider=self.provider_name,
+            model=self.provider_model,
             session_id=request.session_id,
             response_body=final_payload,
             previous_response_id=payload.get("previous_response_id"),
@@ -803,6 +825,8 @@ class OpenAiAssistantRuntime:
             final_payload = final_response.model_dump(mode="python")
 
         log_provider_call(
+            provider=self.provider_name,
+            model=self.provider_model,
             session_id=request.session_id,
             response_body=final_payload,
             previous_response_id=payload.get("previous_response_id"),
@@ -818,7 +842,7 @@ class OpenAiAssistantRuntime:
             return "L'assistente sta scrivendo la risposta finale."
         return "L'assistente sta interpretando la richiesta."
 
-    def _build_openai_input(
+    def _build_model_input(
         self,
         *,
         request: InteractionRequest,
@@ -839,7 +863,7 @@ class OpenAiAssistantRuntime:
             }
         ]
 
-    def _build_openai_request_payload(
+    def _build_model_request_payload(
         self,
         *,
         request: InteractionRequest,
@@ -847,7 +871,6 @@ class OpenAiAssistantRuntime:
         response_input: list[dict[str, Any]],
         previous_response_id: str | None,
     ) -> dict[str, Any]:
-        del request, session_context
         return {
             "instructions": self._build_instructions(),
             "input": response_input,
@@ -855,6 +878,7 @@ class OpenAiAssistantRuntime:
             "tool_choice": "auto",
             "parallel_tool_calls": False,
             "previous_response_id": previous_response_id,
+            "conversation_messages": self._conversation_messages(session_context),
             "text": {
                 "format": self._build_final_response_format(),
                 "verbosity": "low",
@@ -923,6 +947,7 @@ class OpenAiAssistantRuntime:
             latest_analysis=loop_result.latest_analysis,
             latest_selection_payload=loop_result.latest_selection_payload,
             clears_context=loop_result.clears_context,
+            assistant_text=message_text,
         )
 
         return InteractionResponse(
@@ -934,8 +959,9 @@ class OpenAiAssistantRuntime:
             report_context=loop_result.latest_report_context,
             ui_hints={
                 "mode": final_intent.value,
-                "providerMode": "openai",
-                "runtime": "responses_api",
+                "providerMode": self.provider_name,
+                "providerModel": self.provider_model,
+                "runtime": self.runtime_name,
                 "needsClarification": bool(final_payload.get("needs_clarification")),
                 "followUpSuggestions": follow_up_suggestions,
                 "citationsInternal": final_payload.get("citations_internal", []),
@@ -1075,15 +1101,24 @@ class OpenAiAssistantRuntime:
         latest_analysis: dict[str, Any] | None,
         latest_selection_payload: dict[str, Any] | None,
         clears_context: bool,
+        assistant_text: str,
     ) -> SessionContext:
         if clears_context or final_intent is InteractionIntent.RESET_SESSION:
             return SessionContext(last_intent=InteractionIntent.RESET_SESSION)
 
         metadata = dict(session_context.metadata)
         if response_id:
-            metadata["openai_previous_response_id"] = response_id
-        elif "openai_previous_response_id" in metadata:
+            metadata["provider_previous_response_id"] = response_id
+        elif "provider_previous_response_id" in metadata:
+            metadata.pop("provider_previous_response_id")
+        if "openai_previous_response_id" in metadata:
             metadata.pop("openai_previous_response_id")
+
+        metadata["conversation_messages"] = self._updated_conversation_messages(
+            session_context=session_context,
+            request=request,
+            assistant_text=assistant_text,
+        )
 
         return SessionContext(
             selection_payload=(
@@ -1098,10 +1133,44 @@ class OpenAiAssistantRuntime:
 
     @staticmethod
     def _previous_response_id(session_context: SessionContext) -> str | None:
-        previous_response_id = session_context.metadata.get("openai_previous_response_id")
+        previous_response_id = (
+            session_context.metadata.get("provider_previous_response_id")
+            or session_context.metadata.get("openai_previous_response_id")
+        )
         if isinstance(previous_response_id, str) and previous_response_id.strip():
             return previous_response_id
         return None
+
+    @staticmethod
+    def _conversation_messages(session_context: SessionContext) -> list[dict[str, str]]:
+        messages = session_context.metadata.get("conversation_messages")
+        if not isinstance(messages, list):
+            return []
+        normalized: list[dict[str, str]] = []
+        for item in messages[-16:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "")
+            content = str(item.get("content") or "").strip()
+            if role in {"user", "assistant", "tool"} and content:
+                normalized.append({"role": role, "content": content})
+        return normalized
+
+    @classmethod
+    def _updated_conversation_messages(
+        cls,
+        *,
+        session_context: SessionContext,
+        request: InteractionRequest,
+        assistant_text: str,
+    ) -> list[dict[str, str]]:
+        messages = cls._conversation_messages(session_context)
+        user_text = request.input.primary_text()
+        if user_text:
+            messages.append({"role": "user", "content": user_text})
+        if assistant_text:
+            messages.append({"role": "assistant", "content": assistant_text})
+        return messages[-16:]
 
     @staticmethod
     def _extract_tool_calls(response_body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1140,11 +1209,16 @@ class OpenAiAssistantRuntime:
                     break
 
         if not isinstance(raw_text, str) or not raw_text.strip():
-            raise ValueError("OpenAI provider returned empty structured response.")
+            raise LlmProviderUnavailableError("Il modello LLM ha restituito una risposta strutturata vuota.")
 
-        payload = json.loads(raw_text)
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise LlmProviderUnavailableError(
+                "Il modello LLM non ha rispettato il formato JSON richiesto."
+            ) from exc
         if not isinstance(payload, dict):
-            raise ValueError("OpenAI provider returned invalid structured payload.")
+            raise LlmProviderUnavailableError("Il modello LLM ha restituito un payload strutturato non valido.")
         return payload
 
     @staticmethod

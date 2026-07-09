@@ -34,8 +34,13 @@ class CommandHandler(Protocol):
 
 def _require_llm_provider(llm_provider: LlmProvider | None) -> LlmProvider:
     if llm_provider is None:
-        raise ValueError("Assistente AI non configurato. Imposta OPENAI_API_KEY.")
+        raise ValueError("Assistente AI non configurato. Verifica LLM_PROVIDER e le variabili del provider selezionato.")
     return llm_provider
+
+
+def _provider_model(llm_provider: LlmProvider) -> str | None:
+    model = getattr(llm_provider, "model", None)
+    return str(model) if model else None
 
 
 class AnalyzeSelectionHandler:
@@ -96,6 +101,7 @@ class AnalyzeSelectionHandler:
             )
             messages = (InteractionMessage(role="assistant", text=assistant_result.text),)
             ui_hints["providerMode"] = assistant_result.provider_mode
+            ui_hints["providerModel"] = _provider_model(self._llm_provider)
             audio_output_text = assistant_result.text
 
         return InteractionResponse(
@@ -178,6 +184,7 @@ class AnalyzeMunicipalitiesHandler:
                 "channel": request.channel.value,
                 "mode": "text_municipality_analysis",
                 "providerMode": assistant_result.provider_mode,
+                "providerModel": _provider_model(self._llm_provider),
             },
             audio_output_text=assistant_result.text,
             updated_context=SessionContext(
@@ -229,6 +236,7 @@ class ExplainLastAnalysisHandler:
             ui_hints={
                 "mode": "explain_last_analysis",
                 "providerMode": assistant_result.provider_mode,
+                "providerModel": _provider_model(self._llm_provider),
             },
             audio_output_text=assistant_result.text,
             updated_context=SessionContext(
@@ -284,6 +292,7 @@ class CompareAnalysesHandler:
             ui_hints={
                 "mode": "compare_analyses",
                 "providerMode": assistant_result.provider_mode,
+                "providerModel": _provider_model(self._llm_provider),
             },
             audio_output_text=assistant_result.text,
             updated_context=SessionContext(

@@ -28,6 +28,12 @@ from cartaNatura.interaction import (
 )
 from cartaNatura.interaction.analysis_store import StoredAnalysis, create_stored_analysis
 from cartaNatura.interaction.observability import summarize_openai_usage
+from cartaNatura.interaction.llm import (
+    LlmProviderConfigurationError,
+    OllamaChatLlmProvider,
+    build_optional_llm_provider,
+    get_llm_provider_status,
+)
 from cartaNatura.interaction.orchestrator import build_default_orchestrator
 from cartaNatura.interaction.resolvers import RuleBasedIntentResolver
 from cartaNatura.interaction.session import InMemorySessionStore
@@ -174,6 +180,96 @@ class FakeStreamingProvider:
     def complete(self, prompt: str) -> str:
         del prompt
         raise AssertionError("complete() should not be used in streaming runtime tests.")
+
+
+class FakeOllamaStyleProvider(FakeResponsesProvider):
+    provider_name = "ollama"
+    runtime_name = "ollama_chat"
+    model = "llama3.1"
+
+
+class LlmProviderConfigurationTests(SimpleTestCase):
+    def test_selects_openai_provider_from_configuration(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_PROVIDER": "openai",
+                "LLM_MODEL": "",
+                "LLM_BASE_URL": "",
+                "OPENAI_API_KEY": "test-key",
+                "OPENAI_MODEL": "gpt-test",
+                "OPENAI_BASE_URL": "https://example.test/v1",
+            },
+        ):
+            provider = build_optional_llm_provider()
+            status = get_llm_provider_status()
+
+        self.assertEqual(provider.provider_name, "openai")
+        self.assertEqual(provider.model, "gpt-test")
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["provider"], "openai")
+
+    def test_selects_ollama_provider_from_configuration(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_PROVIDER": "ollama",
+                "LLM_MODEL": "",
+                "LLM_BASE_URL": "",
+                "OLLAMA_MODEL": "llama3.1",
+                "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+                "OPENAI_API_KEY": "test-key",
+            },
+        ):
+            provider = build_optional_llm_provider()
+            status = get_llm_provider_status()
+
+        self.assertEqual(provider.provider_name, "ollama")
+        self.assertEqual(provider.model, "llama3.1")
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["provider"], "ollama")
+
+    def test_selected_ollama_provider_does_not_fallback_to_openai(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_PROVIDER": "ollama",
+                "LLM_MODEL": "",
+                "LLM_BASE_URL": "",
+                "OLLAMA_MODEL": "",
+                "OLLAMA_BASE_URL": "",
+                "OPENAI_API_KEY": "test-key",
+            },
+        ):
+            status = get_llm_provider_status()
+            with self.assertRaises(LlmProviderConfigurationError):
+                build_optional_llm_provider()
+
+        self.assertFalse(status["configured"])
+        self.assertIn("Ollama", status["error"])
+
+    def test_ollama_normalizes_tool_calls_to_runtime_contract(self):
+        body = OllamaChatLlmProvider._normalize_chat_response(
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "id": "tool_1",
+                            "function": {
+                                "name": "get_methodology",
+                                "arguments": {},
+                            },
+                        }
+                    ]
+                },
+                "prompt_eval_count": 3,
+                "eval_count": 2,
+            }
+        )
+
+        self.assertEqual(body["output"][0]["type"], "function_call")
+        self.assertEqual(body["output"][0]["name"], "get_methodology")
+        self.assertEqual(body["usage"]["total_tokens"], 5)
 
 
 class PayloadParsingTests(SimpleTestCase):
@@ -806,7 +902,7 @@ class ViewSmokeTests(SimpleTestCase):
             geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
             crs="EPSG:4326",
         )
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"}):
             response = Client().post(
                 "/progettoGIS/cartaNatura/interact",
                 data='{"message": "Analizza Avellino e Benevento"}',
@@ -831,7 +927,7 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_interact_returns_503_without_openai_key(self):
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": ""}):
             response = Client().post(
                 "/progettoGIS/cartaNatura/interact",
                 data='{"message": "Analizza Avellino"}',
@@ -982,7 +1078,7 @@ class ViewSmokeTests(SimpleTestCase):
                 content_type="application/json",
             ).json()["event"]
 
-            with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"}):
                 blocked = client.post(
                     "/progettoGIS/cartaNatura/interact",
                     data='{"message":"analizza Avellino"}',
@@ -1022,7 +1118,7 @@ class ViewSmokeTests(SimpleTestCase):
                 data='{"areas":[]}',
                 content_type="application/json",
             )
-            with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+            with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": ""}):
                 allowed_channel = client.post(
                     "/progettoGIS/cartaNatura/interact",
                     data='{"message":"analizza Avellino"}',
@@ -1047,7 +1143,7 @@ class ViewSmokeTests(SimpleTestCase):
     def test_voice_transcribe_returns_transcript(self, transcribe_uploaded_audio):
         transcribe_uploaded_audio.return_value = "analizza Avellino"
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"}):
             response = Client().post(
                 "/progettoGIS/cartaNatura/voice/transcribe",
                 data={
@@ -1096,7 +1192,7 @@ class ViewSmokeTests(SimpleTestCase):
             ]
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"}):
             response = Client().post(
                 "/progettoGIS/cartaNatura/interact/stream",
                 data='{"message": "ciao"}',
@@ -1564,7 +1660,7 @@ class InteractionOrchestratorTests(SimpleTestCase):
             geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
             crs="EPSG:4326",
         )
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": ""}):
             orchestrator = build_default_orchestrator(
                 session_store=InMemorySessionStore(),
                 llm_provider=None,
@@ -1580,6 +1676,63 @@ class InteractionOrchestratorTests(SimpleTestCase):
 
 
 class OpenAiAssistantRuntimeTests(SimpleTestCase):
+    def test_runtime_uses_provider_identity_and_history_with_ollama(self):
+        provider = FakeOllamaStyleProvider(
+            [
+                {
+                    "id": "ollama_turn_1",
+                    "output_text": (
+                        '{"intent":"guide_workflow","assistant_text":"Prima risposta.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],'
+                        '"citations_internal":[],"follow_up_suggestions":[]}'
+                    ),
+                    "output": [],
+                },
+                {
+                    "id": "ollama_turn_2",
+                    "output_text": (
+                        '{"intent":"guide_workflow","assistant_text":"Seconda risposta.",'
+                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],'
+                        '"citations_internal":[],"follow_up_suggestions":[]}'
+                    ),
+                    "output": [],
+                },
+            ]
+        )
+        session_store = InMemorySessionStore()
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            llm_provider=provider,
+            analysis_store=InMemoryAnalysisStore(),
+        )
+
+        first = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="ollama-history-session",
+                input=InteractionInput(text="ciao"),
+            )
+        )
+        second = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="ollama-history-session",
+                input=InteractionInput(text="continua"),
+            )
+        )
+
+        self.assertEqual(first.ui_hints["providerMode"], "ollama")
+        self.assertEqual(first.ui_hints["providerModel"], "llama3.1")
+        self.assertEqual(first.ui_hints["runtime"], "ollama_chat")
+        self.assertEqual(second.messages[0].text, "Seconda risposta.")
+        self.assertEqual(
+            provider.calls[1]["conversation_messages"],
+            [
+                {"role": "user", "content": "ciao"},
+                {"role": "assistant", "content": "Prima risposta."},
+            ],
+        )
+
     def test_runtime_uses_authoritative_economic_tools_and_report_text(self):
         store = InMemoryAnalysisStore()
         saved = store.save(
@@ -1789,7 +1942,7 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
             ["Avellino", "Benevento"],
         )
         self.assertEqual(
-            session_store.load("runtime-stream-session-1").metadata["openai_previous_response_id"],
+            session_store.load("runtime-stream-session-1").metadata["provider_previous_response_id"],
             "resp_stream_final_1",
         )
         self.assertNotIn("clipped", provider.stream_calls[1]["input"][0]["output"])
@@ -1870,7 +2023,7 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
         )
         self.assertEqual(response.ui_hints["runtime"], "responses_api")
         self.assertEqual(
-            session_store.load("runtime-session-1").metadata["openai_previous_response_id"],
+            session_store.load("runtime-session-1").metadata["provider_previous_response_id"],
             "resp_final_1",
         )
         self.assertEqual(provider.calls[1]["previous_response_id"], "resp_tool_1")
@@ -2805,7 +2958,7 @@ class VoiceTranscriptionTests(SimpleTestCase):
             content_type="audio/webm",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"}):
             transcript = transcribe_uploaded_audio(audio)
 
         self.assertEqual(transcript, "analizza Avellino")
