@@ -42,6 +42,18 @@ const ALLOWED_ASSISTANT_UI_ACTIONS = new Set([
   "show_legend",
   "focus_map_results",
 ]);
+const TOOL_OPERATIONAL_VIEWS = new Map([
+  ["analyze_municipalities", "report"],
+  ["analyze_current_selection", "report"],
+  ["calculate_economic_value", "report"],
+  ["compare_economic_scenarios", "report"],
+  ["get_last_analysis", "report"],
+  ["prepare_report", "report"],
+  ["compare_analyses", "comparison"],
+  ["compare_recent_analyses", "comparison"],
+  ["compare_saved_analyses", "comparison"],
+  ["list_recent_analyses", "history"],
+]);
 const PANEL_COPY = {
   municipality: {
     title: "Selezione area",
@@ -171,6 +183,8 @@ const elements = {
   assistantTitle: document.querySelector(".assistant-panel-title"),
   assistantStatus: document.getElementById("assistantStatus"),
   assistantResizeHandle: document.getElementById("assistantResizeHandle"),
+  workspaceResizeHandle: document.getElementById("workspaceResizeHandle"),
+  collapseWorkspaceButton: document.getElementById("collapseWorkspacePanel"),
   assistantMessages: document.getElementById("assistantMessages"),
   assistantForm: document.getElementById("assistantForm"),
   assistantInput: document.getElementById("assistantInput"),
@@ -185,6 +199,9 @@ const elements = {
   closeAppInfoButton: document.getElementById("closeInfoApp"),
   workspacePanelTitle: document.getElementById("workspacePanelTitle"),
   workspacePanelDescription: document.getElementById("workspacePanelDescription"),
+  selectionMunicipalityCount: document.getElementById("selectionMunicipalityCount"),
+  selectionGeometryCount: document.getElementById("selectionGeometryCount"),
+  selectionRunAnalysis: document.getElementById("selectionRunAnalysis"),
   statusContent: document.getElementById("statusContent"),
   legendContent: document.getElementById("legendContent"),
   statusPanel: document.getElementById("mapStatusPanel"),
@@ -237,9 +254,20 @@ function initializeAssistantResize(mapController) {
   workspaceUi.initializeResize(mapController);
 }
 
+function expandOperationalPanel() {
+  document.body.classList.remove("operational-panel-collapsed");
+  elements.collapseWorkspaceButton?.setAttribute("aria-expanded", "true");
+}
+
+function toggleOperationalPanel(mapController = null) {
+  const collapsed = document.body.classList.toggle("operational-panel-collapsed");
+  elements.collapseWorkspaceButton?.setAttribute("aria-expanded", String(!collapsed));
+  syncSidePanelLayout(mapController);
+}
+
 function openPopup(mapController, { source = "ui" } = {}) {
+  expandOperationalPanel();
   closeMunicipalityPanel();
-  closeAssistantPanel();
   closeHistoryPanel();
   closeAppInfo();
   elements.popup.classList.add("open-popup");
@@ -271,7 +299,6 @@ function closePopup(mapController) {
 function openAppInfo(mapController) {
   closeMunicipalityPanel();
   closePopup();
-  closeAssistantPanel();
   closeHistoryPanel();
   elements.appInfoModal.classList.add("open-infoApp");
   elements.appInfoModal.setAttribute("aria-hidden", "false");
@@ -290,9 +317,6 @@ function openAssistantPanel(mapController = null) {
   if (!assistantConfig.enabled) {
     return;
   }
-  closeMunicipalityPanel();
-  closePopup();
-  closeHistoryPanel();
   closeAppInfo();
   elements.assistantPanel.classList.add("is-open");
   elements.assistantPanel.setAttribute("aria-hidden", "false");
@@ -302,7 +326,8 @@ function openAssistantPanel(mapController = null) {
   syncSidePanelLayout(mapController);
 }
 
-function closeAssistantPanel(mapController = null) {
+function closeAssistantPanel(mapController = null, { force = false } = {}) {
+  if (!force && getActiveStudyCondition() === "conversational") return;
   elements.assistantPanel.classList.remove("is-open");
   elements.assistantPanel.setAttribute("aria-hidden", "true");
   document.body.classList.remove("assistant-panel-open");
@@ -311,9 +336,9 @@ function closeAssistantPanel(mapController = null) {
 }
 
 function openHistoryPanel(mapController = null) {
+  expandOperationalPanel();
   closeMunicipalityPanel();
   closePopup();
-  closeAssistantPanel();
   closeAppInfo();
   elements.analysisHistoryPanel.classList.add("is-open");
   elements.analysisHistoryPanel.setAttribute("aria-hidden", "false");
@@ -365,8 +390,8 @@ function syncMunicipalityPanelState() {
 
 function toggleMunicipalityPanel(mapController = null) {
   const shouldOpen = !elements.municipalityPanel.classList.contains("visualizzaListaComuni");
+  if (shouldOpen) expandOperationalPanel();
   closePopup();
-  closeAssistantPanel();
   closeHistoryPanel();
   closeAppInfo();
   elements.municipalityPanel.classList.toggle("visualizzaListaComuni", shouldOpen);
@@ -378,6 +403,17 @@ function toggleMunicipalityPanel(mapController = null) {
 function closeMunicipalityPanel(mapController = null) {
   elements.municipalityPanel.classList.remove("visualizzaListaComuni");
   elements.selectMunicipalityButton?.setAttribute("aria-expanded", "false");
+  syncMunicipalityPanelState();
+  syncSidePanelLayout(mapController);
+}
+
+function openSelectionPanel(mapController = null) {
+  expandOperationalPanel();
+  closePopup();
+  closeHistoryPanel();
+  closeAppInfo();
+  elements.municipalityPanel.classList.add("visualizzaListaComuni");
+  elements.selectMunicipalityButton?.setAttribute("aria-expanded", "true");
   syncMunicipalityPanelState();
   syncSidePanelLayout(mapController);
 }
@@ -750,7 +786,7 @@ function applyConditionPolicy() {
       control.disabled = webgisActive;
     });
   if (webgisActive) {
-    closeAssistantPanel(state.mapController);
+    closeAssistantPanel(state.mapController, { force: true });
   }
 
   elements.selectMunicipalityButton.disabled = conversationalActive;
@@ -758,6 +794,7 @@ function applyConditionPolicy() {
   if (conversationalActive) {
     closeMunicipalityPanel(state.mapController);
     closeHistoryPanel(state.mapController);
+    openAssistantPanel(state.mapController);
   }
 
   const hasInputs =
@@ -1572,6 +1609,41 @@ function applyAssistantUiActions(mapController, uiActions = []) {
   }
 }
 
+function routeCompletedToolToOperationalPanel(mapController, toolName) {
+  const target = TOOL_OPERATIONAL_VIEWS.get(String(toolName || ""));
+  if (target === "report") {
+    renderInfoSummary();
+    openPopup(mapController, { source: "assistant" });
+  } else if (target === "comparison" || target === "history") {
+    openHistoryPanel(mapController);
+  }
+}
+
+function routeStructuredAssistantResult(mapController, response, completedTools = new Set()) {
+  const comparison = response?.analysisResult;
+  if (Array.isArray(comparison?.analyses)) {
+    state.analysisHistory.comparison = comparison;
+    renderHistoryPanel();
+    openHistoryPanel(mapController);
+    return;
+  }
+
+  if (
+    response?.analysisResult?.clipped ||
+    response?.economicResult ||
+    response?.scenarioComparison ||
+    response?.reportContext
+  ) {
+    renderInfoSummary();
+    openPopup(mapController, { source: "assistant" });
+    return;
+  }
+
+  if ([...completedTools].some((toolName) => TOOL_OPERATIONAL_VIEWS.get(toolName) === "history")) {
+    openHistoryPanel(mapController);
+  }
+}
+
 function extractAssistantResponseText(response) {
   const assistantMessage = (response.messages || []).find((message) => message.role === "assistant");
   return assistantMessage?.text || "";
@@ -2339,6 +2411,7 @@ async function runAssistantInteraction(mapController, message, { interactionMode
   let response;
   let analysisApplied = false;
   const activeToolCalls = new Map();
+  const completedTools = new Set();
 
   try {
     const payload = {
@@ -2413,6 +2486,8 @@ async function runAssistantInteraction(mapController, message, { interactionMode
           },
           onToolResult: (event) => {
             activeToolCalls.delete(event.toolCallId || event.toolName);
+            completedTools.add(event.toolName);
+            routeCompletedToolToOperationalPanel(mapController, event.toolName);
             setAssistantStreamingProgress(
               streamingMessageIndex,
               describeAssistantToolProgress(event.toolName, "completed")
@@ -2437,6 +2512,12 @@ async function runAssistantInteraction(mapController, message, { interactionMode
             if (event.analysisResult?.clipped) {
               applyAnalysisResult(mapController, event.analysisResult);
               analysisApplied = true;
+              renderInfoSummary();
+              openPopup(mapController, { source: "assistant" });
+            } else if (Array.isArray(event.analysisResult?.analyses)) {
+              state.analysisHistory.comparison = event.analysisResult;
+              renderHistoryPanel();
+              openHistoryPanel(mapController);
             }
             setAssistantStreamingProgress(
               streamingMessageIndex,
@@ -2482,6 +2563,7 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       });
     }
     applyAssistantUiActions(mapController, response.uiHints?.uiActions);
+    routeStructuredAssistantResult(mapController, response, completedTools);
 
     if (response.uiHints?.mode === "reset") {
       resetAnalysis(mapController);
@@ -2582,6 +2664,7 @@ async function bootstrap() {
   workspaceUi = createWorkspaceUi({ elements, panelCopy: PANEL_COPY });
   syncChromeOffset();
   restoreAssistantPanelWidth();
+  workspaceUi.restoreWorkspacePanelWidth();
   setStudySession(appConfig.study?.currentSession || null);
 
   if (elements.appInfoModal?.parentElement !== document.body) {
@@ -2600,6 +2683,18 @@ async function bootstrap() {
       selectionState?.drawnFeatureCount ?? mapControllerRef?.getDrawnFeatureCount() ?? 0;
 
     renderStatusPanel({ selectedMunicipalityCount, drawnFeatureCount });
+    if (elements.selectionMunicipalityCount) {
+      elements.selectionMunicipalityCount.textContent = String(selectedMunicipalityCount);
+    }
+    if (elements.selectionGeometryCount) {
+      elements.selectionGeometryCount.textContent = String(drawnFeatureCount);
+    }
+    if (elements.selectionRunAnalysis) {
+      elements.selectionRunAnalysis.disabled = selectedMunicipalityCount + drawnFeatureCount === 0;
+    }
+    if (selectionState && selectedMunicipalityCount + drawnFeatureCount > 0) {
+      openSelectionPanel(mapControllerRef || mapController);
+    }
     updateActionStates(mapControllerRef || mapController);
     recordExperiment({
       eventType: "selection_changed",
@@ -2636,6 +2731,9 @@ async function bootstrap() {
   initializeConditionControl();
   initializeUiActionLogging();
   applyConditionPolicy();
+  if (assistantConfig.enabled && getActiveStudyCondition() !== "webgis") {
+    openAssistantPanel(mapController);
+  }
   recordExperiment({
     eventType: "session_started",
     channel: "system",
@@ -2666,6 +2764,14 @@ async function bootstrap() {
 
   elements.runAnalysisButton.addEventListener("click", () => {
     runAnalysis(mapController);
+  });
+
+  elements.selectionRunAnalysis?.addEventListener("click", () => {
+    runAnalysis(mapController);
+  });
+
+  elements.collapseWorkspaceButton?.addEventListener("click", () => {
+    toggleOperationalPanel(mapController);
   });
 
   elements.infoButton.addEventListener("click", () => {
@@ -2802,6 +2908,7 @@ async function bootstrap() {
   window.addEventListener("resize", () => {
     syncChromeOffset();
     restoreAssistantPanelWidth();
+    workspaceUi.restoreWorkspacePanelWidth();
     syncSidePanelLayout(mapController);
   });
   window.addEventListener("orientationchange", () => {

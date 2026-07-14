@@ -136,13 +136,24 @@
           </div>
         </section>
 
-        <aside class="workspace-sidebar" aria-label="Pannelli operativi">
+        <aside id="workspaceSidebar" class="workspace-sidebar" aria-label="Pannelli operativi">
+          <div
+            id="workspaceResizeHandle"
+            class="workspace-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-controls="workspaceSidebar"
+            aria-label="Ridimensiona pannello operativo"
+            tabindex="0"
+          ></div>
           <div class="workspace-panel-header">
             <div>
               <div class="workspace-panel-eyebrow">Pannello contestuale</div>
               <h2 id="workspacePanelTitle">Pannello</h2>
             </div>
-            <p id="workspacePanelDescription">Sezione operativa attiva.</p>
+            <button id="collapseWorkspacePanel" type="button" class="panel-collapse-button" aria-label="Comprimi pannello operativo" title="Comprimi pannello operativo">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></svg>
+            </button>
           </div>
 
           <nav id="navListaComuni" class="sidebar-card comuni-panel nascondiListaComuni" aria-label="Selezione comuni">
@@ -159,6 +170,11 @@
                 <input id="municipalitySearch" type="search" placeholder="Cerca per nome…" autocomplete="off" />
               </label>
               <p class="comuni-panel-help">Puoi combinare più comuni con poligoni e rettangoli disegnati sulla mappa.</p>
+              <div class="selection-summary" aria-live="polite">
+                <span><strong id="selectionMunicipalityCount">0</strong><small>Comuni</small></span>
+                <span><strong id="selectionGeometryCount">0</strong><small>Geometrie</small></span>
+                <button id="selectionRunAnalysis" type="button">Analizza selezione</button>
+              </div>
             </div>
             <div id="lista-comuni" class="comuni-list"></div>
           </nav>
@@ -248,7 +264,9 @@
             </div>
           </aside>
 
-          <aside id="assistantPanel" class="sidebar-card assistant-panel" aria-hidden="true">
+        </aside>
+
+          <aside id="assistantPanel" class="assistant-panel" aria-hidden="true" aria-label="Assistente conversazionale">
             <div
               id="assistantResizeHandle"
               class="assistant-resize-handle"
@@ -300,7 +318,6 @@
               </form>
             </div>
           </aside>
-        </aside>
       </div>
     </div>
   </div>
