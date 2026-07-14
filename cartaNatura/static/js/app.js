@@ -31,11 +31,10 @@ let MapController;
 let generatePdfReport;
 let renderAnalysisHistoryList;
 let renderAnalysisComparison;
+let createWorkspaceUi;
+let workspaceUi;
 let experimentLogQueue = Promise.resolve();
 
-const ASSISTANT_PANEL_WIDTH_KEY = "cartaNatura.assistantPanelWidth";
-const ASSISTANT_PANEL_MIN_WIDTH = 320;
-const ASSISTANT_PANEL_MAX_WIDTH = 560;
 const MediaRecorderApi = window.MediaRecorder || null;
 const ALLOWED_ASSISTANT_UI_ACTIONS = new Set([
   "show_last_analysis",
@@ -70,6 +69,7 @@ async function loadModules() {
     mapControllerModule,
     pdfExportModule,
     analysisHistoryModule,
+    workspaceUiModule,
   ] =
     await Promise.all([
       import(versionedPath("./modules/api.js")),
@@ -78,6 +78,7 @@ async function loadModules() {
       import(versionedPath("./modules/map-controller.js")),
       import(versionedPath("./modules/pdf-export.js")),
       import(versionedPath("./modules/analysis-history.js")),
+      import(versionedPath("./modules/workspace-ui.js")),
     ]);
 
   ({
@@ -103,6 +104,7 @@ async function loadModules() {
   ({ MapController } = mapControllerModule);
   ({ generatePdfReport } = pdfExportModule);
   ({ renderAnalysisHistoryList, renderAnalysisComparison } = analysisHistoryModule);
+  ({ createWorkspaceUi } = workspaceUiModule);
 }
 
 const state = {
@@ -192,11 +194,7 @@ const elements = {
 };
 
 function syncChromeOffset() {
-  const navbarHeight = elements.navbar?.getBoundingClientRect().height ?? 0;
-  const viewportWidth = window.innerWidth;
-  const extraGap = viewportWidth <= 760 ? 14 : 18;
-  const offset = Math.ceil(navbarHeight + 14 + extraGap);
-  document.documentElement.style.setProperty("--shell-offset", `${offset}px`);
+  workspaceUi.syncChromeOffset();
 }
 
 function escapeHtml(value) {
@@ -216,147 +214,27 @@ function setBusy(mapController, busy) {
   elements.infoButton.disabled = busy;
   elements.openHistoryButton.disabled = busy;
   elements.appInfoButton.disabled = busy;
-  elements.runAnalysisButton.textContent = busy ? "Analisi..." : "Analizza";
+  const runAnalysisLabel = elements.runAnalysisButton.querySelector(".workflow-label");
+  if (runAnalysisLabel) {
+    runAnalysisLabel.textContent = busy ? "Analisi…" : "Analizza";
+  }
   mapController.setInteractionDisabled(busy);
 }
 
-function clampAssistantPanelWidth(width) {
-  const viewportLimit = Math.max(
-    ASSISTANT_PANEL_MIN_WIDTH,
-    Math.min(ASSISTANT_PANEL_MAX_WIDTH, Math.floor(window.innerWidth * 0.42))
-  );
-  return Math.max(ASSISTANT_PANEL_MIN_WIDTH, Math.min(Number(width) || 0, viewportLimit));
-}
-
-function setAssistantPanelWidth(width, { persist = true, mapController = null } = {}) {
-  const nextWidth = clampAssistantPanelWidth(width);
-  document.documentElement.style.setProperty("--assistant-panel-width", `${nextWidth}px`);
-  elements.assistantResizeHandle?.setAttribute("aria-valuenow", String(nextWidth));
-
-  if (persist) {
-    localStorage.setItem(ASSISTANT_PANEL_WIDTH_KEY, String(nextWidth));
-  }
-
-  syncSidePanelLayout(mapController);
-}
-
 function restoreAssistantPanelWidth() {
-  const storedWidth = Number(localStorage.getItem(ASSISTANT_PANEL_WIDTH_KEY));
-  setAssistantPanelWidth(storedWidth || 390, { persist: false });
+  workspaceUi.restoreAssistantPanelWidth();
 }
 
 function getActivePanelName() {
-  if (elements.municipalityPanel.classList.contains("visualizzaListaComuni")) {
-    return "municipality";
-  }
-  if (elements.popup.classList.contains("open-popup")) {
-    return "report";
-  }
-  if (elements.analysisHistoryPanel.classList.contains("is-open")) {
-    return "history";
-  }
-  if (elements.assistantPanel.classList.contains("is-open")) {
-    return "assistant";
-  }
-  return null;
-}
-
-function syncPanelChrome(activePanelName) {
-  const panelCopy = activePanelName ? PANEL_COPY[activePanelName] : null;
-  if (panelCopy) {
-    elements.workspacePanelTitle.textContent = panelCopy.title;
-    elements.workspacePanelDescription.textContent = panelCopy.description;
-  }
-
-  for (const button of document.querySelectorAll("[data-panel-nav]")) {
-    const isActive = button.dataset.panelNav === activePanelName;
-    button.classList.toggle("is-active", isActive);
-    button.setAttribute("aria-pressed", String(isActive));
-  }
+  return workspaceUi.getActivePanelName();
 }
 
 function syncSidePanelLayout(mapController = null) {
-  const activePanelName = getActivePanelName();
-  document.body.classList.toggle("side-panel-open", Boolean(activePanelName));
-  document.body.classList.toggle("municipality-workbench-open", activePanelName === "municipality");
-  document.body.classList.toggle("report-workbench-open", activePanelName === "report");
-  document.body.classList.toggle("history-workbench-open", activePanelName === "history");
-  document.body.classList.toggle("assistant-workbench-open", activePanelName === "assistant");
-  syncPanelChrome(activePanelName);
-
-  if (mapController) {
-    window.requestAnimationFrame(() => {
-      mapController.syncLayout();
-      window.setTimeout(() => {
-        mapController.syncLayout();
-      }, 220);
-    });
-  }
+  workspaceUi.syncLayout(mapController);
 }
 
 function initializeAssistantResize(mapController) {
-  if (!elements.assistantResizeHandle) {
-    return;
-  }
-
-  let isDragging = false;
-
-  const stopDragging = () => {
-    if (!isDragging) {
-      return;
-    }
-    isDragging = false;
-    document.body.classList.remove("assistant-resizing");
-    window.removeEventListener("pointermove", handlePointerMove);
-    window.removeEventListener("pointerup", stopDragging);
-    syncSidePanelLayout(mapController);
-  };
-
-  function handlePointerMove(event) {
-    if (!isDragging) {
-      return;
-    }
-    setAssistantPanelWidth(window.innerWidth - event.clientX, { mapController });
-  }
-
-  elements.assistantResizeHandle.addEventListener("pointerdown", (event) => {
-    if (window.innerWidth <= 720) {
-      return;
-    }
-    isDragging = true;
-    document.body.classList.add("assistant-resizing");
-    elements.assistantResizeHandle.setPointerCapture?.(event.pointerId);
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", stopDragging);
-    event.preventDefault();
-  });
-
-  elements.assistantResizeHandle.addEventListener("keydown", (event) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-      return;
-    }
-
-    const currentWidth =
-      Number.parseInt(
-        getComputedStyle(document.documentElement).getPropertyValue("--assistant-panel-width"),
-        10
-      ) || 390;
-    const step = event.shiftKey ? 48 : 24;
-    let nextWidth = currentWidth;
-
-    if (event.key === "ArrowLeft") {
-      nextWidth = currentWidth + step;
-    } else if (event.key === "ArrowRight") {
-      nextWidth = currentWidth - step;
-    } else if (event.key === "Home") {
-      nextWidth = ASSISTANT_PANEL_MIN_WIDTH;
-    } else if (event.key === "End") {
-      nextWidth = ASSISTANT_PANEL_MAX_WIDTH;
-    }
-
-    setAssistantPanelWidth(nextWidth, { mapController });
-    event.preventDefault();
-  });
+  workspaceUi.initializeResize(mapController);
 }
 
 function openPopup(mapController, { source = "ui" } = {}) {
@@ -1575,12 +1453,12 @@ function initializeVoiceInput(mapController) {
   }
 }
 
-function appendAssistantMessage(role, text) {
+function appendAssistantMessage(role, text, options = {}) {
   if (!text) {
     return -1;
   }
 
-  state.assistantMessages.push({ role, text });
+  state.assistantMessages.push({ role, text, ...options });
   renderAssistantMessages();
   return state.assistantMessages.length - 1;
 }
@@ -1729,7 +1607,7 @@ function renderAssistantMessages() {
   elements.assistantMessages.innerHTML = state.assistantMessages
     .map(
       (message) => `
-        <article class="assistant-message assistant-message-${message.role}">
+        <article class="assistant-message assistant-message-${message.role}${message.streaming ? " is-streaming" : ""}${message.error ? " is-error" : ""}"${message.streaming ? ' aria-busy="true"' : ""}>
           <div class="assistant-message-role">${message.role === "user" ? "Tu" : "Assistente"}</div>
           <p>${escapeHtml(message.text || message.progressText || (message.streaming ? "..." : ""))}</p>
           ${renderAssistantHintList(message)}
@@ -2173,7 +2051,7 @@ function renderInfoSummary() {
       );
 
       try {
-        await generatePdfReport({
+        const generatedPdf = await generatePdfReport({
           analysisId: state.analysisId,
           summary: state.summary,
           intersectedMunicipalities: state.intersectedMunicipalities,
@@ -2188,6 +2066,15 @@ function renderInfoSummary() {
             formatRoundedNumber,
           },
         });
+        if (generatedPdf?.objectUrl) {
+          resultRoot.insertAdjacentHTML(
+            "beforeend",
+            `<div class="pdf-ready">
+              <span><strong>Report pronto</strong><small>4 pagine · PDF A4</small></span>
+              <a href="${escapeHtml(generatedPdf.objectUrl)}" target="_blank" rel="noopener">Apri anteprima</a>
+            </div>`
+          );
+        }
         recordExperiment({
           eventType: "report_generated",
           channel: "web_map",
@@ -2664,7 +2551,8 @@ async function runAssistantInteraction(mapController, message, { interactionMode
     }
     appendAssistantMessage(
       "assistant",
-      error.message || "Errore durante la richiesta all'assistente."
+      error.message || "Errore durante la richiesta all'assistente.",
+      { error: true }
     );
     recordExperiment({
       eventType: "error",
@@ -2691,6 +2579,7 @@ async function runAssistantInteraction(mapController, message, { interactionMode
 }
 
 async function bootstrap() {
+  workspaceUi = createWorkspaceUi({ elements, panelCopy: PANEL_COPY });
   syncChromeOffset();
   restoreAssistantPanelWidth();
   setStudySession(appConfig.study?.currentSession || null);

@@ -48,47 +48,59 @@
         <div class="navbar-brand-shell">
           <div class="brand-badge">GIS</div>
           <div class="brand-copy">
-            <div class="brand-eyebrow">Sistema informativo territoriale</div>
+            <div class="brand-eyebrow">Regione Campania · WebGIS</div>
             <div class="brand-title">Carta Natura</div>
-            <div class="brand-subtitle">Analisi territoriale della vegetazione forestale in Campania</div>
+            <div class="brand-subtitle">Vegetazione forestale, CO₂ e valore territoriale</div>
           </div>
         </div>
 
         <div class="navbar-actions-shell" aria-label="Navigazione principale">
-          <div class="nav-action-group">
-            <span class="nav-action-label">Area</span>
-            <div class="nav-action-buttons">
-              <button id="butSelezionaComune" data-panel-nav="municipality" title="Apri selezione comuni" aria-controls="navListaComuni" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Comuni</button>
-              <button id="eseguiClipBut" title="Esegui analisi GIS" class="btn btn-sm app-btn app-btn-primary">Analizza</button>
-            </div>
+          <div class="workflow-nav" aria-label="Flusso di lavoro">
+            <button id="butSelezionaComune" data-panel-nav="municipality" title="Definisci l'area di analisi" aria-controls="navListaComuni" aria-expanded="false" class="workflow-action">
+              <span class="workflow-index">1</span><span><small>Area</small>Seleziona</span>
+            </button>
+            <span class="workflow-divider" aria-hidden="true"></span>
+            <button id="eseguiClipBut" title="Esegui analisi GIS" class="workflow-action workflow-action-primary">
+              <span class="workflow-index">2</span><span><small>Elabora</small><b class="workflow-label">Analizza</b></span>
+            </button>
+            <span class="workflow-divider" aria-hidden="true"></span>
+            <button id="mostraInfoBut" data-panel-nav="report" title="Apri i risultati" aria-controls="popup" aria-expanded="false" class="workflow-action">
+              <span class="workflow-index">3</span><span><small>Esplora</small>Risultati</span>
+            </button>
+            <span class="workflow-divider" aria-hidden="true"></span>
+            <button id="openHistoryPanel" data-panel-nav="history" title="Apri storico e confronti" aria-controls="analysisHistoryPanel" aria-expanded="false" class="workflow-action">
+              <span class="workflow-index">4</span><span><small>Conserva</small>Storico</span>
+            </button>
           </div>
-          <div class="nav-action-group">
-            <span class="nav-action-label">Risultati</span>
-            <div class="nav-action-buttons">
-              <button id="mostraInfoBut" data-panel-nav="report" title="Apri report" aria-controls="popup" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Report</button>
-              <button id="openHistoryPanel" data-panel-nav="history" title="Apri storico analisi" aria-controls="analysisHistoryPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Storico</button>
-            </div>
-          </div>
-          <div class="nav-action-group">
-            <span class="nav-action-label">Supporto</span>
-            <div class="nav-action-buttons">
-              <button id="openAssistantPanel" data-panel-nav="assistant" title="Apri assistente" aria-controls="assistantPanel" aria-expanded="false" class="btn btn-sm app-btn app-btn-secondary">Assistente</button>
-              <button id="infoApp" title="Apri guida" class="btn btn-sm app-btn app-btn-ghost">Guida</button>
-              <button id="resetMapState" title="Cancella selezioni e risultati" class="btn btn-sm app-btn app-btn-ghost">Reset</button>
-            </div>
+          <div class="utility-nav">
+            <button id="openAssistantPanel" data-panel-nav="assistant" title="Apri assistente" aria-label="Apri assistente" aria-controls="assistantPanel" aria-expanded="false" class="utility-action utility-action-assistant">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 5.75A2.75 2.75 0 0 1 7.75 3h8.5A2.75 2.75 0 0 1 19 5.75v6.5A2.75 2.75 0 0 1 16.25 15H11l-4.7 3.65c-.52.4-1.3.04-1.3-.62V15.6A2.75 2.75 0 0 1 3 13V5.75Z"/><path d="M8 8h8M8 11h5"/></svg>
+              <span>Assistente</span>
+            </button>
+            <button id="infoApp" title="Apri guida" aria-label="Apri guida" class="utility-action">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.3 2.3 0 1 1 3.4 2c-.8.45-1.2.95-1.2 2M12 17h.01"/></svg>
+            </button>
+            <button id="resetMapState" title="Cancella selezioni e risultati" aria-label="Reset area e risultati" class="utility-action">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.34-5.66L4 8.67"/><path d="M4 4v4.67h4.67"/></svg>
+            </button>
           </div>
         </div>
       </header>
 
       <div class="workspace-main">
-        <section class="map-column">
-          <div class="map-top-panels">
-            <aside id="mapStatusPanel" class="map-card status-card">
+        <section class="map-column" aria-label="Mappa operativa">
+          <div class="map-stage">
+            <div id="map"></div>
+            <div class="map-context-bar" aria-live="polite">
+              <div class="map-context-heading">
+                <span class="map-context-mark" aria-hidden="true"></span>
+                <div><small>Area di analisi</small><strong>Mappa operativa</strong></div>
+              </div>
+              <p>Seleziona comuni o disegna una geometria, quindi avvia l’analisi.</p>
+            </div>
+            <aside id="mapStatusPanel" class="map-card status-card" aria-label="Stato dell'analisi">
               <div class="map-card-header">
-                <div>
-                  <div class="map-card-kicker">Sessione</div>
-                  <div class="map-card-title">Stato analisi</div>
-                </div>
+                <div><div class="map-card-kicker">Stato corrente</div></div>
               </div>
               <div id="statusContent">
                 <div class="status-chip">
@@ -109,7 +121,6 @@
                 </div>
               </div>
             </aside>
-
             <aside id="legendPanel" class="map-card legend-card is-collapsed">
               <div class="map-card-header">
                 <div>
@@ -123,23 +134,12 @@
               <div id="legendContent"></div>
             </aside>
           </div>
-
-          <div class="map-stage">
-            <div class="map-frame-header">
-              <div>
-                <div class="map-frame-kicker">Area di analisi</div>
-                <h2 class="map-frame-title">Mappa operativa</h2>
-              </div>
-              <p class="map-frame-description">Seleziona uno o più comuni oppure disegna un'area. La mappa mostra selezioni, risultati e confini territoriali.</p>
-            </div>
-            <div id="map"></div>
-          </div>
         </section>
 
         <aside class="workspace-sidebar" aria-label="Pannelli operativi">
           <div class="workspace-panel-header">
             <div>
-              <div class="workspace-panel-eyebrow">Area di lavoro</div>
+              <div class="workspace-panel-eyebrow">Pannello contestuale</div>
               <h2 id="workspacePanelTitle">Pannello</h2>
             </div>
             <p id="workspacePanelDescription">Sezione operativa attiva.</p>
@@ -147,10 +147,18 @@
 
           <nav id="navListaComuni" class="sidebar-card comuni-panel nascondiListaComuni" aria-label="Selezione comuni">
             <div class="comuni-panel-header">
-              <div class="comuni-panel-eyebrow">Selezione territoriale</div>
-              <div class="comuni-panel-title">Comuni della Campania</div>
-              <div id="selectedCountLabel" class="comuni-panel-count">0 selezionati</div>
-              <input id="municipalitySearch" type="search" class="form-control form-control-sm" placeholder="Cerca un comune" />
+              <div class="comuni-panel-row">
+                <div>
+                  <div class="comuni-panel-eyebrow">Elenco territoriale</div>
+                  <div class="comuni-panel-title">Comuni della Campania</div>
+                </div>
+                <div id="selectedCountLabel" class="comuni-panel-count">0 selezionati</div>
+              </div>
+              <label class="municipality-search-shell" for="municipalitySearch">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+                <input id="municipalitySearch" type="search" placeholder="Cerca per nome…" autocomplete="off" />
+              </label>
+              <p class="comuni-panel-help">Puoi combinare più comuni con poligoni e rettangoli disegnati sulla mappa.</p>
             </div>
             <div id="lista-comuni" class="comuni-list"></div>
           </nav>
@@ -259,8 +267,10 @@
                 </div>
                 <button id="closeAssistantPanel" type="button" class="btn btn-sm app-btn app-btn-ghost">Chiudi</button>
               </div>
-              <div class="assistant-quick-actions">
-                <button type="button" class="assistant-chip" data-prompt="Azzera sessione">Azzera sessione</button>
+              <div class="assistant-quick-actions" aria-label="Suggerimenti rapidi">
+                <button type="button" class="assistant-chip" data-prompt="Aiutami a selezionare e analizzare un comune">Analizza un comune</button>
+                <button type="button" class="assistant-chip" data-prompt="Spiegami l'ultimo risultato">Spiega il risultato</button>
+                <button type="button" class="assistant-chip" data-prompt="Azzera sessione">Azzera</button>
               </div>
               <div id="assistantMessages" class="assistant-messages" aria-live="polite"></div>
               <form id="assistantForm" class="assistant-form">
@@ -269,7 +279,7 @@
                   id="assistantInput"
                   class="assistant-input"
                   rows="3"
-                  placeholder="Scrivi un messaggio all'assistente"
+                  placeholder="Chiedi di analizzare un comune, confrontare scenari o spiegare la mappa…"
                 ></textarea>
                 <div class="assistant-form-actions">
                   <button id="assistantVoiceButton" type="button" class="assistant-icon-button assistant-voice-button" aria-label="Registra messaggio vocale" aria-pressed="false">
