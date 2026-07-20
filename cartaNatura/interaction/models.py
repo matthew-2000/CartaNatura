@@ -49,6 +49,7 @@ class InteractionContext:
     selected_municipalities: tuple[str, ...] = ()
     current_map_extent: dict[str, Any] | None = None
     current_selection_payload: dict[str, Any] | None = None
+    displayed_analysis_id: str | None = None
     previous_result: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -112,6 +113,7 @@ class InteractionResponse:
     economic_result: dict[str, Any] | None = None
     scenario_comparison: dict[str, Any] | None = None
     report_context: dict[str, Any] | None = None
+    map_filter: dict[str, Any] | None = None
     ui_hints: dict[str, Any] = field(default_factory=dict)
     audio_output_text: str | None = None
     updated_context: SessionContext | None = None

@@ -23,6 +23,7 @@ from .economic_valuation import (
 from .gis_analysis import analyze_municipalities, analyze_selection
 from .methodology import get_methodology
 from .municipality_lookup import search_municipalities
+from .map_filtering import filter_analysis_categories
 
 
 ToolHandler = Callable[..., dict[str, Any]]
@@ -93,4 +94,8 @@ def build_default_tool_registry(analysis_store: AnalysisStore) -> ToolRegistry:
     )
     registry.register(ToolName.GET_METHODOLOGY, get_methodology)
     registry.register(ToolName.SEARCH_MUNICIPALITIES, search_municipalities)
+    registry.register(
+        ToolName.FILTER_ANALYSIS_CATEGORIES,
+        lambda **kwargs: filter_analysis_categories(analysis_store=analysis_store, **kwargs),
+    )
     return registry

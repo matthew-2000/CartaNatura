@@ -30,10 +30,12 @@ def build_interaction_context(context_payload: dict[str, Any] | None) -> Interac
     metadata = {
         "selectionSource": str(payload.get("selectionSource") or "").strip() or None,
     }
+    displayed_analysis_id = str(payload.get("displayedAnalysisId") or "").strip() or None
 
     return InteractionContext(
         selected_municipalities=selected,
         current_map_extent=map_extent,
         current_selection_payload=selection_payload,
+        displayed_analysis_id=displayed_analysis_id,
         metadata={key: value for key, value in metadata.items() if value is not None},
     )

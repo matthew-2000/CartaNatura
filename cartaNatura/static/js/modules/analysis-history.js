@@ -55,6 +55,16 @@ function formatCategory(category) {
   return category.label || category.key || "-";
 }
 
+function formatSelectionKind(value) {
+  const labels = {
+    municipalities: "Comuni",
+    drawn: "Area disegnata",
+    mixed: "Comuni e area disegnata",
+    unknown: "Area non specificata",
+  };
+  return labels[String(value || "unknown")] || "Area non specificata";
+}
+
 function summarizeMunicipalities(values) {
   if (!Array.isArray(values) || values.length === 0) {
     return "Nessun comune";
@@ -100,7 +110,7 @@ export function renderAnalysisHistoryList({
                 <div class="analysis-history-date">${escapeHtml(formatDate(item.createdAt))}</div>
               </div>
               <div class="analysis-history-meta">
-                <span>${escapeHtml(item.selectionKind || "unknown")}</span>
+                <span>${escapeHtml(formatSelectionKind(item.selectionKind))}</span>
                 <span>${escapeHtml(summarizeMunicipalities(item.municipalities))}</span>
               </div>
               <div class="analysis-history-metrics">
@@ -186,7 +196,7 @@ function renderAnalysesTable(analyses) {
               (item) => `
                 <tr>
                   <td>${escapeHtml(item.label)}</td>
-                  <td>${escapeHtml(item.selectionKind)}</td>
+                  <td>${escapeHtml(formatSelectionKind(item.selectionKind))}</td>
                   <td>${escapeHtml(summarizeMunicipalities(item.municipalities))}</td>
                   <td>${escapeHtml(metric(item.totalCo2, "t"))}</td>
                   <td>${escapeHtml(metric(item.totalHectares, "ha"))}</td>

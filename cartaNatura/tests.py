@@ -47,6 +47,7 @@ from cartaNatura.interaction.tools.analysis_history import (
     get_recent_analyses,
 )
 from cartaNatura.interaction.tools.gis_analysis import analyze_selection
+from cartaNatura.interaction.tools.map_filtering import filter_analysis_categories
 from cartaNatura.interaction.ui_context import build_interaction_context
 from cartaNatura.interaction.tools.contracts import ToolName
 from cartaNatura.interaction.voice import transcribe_uploaded_audio
@@ -1329,6 +1330,51 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertIn(b"event: done", body)
         self.assertIn(b"Streaming ok.", body)
 
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    @patch("cartaNatura.interaction.orchestrator.build_optional_llm_provider")
+    @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.cache")
+    def test_interact_stream_persists_analysis_before_done_event(
+        self,
+        build_optional_llm_provider,
+        load_municipality_shapes,
+        load_nature_shapes,
+        load_campania_boundaries,
+    ):
+        build_optional_llm_provider.return_value = FakeStreamingProvider([])
+        load_municipality_shapes.return_value = GisClipServiceTests._municipality_shapes_catalog()
+        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
+        load_campania_boundaries.return_value = geopandas.GeoDataFrame(
+            {"COMUNE": ["Avellino", "Benevento"]},
+            geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+            crs="EPSG:4326",
+        )
+        client = Client()
+
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"}):
+            response = client.post(
+                "/progettoGIS/cartaNatura/interact/stream",
+                data='{"message": "analizza Avellino"}',
+                content_type="application/json",
+            )
+            body = b"".join(response.streaming_content)
+
+        self.assertIn(b"event: done", body)
+        self.assertIn(
+            "interaction_analyses",
+            client.session,
+            msg=body.decode("utf-8", errors="replace"),
+        )
+        self.assertEqual(
+            client.session["interaction_analyses"][-1]["requested_municipalities"],
+            ["Avellino"],
+        )
+        self.assertEqual(
+            client.session["interaction_context"]["last_analysis"]["requestedMunicipalities"],
+            ["Avellino"],
+        )
+
 
 class InteractionSessionContextTests(SimpleTestCase):
     def test_session_context_round_trip_is_serializable(self):
@@ -1349,10 +1395,12 @@ class InteractionSessionContextTests(SimpleTestCase):
                 "selectedMunicipalities": [],
                 "mapExtent": {"south": 0, "west": 0, "north": 1, "east": 1},
                 "selectionPayload": {"areas": []},
+                "displayedAnalysisId": "analysis_visible",
             }
         )
 
         self.assertIsNone(context.current_selection_payload)
+        self.assertEqual(context.displayed_analysis_id, "analysis_visible")
 
 
 class RuleBasedIntentResolverTests(SimpleTestCase):
@@ -1387,6 +1435,27 @@ class RuleBasedIntentResolverTests(SimpleTestCase):
         resolution = RuleBasedIntentResolver().resolve(request, SessionContext())
 
         self.assertEqual(resolution.command.intent, InteractionIntent.RESET_SESSION)
+
+    def test_resolver_prioritizes_explicit_analysis_over_requested_explanation(self):
+        resolution = RuleBasedIntentResolver().resolve(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="compound-analysis",
+                input=InteractionInput(
+                    text="Analizza Bagnoli Irpino e spiegami in breve il risultato"
+                ),
+            ),
+            SessionContext(last_analysis={"analysisId": "analysis_previous"}),
+        )
+
+        self.assertEqual(
+            resolution.command.intent,
+            InteractionIntent.ANALYZE_MUNICIPALITIES,
+        )
+        self.assertEqual(
+            resolution.command.payload["municipality_names"],
+            ["Bagnoli Irpino"],
+        )
 
     @patch("cartaNatura.interaction.resolvers.extract_municipality_names")
     def test_resolver_detects_municipality_analysis_requests(self, extract_names):
@@ -1600,6 +1669,48 @@ class InteractionOrchestratorTests(SimpleTestCase):
         self.assertEqual(session_store.load("session-reset"), SessionContext())
         self.assertIsNone(analysis_store.get_last())
 
+    def test_streaming_reset_clears_context_without_calling_provider(self):
+        session_store = InMemorySessionStore()
+        analysis_store = InMemoryAnalysisStore()
+        session_store.save(
+            "stream-reset",
+            SessionContext(last_analysis={"analysisId": "analysis_old"}),
+        )
+        analysis_store.save(
+            create_stored_analysis(
+                source="selection",
+                summary={
+                    "items": [],
+                    "totalCo2": 1,
+                    "totalHectares": 1,
+                    "hasSupportedVegetation": True,
+                    "topCategory": None,
+                },
+            )
+        )
+        provider = FakeResponsesProvider([])
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            llm_provider=provider,
+            analysis_store=analysis_store,
+        )
+
+        events = list(
+            orchestrator.handle_stream(
+                InteractionRequest(
+                    channel=InteractionChannel.WEB_CHAT,
+                    session_id="stream-reset",
+                    input=InteractionInput(text="azzera tutto"),
+                )
+            )
+        )
+
+        self.assertEqual([event["type"] for event in events], ["done"])
+        self.assertEqual(events[0]["response"]["uiHints"]["mode"], "reset")
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(session_store.load("stream-reset"), SessionContext())
+        self.assertIsNone(analysis_store.get_last())
+
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
     @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
@@ -1762,9 +1873,9 @@ class InteractionOrchestratorTests(SimpleTestCase):
         )
 
         self.assertEqual(response.commands[0].intent, InteractionIntent.ANALYZE_MUNICIPALITIES)
-        self.assertEqual(response.messages[0].text, "Sintesi LLM mockata.")
+        self.assertIn("10 ha forestali e 95,4 t CO2/anno", response.messages[0].text)
         self.assertEqual(provider.response_calls, [])
-        self.assertEqual(len(provider.complete_calls), 1)
+        self.assertEqual(provider.complete_calls, [])
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -1945,15 +2056,6 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
                     ],
                 },
                 {
-                    "id": "resp_economic_final",
-                    "output_text": (
-                        '{"intent":"guide_workflow","assistant_text":"Imposta costi e ricavi inesistenti.",'
-                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],'
-                        '"citations_internal":[],"follow_up_suggestions":[]}'
-                    ),
-                    "output": [],
-                },
-                {
                     "id": "resp_report_tool",
                     "output": [
                         {
@@ -1963,15 +2065,6 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
                             "arguments": "{}",
                         }
                     ],
-                },
-                {
-                    "id": "resp_report_final",
-                    "output_text": (
-                        '{"intent":"generate_report","assistant_text":"PDF gia generato.",'
-                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],'
-                        '"citations_internal":[],"follow_up_suggestions":[]}'
-                    ),
-                    "output": [],
                 },
             ]
         )
@@ -1998,8 +2091,8 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
 
         self.assertEqual(economic_response.economic_result["analysisId"], saved.analysis_id)
         self.assertEqual(economic_response.economic_result["totalValueEur"], 1380)
-        self.assertIn("1.380 EUR", economic_response.messages[0].text)
-        self.assertIn(saved.analysis_id, economic_response.messages[0].text)
+        self.assertIn("1.380 €", economic_response.messages[0].text)
+        self.assertNotIn(saved.analysis_id, economic_response.messages[0].text)
         self.assertNotIn("costi e ricavi", economic_response.messages[0].text)
         self.assertEqual(
             economic_response.ui_hints["followUpSuggestions"],
@@ -2011,7 +2104,7 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
             1380,
         )
         self.assertEqual(report_response.report_context["analysisId"], saved.analysis_id)
-        self.assertIn("Apro il report esistente", report_response.messages[0].text)
+        self.assertIn("Apro il report dell'ultima analisi", report_response.messages[0].text)
         self.assertIn("Esporta PDF", report_response.messages[0].text)
         self.assertNotIn("gia generato", report_response.messages[0].text)
         self.assertIn("open_report_panel", report_response.ui_hints["uiActions"])
@@ -2110,24 +2203,23 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
         )
 
         event_types = [event["type"] for event in events]
-        self.assertIn("tool_pending", event_types)
-        self.assertIn("tool_start", event_types)
-        self.assertIn("analysis_result", event_types)
-        self.assertIn("message_delta", event_types)
+        self.assertIn("tool_running", event_types)
+        self.assertIn("tool_result", event_types)
+        self.assertNotIn("message_delta", event_types)
         self.assertEqual(event_types[-1], "done")
-        self.assertEqual(
+        self.assertIn(
+            "10 ha forestali e 95,4 t CO2/anno",
             events[-1]["response"]["messages"][0]["text"],
-            "Avellino e Benevento dominano.",
         )
         self.assertEqual(
             events[-1]["response"]["analysisResult"]["requestedMunicipalities"],
             ["Avellino", "Benevento"],
         )
         self.assertEqual(
-            session_store.load("runtime-stream-session-1").metadata["provider_previous_response_id"],
-            "resp_stream_final_1",
+            session_store.load("runtime-stream-session-1").metadata["conversation_messages"][0],
+            {"role": "user", "content": "analizza Avellino e Benevento"},
         )
-        self.assertNotIn("clipped", provider.stream_calls[1]["input"][0]["output"])
+        self.assertEqual(len(provider.stream_calls), 0)
         self.assertIsNotNone(analysis_store.get_last())
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
@@ -2198,21 +2290,22 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
         )
 
         self.assertEqual(response.commands[0].intent, InteractionIntent.ANALYZE_MUNICIPALITIES)
-        self.assertEqual(response.messages[0].text, "Analisi pronta.")
+        self.assertIn("95,4 t CO2/anno", response.messages[0].text)
         self.assertEqual(
             response.analysis_result["requestedMunicipalities"],
             ["Avellino"],
         )
         self.assertEqual(response.ui_hints["runtime"], "responses_api")
-        self.assertEqual(
-            session_store.load("runtime-session-1").metadata["provider_previous_response_id"],
-            "resp_final_1",
+        self.assertNotIn(
+            "provider_previous_response_id",
+            session_store.load("runtime-session-1").metadata,
         )
         self.assertEqual(provider.calls[1]["previous_response_id"], "resp_tool_1")
-        self.assertEqual(provider.calls[2]["previous_response_id"], "resp_tool_2")
-        self.assertNotIn("clipped", provider.calls[2]["input"][0]["output"])
-        self.assertNotIn("selectionPayload", provider.calls[2]["input"][0]["output"])
-        self.assertEqual(response.ui_hints["uiActions"], ["show_last_analysis"])
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(
+            response.ui_hints["uiActions"],
+            ["show_last_analysis", "focus_map_results"],
+        )
         grounded_prompt = provider.calls[0]["input"][0]["content"][0]["text"]
         self.assertIn('"vegetationCategories"', grounded_prompt)
         self.assertIn('"Castagneti"', grounded_prompt)
@@ -2222,7 +2315,7 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
     @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
-    def test_runtime_reuses_previous_response_id_on_follow_up(
+    def test_runtime_carries_grounded_conversation_context_on_follow_up(
         self,
         load_municipality_shapes,
         load_nature_shapes,
@@ -2260,14 +2353,6 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
                     ],
                 },
                 {
-                    "id": "resp_final_1",
-                    "output_text": (
-                        '{"intent":"analyze_municipalities","assistant_text":"Prima analisi pronta.",'
-                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],"citations_internal":[],"follow_up_suggestions":[]}'
-                    ),
-                    "output": [],
-                },
-                {
                     "id": "resp_tool_3",
                     "output": [
                         {
@@ -2277,14 +2362,6 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
                             "arguments": "{}",
                         }
                     ],
-                },
-                {
-                    "id": "resp_final_2",
-                    "output_text": (
-                        '{"intent":"explain_last_analysis","assistant_text":"Ultimo risultato spiegato.",'
-                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],"citations_internal":["analysis_latest"],"follow_up_suggestions":[]}'
-                    ),
-                    "output": [],
                 },
             ]
         )
@@ -2312,8 +2389,11 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
         )
 
         self.assertEqual(response.commands[0].intent, InteractionIntent.EXPLAIN_LAST_ANALYSIS)
-        self.assertEqual(response.messages[0].text, "Ultimo risultato spiegato.")
-        self.assertEqual(provider.calls[3]["previous_response_id"], "resp_final_1")
+        self.assertIn("Nell'ultima analisi", response.messages[0].text)
+        self.assertEqual(provider.calls[2]["previous_response_id"], None)
+        follow_up_prompt = provider.calls[2]["input"][0]["content"][0]["text"]
+        self.assertIn('"recentMessages"', follow_up_prompt)
+        self.assertIn("analizza Avell", follow_up_prompt)
 
     def test_runtime_exposes_recent_analysis_history_tool(self):
         provider = FakeResponsesProvider(
@@ -2328,14 +2408,6 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
                             "arguments": '{"limit":10}',
                         }
                     ],
-                },
-                {
-                    "id": "resp_final_history",
-                    "output_text": (
-                        '{"intent":"explain_last_analysis","assistant_text":"Ci sono analisi recenti.",'
-                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],"citations_internal":[],"follow_up_suggestions":[]}'
-                    ),
-                    "output": [],
                 },
             ]
         )
@@ -2362,10 +2434,10 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
             )
         )
 
-        tool_output = json.loads(provider.calls[1]["input"][0]["output"])
         self.assertEqual(response.commands[0].intent, InteractionIntent.EXPLAIN_LAST_ANALYSIS)
-        self.assertEqual(tool_output["items"][0]["id"], saved.analysis_id)
-        self.assertEqual(tool_output["items"][0]["municipalities"], ["Avellino"])
+        self.assertIn("Analisi Avellino", response.messages[0].text)
+        self.assertNotIn(saved.analysis_id, response.messages[0].text)
+        self.assertEqual(len(provider.calls), 1)
 
     def test_runtime_exposes_saved_analysis_compare_tool(self):
         provider = FakeResponsesProvider(
@@ -2380,14 +2452,6 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
                             "arguments": '{"selectors":["Castellabate","Roccadaspide"]}',
                         }
                     ],
-                },
-                {
-                    "id": "resp_final_compare",
-                    "output_text": (
-                        '{"intent":"compare_analyses","assistant_text":"Confronto completato.",'
-                        '"needs_clarification":false,"clarification_question":"","ui_actions":[],"citations_internal":[],"follow_up_suggestions":[]}'
-                    ),
-                    "output": [],
                 },
             ]
         )
@@ -2422,11 +2486,159 @@ class OpenAiAssistantRuntimeTests(SimpleTestCase):
             )
         )
 
-        tool_output = json.loads(provider.calls[1]["input"][0]["output"])
         self.assertEqual(response.commands[0].intent, InteractionIntent.COMPARE_ANALYSES)
-        self.assertEqual(len(tool_output["analyses"]), 2)
-        self.assertEqual(tool_output["rankings"]["totalCo2"][0]["value"], 11)
-        self.assertTrue(tool_output["economicComparison"])
+        self.assertEqual(len(response.analysis_result["analyses"]), 2)
+        self.assertIn("Analisi Roccadaspide", response.messages[0].text)
+        self.assertNotIn("JSON", response.messages[0].text)
+        self.assertEqual(len(provider.calls), 1)
+
+    def test_runtime_filters_visible_analysis_without_recalculating_it(self):
+        analysis_store = InMemoryAnalysisStore()
+        saved = analysis_store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={
+                    "items": [
+                        {
+                            "key": "castagneti",
+                            "label": "Castagneti",
+                            "hectares": 12,
+                            "co2PerHectare": 6.2,
+                        },
+                        {
+                            "key": "faggete",
+                            "label": "Faggete",
+                            "hectares": 20,
+                            "co2PerHectare": 9.54,
+                        },
+                    ],
+                    "totalCo2": 265.2,
+                    "totalHectares": 32,
+                    "hasSupportedVegetation": True,
+                    "topCategory": {"key": "faggete", "label": "Faggete"},
+                },
+                requested_municipalities=["Montella"],
+                intersected_municipalities=["Montella"],
+            )
+        )
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_filter_tool",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_filter",
+                            "name": "filter_last_analysis_categories",
+                            "arguments": '{"category_names":["castagneti"],"show_all":false}',
+                        }
+                    ],
+                }
+            ]
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=provider,
+            analysis_store=analysis_store,
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="runtime-filter-session",
+                input=InteractionInput(text="mostrami solo i castagneti"),
+                context=InteractionContext(displayed_analysis_id=saved.analysis_id),
+            )
+        )
+
+        self.assertEqual(response.analysis_result, None)
+        self.assertEqual(response.map_filter["categories"][0]["key"], "castagneti")
+        self.assertIn("mostro solo: Castagneti", response.messages[0].text)
+        self.assertNotIn(saved.analysis_id, response.messages[0].text)
+        self.assertEqual(response.ui_hints["uiActions"], ["focus_map_results"])
+
+    def test_streaming_runtime_preplans_clear_comparison_without_provider_guesswork(self):
+        analysis_store = InMemoryAnalysisStore()
+        analysis_store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 10, "totalHectares": 5, "hasSupportedVegetation": True, "topCategory": None},
+                requested_municipalities=["Montella"],
+                intersected_municipalities=["Montella"],
+            )
+        )
+        analysis_store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 8, "totalHectares": 4, "hasSupportedVegetation": True, "topCategory": None},
+                requested_municipalities=["Bagnoli Irpino"],
+                intersected_municipalities=["Bagnoli Irpino"],
+            )
+        )
+        provider = FakeStreamingProvider([])
+        orchestrator = build_default_orchestrator(
+            session_store=InMemorySessionStore(),
+            llm_provider=provider,
+            analysis_store=analysis_store,
+        )
+
+        events = list(
+            orchestrator.handle_stream(
+                InteractionRequest(
+                    channel=InteractionChannel.WEB_CHAT,
+                    session_id="empty-compare-session",
+                    input=InteractionInput(text="confrontalo con il precedente"),
+                )
+            )
+        )
+        response_payload = events[-1]["response"]
+
+        self.assertEqual(len(response_payload["analysisResult"]["analyses"]), 2)
+        self.assertIn("Analisi Montella", response_payload["messages"][0]["text"])
+        self.assertNotIn("risposta strutturata vuota", response_payload["messages"][0]["text"])
+        self.assertEqual(len(provider.stream_calls), 0)
+
+    def test_runtime_does_not_treat_previous_analysis_selection_as_current(self):
+        provider = FakeResponsesProvider(
+            [
+                {
+                    "id": "resp_stale_selection",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_stale_selection",
+                            "name": "analyze_current_selection",
+                            "arguments": "{}",
+                        }
+                    ],
+                }
+            ]
+        )
+        session_store = InMemorySessionStore()
+        session_store.save(
+            "stale-selection-session",
+            SessionContext(
+                selection_payload={"areas": [{"kind": "drawn"}]},
+                last_analysis={"analysisId": "analysis_old"},
+            ),
+        )
+        orchestrator = build_default_orchestrator(
+            session_store=session_store,
+            llm_provider=provider,
+            analysis_store=InMemoryAnalysisStore(),
+        )
+
+        response = orchestrator.handle(
+            InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="stale-selection-session",
+                input=InteractionInput(text="analizza la selezione corrente"),
+            )
+        )
+
+        self.assertTrue(response.ui_hints["needsClarification"])
+        self.assertIn("Non c'è una selezione corrente", response.messages[0].text)
+        self.assertIsNone(response.analysis_result)
 
 
 class AnalysisStoreAndToolsTests(SimpleTestCase):
@@ -2537,6 +2749,72 @@ class AnalysisStoreAndToolsTests(SimpleTestCase):
         self.assertEqual(payload["selectionKind"], "unknown")
         self.assertEqual(payload["requestedMunicipalities"], ["Avellino"])
         self.assertEqual(payload["municipalities"], ["Avellino"])
+
+    def test_map_filter_reports_missing_category_with_human_label(self):
+        store = InMemoryAnalysisStore()
+        saved = store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={
+                    "items": [
+                        {
+                            "key": "castagneti",
+                            "label": "Castagneti",
+                            "hectares": 12,
+                            "co2PerHectare": 6.2,
+                        }
+                    ],
+                    "totalCo2": 74.4,
+                    "totalHectares": 12,
+                    "hasSupportedVegetation": True,
+                    "topCategory": {"key": "castagneti", "label": "Castagneti"},
+                },
+                requested_municipalities=["Montella"],
+                intersected_municipalities=["Montella"],
+            )
+        )
+
+        with self.assertRaisesMessage(
+            ValueError,
+            "La categoria 'Boschi di abete bianco' non è presente nell'analisi corrente",
+        ):
+            filter_analysis_categories(
+                analysis_store=store,
+                displayed_analysis_id=saved.analysis_id,
+                category_names=["abete_bianco"],
+            )
+
+    def test_map_filter_uses_visible_analysis_even_when_it_is_not_latest(self):
+        store = InMemoryAnalysisStore()
+        visible = store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={
+                    "items": [{"key": "castagneti", "label": "Castagneti", "hectares": 4, "co2PerHectare": 6.2}],
+                    "totalCo2": 24.8,
+                    "totalHectares": 4,
+                    "hasSupportedVegetation": True,
+                    "topCategory": {"key": "castagneti", "label": "Castagneti"},
+                },
+                requested_municipalities=["Bagnoli Irpino"],
+            )
+        )
+        store.save(
+            create_stored_analysis(
+                source="municipalities",
+                summary={"items": [], "totalCo2": 0, "totalHectares": 0, "hasSupportedVegetation": False, "topCategory": None},
+                requested_municipalities=["Montella"],
+            )
+        )
+
+        result = filter_analysis_categories(
+            analysis_store=store,
+            displayed_analysis_id=visible.analysis_id,
+            category_names=["castagneti"],
+        )
+
+        self.assertEqual(result["analysisId"], visible.analysis_id)
+        self.assertEqual(result["categories"], [{"key": "castagneti", "label": "Castagneti"}])
 
     def test_get_recent_analyses_returns_newest_first(self):
         store = InMemoryAnalysisStore()

@@ -52,6 +52,17 @@ class InteractionOrchestrator:
 
         if request.channel is not InteractionChannel.WEB_MAP:
             if self._should_use_rule_based_chat_path(resolution):
+                if (
+                    self._chat_runtime is not None
+                    and resolution.command.intent is not InteractionIntent.RESET_SESSION
+                ):
+                    response = self._chat_runtime.handle_preplanned(
+                        request,
+                        session_context,
+                        intent=resolution.command.intent,
+                        command_payload=resolution.command.payload,
+                    )
+                    return self._persist_response(request, session_context, response)
                 return self._handle_resolved_command(request, session_context, resolution)
             if self._chat_runtime is not None:
                 response = self._chat_runtime.handle(request, session_context)
@@ -76,6 +87,27 @@ class InteractionOrchestrator:
         request: InteractionRequest,
     ) -> Generator[dict[str, Any], None, InteractionResponse]:
         session_context = self._session_store.load(request.session_id)
+
+        resolution = self._resolver.resolve(request, session_context)
+        if resolution.command.intent is InteractionIntent.RESET_SESSION:
+            response = self._handle_resolved_command(request, session_context, resolution)
+            yield self._serialize_stream_done_event(response)
+            return response
+
+        if (
+            request.channel is not InteractionChannel.WEB_MAP
+            and self._chat_runtime is not None
+            and self._should_use_rule_based_chat_path(resolution)
+        ):
+            response = yield from self._chat_runtime.stream_preplanned(
+                request,
+                session_context,
+                intent=resolution.command.intent,
+                command_payload=resolution.command.payload,
+            )
+            response = self._persist_response(request, session_context, response)
+            yield self._serialize_stream_done_event(response)
+            return response
 
         if request.channel is not InteractionChannel.WEB_MAP and self._chat_runtime is not None:
             response = yield from self._chat_runtime.stream_handle(request, session_context)
@@ -130,6 +162,7 @@ class InteractionOrchestrator:
                 "economicResult": response.economic_result,
                 "scenarioComparison": response.scenario_comparison,
                 "reportContext": response.report_context,
+                "mapFilter": response.map_filter,
                 "uiHints": response.ui_hints,
             },
         }

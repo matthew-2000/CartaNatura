@@ -1294,6 +1294,46 @@ function audioFilenameForMimeType(mimeType) {
   return "voice-message.webm";
 }
 
+function voiceRecordingErrorMessage(error) {
+  const errorName = String(error?.name || "");
+  const errorMessage = String(error?.message || "");
+  if (errorName === "NotAllowedError" || /permission|autorizz/i.test(errorMessage)) {
+    return "Consenti l'accesso al microfono nel browser e riprova.";
+  }
+  if (errorName === "NotFoundError") {
+    return "Nessun microfono disponibile.";
+  }
+  return "Input vocale non acquisito. Riprova o usa il testo.";
+}
+
+async function requestMicrophoneStream() {
+  setVoiceStatus("In attesa dell'accesso al microfono...", "info");
+  let timedOut = false;
+  let timeoutId = null;
+  const mediaRequest = navigator.mediaDevices.getUserMedia({ audio: true });
+  mediaRequest.then((stream) => {
+    if (timedOut) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+  });
+  const permissionTimeout = new Promise((resolve, reject) => {
+    timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      const error = new Error("Autorizzazione microfono non ricevuta.");
+      error.name = "NotAllowedError";
+      reject(error);
+    }, 10000);
+  });
+
+  try {
+    return await Promise.race([mediaRequest, permissionTimeout]);
+  } finally {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
+
 function initializeVoiceInput(mapController) {
   if (!elements.assistantVoiceButton) {
     return;
@@ -1369,7 +1409,7 @@ function initializeVoiceInput(mapController) {
     startVoiceRecording(mapController).catch((error) => {
       setVoiceListening(false);
       stopVoiceTimer();
-      setVoiceStatus("Input vocale non acquisito.", "warning");
+      setVoiceStatus(voiceRecordingErrorMessage(error), "warning");
       recordExperiment({
         eventType: "error",
         channel: "voice",
@@ -1382,7 +1422,7 @@ function initializeVoiceInput(mapController) {
 
   async function startVoiceRecording(mapControllerRef) {
     audioChunks = [];
-    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioStream = await requestMicrophoneStream();
     const mimeType = getSupportedAudioMimeType();
     recordingAction = "transcribe";
     recorder = new MediaRecorderApi(
@@ -1609,17 +1649,12 @@ function applyAssistantUiActions(mapController, uiActions = []) {
   }
 }
 
-function routeCompletedToolToOperationalPanel(mapController, toolName) {
-  const target = TOOL_OPERATIONAL_VIEWS.get(String(toolName || ""));
-  if (target === "report") {
-    renderInfoSummary();
-    openPopup(mapController, { source: "assistant" });
-  } else if (target === "comparison" || target === "history") {
-    openHistoryPanel(mapController);
-  }
-}
-
 function routeStructuredAssistantResult(mapController, response, completedTools = new Set()) {
+  if (response?.mapFilter) {
+    applyAssistantMapFilter(mapController, response.mapFilter);
+    return;
+  }
+
   const comparison = response?.analysisResult;
   if (Array.isArray(comparison?.analyses)) {
     state.analysisHistory.comparison = comparison;
@@ -1660,6 +1695,7 @@ function describeAssistantToolProgress(toolName, stage = "running") {
     get_last_analysis: "recupero dell'ultimo report",
     compare_recent_analyses: "confronto degli ultimi report",
     get_methodology: "recupero della metodologia",
+    filter_last_analysis_categories: "filtro delle categorie sulla mappa",
     reset_analysis_context: "azzeramento della sessione",
   };
   const label = labels[toolName] || "strumento richiesto";
@@ -1692,8 +1728,7 @@ function renderAssistantMessages() {
 
 function renderAssistantHintList(message) {
   const followUps = normalizeAssistantList(message.followUpSuggestions);
-  const uiActions = normalizeAssistantUiActions(message.uiActions);
-  if (!followUps.length && !uiActions.length) {
+  if (!followUps.length) {
     return "";
   }
 
@@ -1705,14 +1740,9 @@ function renderAssistantHintList(message) {
         )}">${escapeHtml(item)}</button>`
     )
     .join("");
-  const actionItems = uiActions
-    .map((item) => `<span class="assistant-ui-action">${escapeHtml(item)}</span>`)
-    .join("");
-
   return `
     <div class="assistant-message-hints">
       ${followUpButtons}
-      ${actionItems}
     </div>
   `;
 }
@@ -1722,6 +1752,7 @@ function buildInteractionContext(mapController) {
     selectedMunicipalities: mapController.getSelectedMunicipalityNames(),
     mapExtent: mapController.getMapExtent(),
     selectionPayload: buildAnalysisPayload(mapController),
+    displayedAnalysisId: state.analysisId,
   };
 }
 
@@ -1760,6 +1791,31 @@ function applyAnalysisResult(mapController, analysisResult, analysisContext = nu
       setHistoryStatus(error.message || "Storico non aggiornato.", "error");
     });
   }
+}
+
+function applyAssistantMapFilter(mapController, mapFilter) {
+  if (!state.clipped || !mapFilter || mapFilter.analysisId !== state.analysisId) {
+    return false;
+  }
+
+  const selectedKeys = new Set(
+    (mapFilter.categories || []).map((item) => String(item?.key || "")).filter(Boolean)
+  );
+  const sourceFeatures = Array.isArray(state.clipped.features) ? state.clipped.features : [];
+  const filteredFeatures = mapFilter.showAll
+    ? sourceFeatures
+    : sourceFeatures.filter((feature) => {
+        const category = categoryByCode.get(feature.properties?.CODICE);
+        return category && selectedKeys.has(category.key);
+      });
+
+  mapController.renderNature({ ...state.clipped, features: filteredFeatures });
+  mapController.renderIntersectedMunicipalities(state.intersectedMunicipalities);
+  closePopup(mapController);
+  closeHistoryPanel(mapController);
+  closeMunicipalityPanel(mapController);
+  mapController.syncLayout();
+  return true;
 }
 
 function applyEconomicResult(
@@ -2487,7 +2543,6 @@ async function runAssistantInteraction(mapController, message, { interactionMode
           onToolResult: (event) => {
             activeToolCalls.delete(event.toolCallId || event.toolName);
             completedTools.add(event.toolName);
-            routeCompletedToolToOperationalPanel(mapController, event.toolName);
             setAssistantStreamingProgress(
               streamingMessageIndex,
               describeAssistantToolProgress(event.toolName, "completed")
@@ -2565,7 +2620,7 @@ async function runAssistantInteraction(mapController, message, { interactionMode
     applyAssistantUiActions(mapController, response.uiHints?.uiActions);
     routeStructuredAssistantResult(mapController, response, completedTools);
 
-    if (response.uiHints?.mode === "reset") {
+    if (["reset", "reset_session"].includes(response.uiHints?.mode)) {
       resetAnalysis(mapController);
     } else if (!analysisApplied && response.analysisResult?.clipped) {
       applyAnalysisResult(mapController, response.analysisResult);

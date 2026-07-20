@@ -188,6 +188,7 @@ def _serialize_interaction_response(response) -> dict[str, object]:
         "economicResult": response.economic_result,
         "scenarioComparison": response.scenario_comparison,
         "reportContext": response.report_context,
+        "mapFilter": response.map_filter,
         "uiHints": response.ui_hints,
     }
 
@@ -703,6 +704,10 @@ def interact_stream(request):
                     final_response = stop.value
                     break
                 event_type = str(event.get("type") or "message")
+                if event_type == "done":
+                    # Persist analysis history and conversation context before the
+                    # browser can issue a follow-up based on this completed turn.
+                    _save_stream_session_if_needed(request)
                 yield _encode_sse(event_type, event)
         except ValueError as exc:
             record_experiment_event(
@@ -747,7 +752,6 @@ def interact_stream(request):
             logger.exception("Assistant stream failed session=%s", session_id)
             yield _encode_sse("error", {"type": "error", "message": str(exc)})
         finally:
-            _save_stream_session_if_needed(request)
             if final_response is not None:
                 record_experiment_event(
                     request.session,
@@ -781,6 +785,7 @@ def interact_stream(request):
                     final_response.ui_hints.get("providerMode", "local"),
                     bool(final_response.analysis_result),
                 )
+            _save_stream_session_if_needed(request)
 
     response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
     response["Cache-Control"] = "no-cache"

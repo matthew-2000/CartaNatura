@@ -20,6 +20,7 @@ class ToolName(StrEnum):
     PREPARE_REPORT = "prepare_report"
     GET_METHODOLOGY = "get_methodology"
     SEARCH_MUNICIPALITIES = "search_municipalities"
+    FILTER_ANALYSIS_CATEGORIES = "filter_analysis_categories"
 
 
 def require_summary(summary: dict[str, Any]) -> dict[str, Any]:

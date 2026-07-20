@@ -61,11 +61,6 @@ class RuleBasedIntentResolver:
                 command=InteractionCommand(intent=InteractionIntent.COMPARE_ANALYSES)
             )
 
-        if any(keyword in text for keyword in ("spiega", "riepiloga", "riassumi", "ultimo risultato")):
-            return IntentResolution(
-                command=InteractionCommand(intent=InteractionIntent.EXPLAIN_LAST_ANALYSIS)
-            )
-
         analyze_keywords = ("analizza", "analisi", "estrai", "selezione corrente", "selezione attuale")
         if (
             any(keyword in text for keyword in analyze_keywords)
@@ -79,6 +74,25 @@ class RuleBasedIntentResolver:
             )
 
         municipality_names = extract_municipality_names(text)
+        explicitly_requests_analysis = any(
+            keyword in text for keyword in ("analizza", "estrai")
+        )
+        if municipality_names and explicitly_requests_analysis:
+            return IntentResolution(
+                command=InteractionCommand(
+                    intent=InteractionIntent.ANALYZE_MUNICIPALITIES,
+                    payload={
+                        "municipality_names": municipality_names,
+                        "source_text": request.input.primary_text(),
+                    },
+                )
+            )
+
+        if any(keyword in text for keyword in ("spiega", "riepiloga", "riassumi", "ultimo risultato")):
+            return IntentResolution(
+                command=InteractionCommand(intent=InteractionIntent.EXPLAIN_LAST_ANALYSIS)
+            )
+
         if municipality_names:
             return IntentResolution(
                 command=InteractionCommand(
