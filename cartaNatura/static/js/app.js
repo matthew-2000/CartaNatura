@@ -121,6 +121,7 @@ async function loadModules() {
 
 const state = {
   analysisId: null,
+  analysisCreatedAt: null,
   summary: null,
   clipped: null,
   intersectedMunicipalities: [],
@@ -128,6 +129,8 @@ const state = {
   economicValueCalculated: false,
   selectedEconomicPrice: null,
   analysisContext: null,
+  mapFilter: null,
+  categorySort: "hectares",
   mapController: null,
   noticeTimer: null,
   assistantMessages: [
@@ -215,12 +218,61 @@ function syncChromeOffset() {
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function formatAnalysisDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Data non disponibile";
+  }
+  return date.toLocaleString("it-IT", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatReadableAnalysisId(value) {
+  const clean = String(value || "").replace(/^analysis[_-]?/i, "").replaceAll(/[^a-z0-9]/gi, "");
+  return clean ? `AN-${clean.slice(0, 6).toUpperCase()}` : "AN—";
+}
+
+function getAnalysisTerritoryLabel() {
+  if (state.intersectedMunicipalities.length === 1) {
+    return state.intersectedMunicipalities[0];
+  }
+  if (state.intersectedMunicipalities.length > 1) {
+    const visible = state.intersectedMunicipalities.slice(0, 2).join(", ");
+    const remainder = state.intersectedMunicipalities.length - 2;
+    return remainder > 0 ? `${visible} +${remainder}` : visible;
+  }
+  if (state.analysisContext?.drawnFeatureCount) {
+    return "Area disegnata in Campania";
+  }
+  return "Territorio analizzato";
+}
+
+function getAnalysisSelectionLabel() {
+  const municipalities = state.analysisContext?.selectedMunicipalityCount || 0;
+  const geometries = state.analysisContext?.drawnFeatureCount || 0;
+  if (municipalities && geometries) {
+    return `${municipalities} comuni + ${geometries} geometrie`;
+  }
+  if (municipalities) {
+    return `${municipalities} ${municipalities === 1 ? "comune selezionato" : "comuni selezionati"}`;
+  }
+  if (geometries) {
+    return `${geometries} ${geometries === 1 ? "geometria disegnata" : "geometrie disegnate"}`;
+  }
+  return `${state.intersectedMunicipalities.length} comuni interessati`;
 }
 
 function setBusy(mapController, busy) {
@@ -542,11 +594,17 @@ function renderHistoryPanel() {
     selectedIds,
     renamingId: state.analysisHistory.renamingId,
     pendingDeleteId: state.analysisHistory.pendingDeleteId,
+    busy: state.analysisHistory.busy,
   });
   elements.analysisHistoryComparison.innerHTML = renderAnalysisComparison(
     state.analysisHistory.comparison
   );
-  elements.compareHistoryButton.disabled = state.analysisHistory.busy;
+  elements.analysisHistoryPanel.classList.toggle(
+    "is-comparing",
+    Boolean(state.analysisHistory.comparison)
+  );
+  elements.compareHistoryButton.disabled =
+    state.analysisHistory.busy || selectedIds.size < 2;
   elements.clearHistoryButton.disabled = state.analysisHistory.items.length === 0 || state.analysisHistory.busy;
   elements.clearHistoryButton.textContent = state.analysisHistory.confirmClear ? "Conferma" : "Svuota";
   elements.refreshHistoryButton.disabled = state.analysisHistory.busy;
@@ -802,7 +860,7 @@ function applyConditionPolicy() {
   elements.runAnalysisButton.disabled = conversationalActive || !hasInputs;
 
   const economicControls = elements.infoContainer?.querySelectorAll(
-    "#testoValore, #butcalcolavalore"
+    "#testoValore, #butcalcolavalore, .analysis-filter-control"
   );
   economicControls?.forEach((control) => {
     control.disabled = conversationalActive;
@@ -836,7 +894,8 @@ function blockedProtocolAction(control) {
       control.closest("#openHistoryPanel") ||
       control.closest("#analysisHistoryPanel") ||
       control.closest("#testoValore") ||
-      control.closest("#butcalcolavalore"))
+      control.closest("#butcalcolavalore") ||
+      control.closest(".analysis-filter-control"))
   ) {
     return "graphical_completion_control";
   }
@@ -1758,6 +1817,7 @@ function buildInteractionContext(mapController) {
 
 function applyAnalysisResult(mapController, analysisResult, analysisContext = null) {
   state.analysisId = analysisResult.analysisId || null;
+  state.analysisCreatedAt = analysisResult.createdAt || new Date().toISOString();
   state.clipped = analysisResult.clipped;
   state.intersectedMunicipalities = analysisResult.intersectedMunicipalities || [];
   state.summary =
@@ -1766,6 +1826,8 @@ function applyAnalysisResult(mapController, analysisResult, analysisContext = nu
   state.calculatedValue = 0;
   state.economicValueCalculated = false;
   state.selectedEconomicPrice = priceOptions[0]?.value ?? null;
+  state.mapFilter = null;
+  state.categorySort = "hectares";
   state.analysisContext =
     analysisContext ||
     {
@@ -1811,6 +1873,8 @@ function applyAssistantMapFilter(mapController, mapFilter) {
 
   mapController.renderNature({ ...state.clipped, features: filteredFeatures });
   mapController.renderIntersectedMunicipalities(state.intersectedMunicipalities);
+  state.mapFilter = mapFilter.showAll ? null : mapFilter;
+  renderInfoSummary();
   closePopup(mapController);
   closeHistoryPanel(mapController);
   closeMunicipalityPanel(mapController);
@@ -1878,8 +1942,9 @@ function renderLegend() {
 function renderStatusPanel({ selectedMunicipalityCount = 0, drawnFeatureCount = 0 } = {}) {
   const inputMunicipalities = state.analysisContext?.selectedMunicipalityCount ?? selectedMunicipalityCount;
   const inputGeometries = state.analysisContext?.drawnFeatureCount ?? drawnFeatureCount;
+  const intersectedMunicipalityCount = state.intersectedMunicipalities.length;
   const resultText = state.summary?.hasSupportedVegetation
-    ? `${state.intersectedMunicipalities.length} comuni, ${formatRoundedNumber(
+    ? `${intersectedMunicipalityCount} ${intersectedMunicipalityCount === 1 ? "comune" : "comuni"}, ${formatRoundedNumber(
         state.summary.totalCo2
       )} t CO2/anno`
     : state.summary
@@ -1959,48 +2024,37 @@ function renderPriceOptions() {
     .join("");
 }
 
-function renderScenarioComparisonTable(selectedPrice) {
+function renderScenarioComparisonList(selectedPrice) {
   const rows = buildEconomicScenarioRows(state.summary, priceOptions, selectedPrice);
   if (!rows.length) {
     return "";
   }
 
   return `
-    <div class="scenario-comparison-card">
-      <div class="analysis-section-header">
-        <h4>Confronto scenari economici</h4>
-        <span class="analysis-section-meta">${formatRoundedNumber(state.summary?.totalCo2 || 0)} tCO2/anno</span>
+    <details class="analysis-disclosure scenario-comparison-card">
+      <summary>
+        <span><strong>Confronta gli scenari</strong><small>${rows.length} prezzi su ${formatRoundedNumber(state.summary?.totalCo2 || 0)} tCO₂/anno</small></span>
+        <span class="disclosure-action">Dettagli</span>
+      </summary>
+      <div class="scenario-list">
+        ${rows
+          .map(
+            (row) => `
+              <article class="scenario-row${row.selected ? " is-selected" : ""}">
+                <div>
+                  <strong>${escapeHtml(row.label)}</strong>
+                  <small>${formatRoundedNumber(row.price)} €/tCO₂${row.description ? ` · ${escapeHtml(row.description)}` : ""}</small>
+                </div>
+                <div>
+                  <strong>${formatCurrency(row.value)}</strong>
+                  <small>${row.selected ? "Scenario applicato" : "Valore annuo"}</small>
+                </div>
+              </article>
+            `
+          )
+          .join("")}
       </div>
-      <div class="scenario-table-wrap">
-        <table class="scenario-table">
-          <thead>
-            <tr>
-              <th>Scenario</th>
-              <th>Prezzo</th>
-              <th>Valore stimato</th>
-              <th>Stato</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows
-              .map(
-                (row) => `
-                  <tr class="${row.selected ? "is-selected" : ""}">
-                    <td>
-                      <strong>${escapeHtml(row.label)}</strong>
-                      ${row.description ? `<small>${escapeHtml(row.description)}</small>` : ""}
-                    </td>
-                    <td>${formatRoundedNumber(row.price)} €/tCO2</td>
-                    <td>${formatCurrency(row.value)}</td>
-                    <td>${row.selected ? "Selezionato" : ""}</td>
-                  </tr>
-                `
-              )
-              .join("")}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    </details>
   `;
 }
 
@@ -2009,13 +2063,71 @@ function updateScenarioComparison(selectedPrice) {
   if (!comparisonRoot || !state.summary) {
     return;
   }
-  comparisonRoot.innerHTML = renderScenarioComparisonTable(selectedPrice);
+  comparisonRoot.innerHTML = renderScenarioComparisonList(selectedPrice);
+}
+
+function renderCategoryBreakdown() {
+  const items = [...(state.summary?.items || [])];
+  if (state.categorySort === "label") {
+    items.sort((left, right) => left.label.localeCompare(right.label, "it"));
+  } else if (state.categorySort === "co2") {
+    items.sort(
+      (left, right) =>
+        right.hectares * right.co2PerHectare - left.hectares * left.co2PerHectare
+    );
+  } else {
+    items.sort((left, right) => right.hectares - left.hectares);
+  }
+  const maxHectares = Math.max(...items.map((item) => item.hectares), 1);
+
+  return items
+    .map((item) => {
+      const categoryCo2 = item.hectares * item.co2PerHectare;
+      return `
+        <article class="analysis-category-row">
+          <div class="analysis-category-heading">
+            <span class="analysis-category-swatch" style="--category-color:${item.color}" aria-hidden="true"></span>
+            <strong>${escapeHtml(item.label)}</strong>
+            <span>${formatRoundedNumber(item.hectares)} ha</span>
+          </div>
+          <div class="analysis-category-track" aria-hidden="true"><span style="width:${Math.max((item.hectares / maxHectares) * 100, 4)}%; --category-color:${item.color}"></span></div>
+          <div class="analysis-category-meta">
+            <span>${formatRoundedNumber(item.co2PerHectare)} tCO₂/ha</span>
+            <span>${formatRoundedNumber(categoryCo2)} tCO₂/anno</span>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderAnalysisScopeState() {
+  if (!state.mapFilter) {
+    return `
+      <div class="analysis-scope-strip">
+        <span><small>Dati del report</small><strong>Analisi completa</strong></span>
+        <span><small>Visualizzazione mappa</small><strong>Tutte le categorie</strong></span>
+      </div>
+    `;
+  }
+  const filterLabels = (state.mapFilter.categories || []).map((item) => item.label).filter(Boolean);
+  const filterText = filterLabels.length ? filterLabels.join(", ") : "Categorie selezionate";
+  const disabled = getActiveStudyCondition() === "conversational" ? "disabled" : "";
+  return `
+    <div class="analysis-scope-strip is-filtered">
+      <span><small>Dati del report</small><strong>Analisi completa</strong></span>
+      <span><small>Filtro solo mappa</small><strong title="${escapeHtml(filterText)}">${escapeHtml(filterText)}</strong></span>
+      <button id="restoreAnalysisMap" class="analysis-filter-control" type="button" ${disabled}>Mostra tutte</button>
+    </div>
+    <p class="analysis-scope-note">I KPI e gli scenari restano riferiti all’analisi completa; il filtro modifica solo ciò che è visibile in mappa.</p>
+  `;
 }
 
 function renderInfoSummary() {
   if (!state.summary) {
     elements.infoContainer.innerHTML = `
       <div class="analysis-empty-state">
+        <span class="analysis-empty-symbol" aria-hidden="true">↗</span>
         <h3>Nessun report disponibile</h3>
         <p>Seleziona uno o più comuni, oppure disegna un'area sulla mappa, poi avvia l'analisi.</p>
       </div>
@@ -2026,6 +2138,7 @@ function renderInfoSummary() {
   if (!state.summary.hasSupportedVegetation) {
     elements.infoContainer.innerHTML = `
       <div class="analysis-empty-state">
+        <span class="analysis-empty-symbol" aria-hidden="true">—</span>
         <h3>Nessuna categoria forestale supportata</h3>
         <p>L'area analizzata non contiene categorie forestali supportate dal modello corrente.</p>
       </div>
@@ -2034,96 +2147,138 @@ function renderInfoSummary() {
   }
 
   const derivedMetrics = deriveSummaryMetrics(state.summary);
-  const maxHectares = Math.max(...state.summary.items.map((item) => item.hectares), 1);
-  const summaryRows = state.summary.items
-    .map(
-      (item) =>
-        `
-          <li class="analysis-breakdown-item">
-            <div class="analysis-breakdown-header">
-              <span class="analysis-breakdown-name">${escapeHtml(item.label)}</span>
-              <strong>${formatRoundedNumber(item.hectares)} ha</strong>
-            </div>
-            <div class="analysis-breakdown-bar">
-              <span style="width:${Math.max((item.hectares / maxHectares) * 100, 6)}%; background:${item.color}"></span>
-            </div>
-          </li>
-        `
-    )
-    .join("");
-
-  const municipalitiesHtml = state.intersectedMunicipalities.length
-    ? `<div class="analysis-note-card"><strong>Comuni interessati:</strong> ${escapeHtml(
-        state.intersectedMunicipalities.join(", ")
-      )}</div>`
-    : "";
+  const selectedPrice = state.selectedEconomicPrice ?? priceOptions[0]?.value;
+  const selectedScenario = priceOptions.find((option) => Number(option.value) === Number(selectedPrice));
+  const territoryTitle = getAnalysisTerritoryLabel();
+  const municipalityTitle = state.intersectedMunicipalities.length
+    ? state.intersectedMunicipalities.join(", ")
+    : territoryTitle;
 
   elements.infoContainer.innerHTML = `
     <div class="summary-section analysis-summary">
-      <div class="analysis-report-intro">
+      <header class="analysis-report-intro">
         <div>
-          <span class="analysis-metric-label">Analisi corrente</span>
-          <h3>Quadro sintetico dell'area</h3>
+          <span class="analysis-panel-kicker">Analisi territoriale</span>
+          <h3 title="${escapeHtml(municipalityTitle)}">${escapeHtml(territoryTitle)}</h3>
+          <p>${escapeHtml(getAnalysisSelectionLabel())}</p>
         </div>
-        <span class="analysis-report-badge">${state.intersectedMunicipalities.length} comuni interessati</span>
+        <span class="analysis-save-state"><span aria-hidden="true">✓</span> Salvata</span>
+      </header>
+
+      <div class="analysis-meta-line">
+        <span title="${escapeHtml(state.analysisId || "")}">${escapeHtml(formatReadableAnalysisId(state.analysisId))}</span>
+        <span>${escapeHtml(formatAnalysisDate(state.analysisCreatedAt))}</span>
       </div>
-      <div class="analysis-report-layout">
-        <div class="analysis-report-primary">
-          <div class="analysis-metrics-grid">
-            <article class="analysis-metric-card">
-              <span class="analysis-metric-label">CO2 annua stimata</span>
-              <strong class="analysis-metric-value">${formatRoundedNumber(state.summary.totalCo2)} t</strong>
-            </article>
-            <article class="analysis-metric-card">
-              <span class="analysis-metric-label">Superficie analizzata</span>
-              <strong class="analysis-metric-value">${formatRoundedNumber(derivedMetrics.totalHectares)} ha</strong>
-            </article>
-            <article class="analysis-metric-card">
-              <span class="analysis-metric-label">Categorie rilevate</span>
-              <strong class="analysis-metric-value">${state.summary.items.length}</strong>
-            </article>
-            <article class="analysis-metric-card">
-              <span class="analysis-metric-label">Categoria prevalente</span>
-              <strong class="analysis-metric-value">${escapeHtml(derivedMetrics.topCategory?.label || "-")}</strong>
-            </article>
+
+      ${renderAnalysisScopeState()}
+
+      <section class="analysis-kpi-block" aria-label="Indicatori principali">
+        <div class="analysis-kpi-featured">
+          <article>
+            <span>CO₂ sequestrata</span>
+            <strong>${formatRoundedNumber(state.summary.totalCo2)}</strong>
+            <small>tCO₂ / anno</small>
+          </article>
+          <article>
+            <span>Superficie</span>
+            <strong>${formatRoundedNumber(derivedMetrics.totalHectares)}</strong>
+            <small>ettari analizzati</small>
+          </article>
+        </div>
+        <div class="analysis-fact-row">
+          <span><small>Categorie forestali</small><strong>${state.summary.items.length}</strong></span>
+          <span><small>Prevalente</small><strong>${escapeHtml(derivedMetrics.topCategory?.label || "-")}</strong></span>
+        </div>
+      </section>
+
+      <section class="analysis-valuation-card">
+        <div class="analysis-section-header">
+          <div><span class="analysis-panel-kicker">Scenario economico</span><h4>Valorizzazione annuale</h4></div>
+          <span class="analysis-section-meta">${formatRoundedNumber(state.summary.totalCo2)} tCO₂/anno</span>
+        </div>
+        <div class="analysis-value-overview">
+          <div>
+            <small>Valore economico</small>
+            <strong id="analysisEconomicValue">${state.economicValueCalculated ? formatCurrency(state.calculatedValue) : "Da calcolare"}</strong>
           </div>
-          <div class="analysis-section">
-            <div class="analysis-section-header">
-              <h4>Ripartizione della vegetazione</h4>
-              <span class="analysis-section-meta">${formatRoundedNumber(derivedMetrics.totalHectares)} ha complessivi</span>
-            </div>
-            <ul class="analysis-breakdown-list">${summaryRows}</ul>
-          </div>
-          ${municipalitiesHtml}
-          <div class="analysis-note-card">
-            <strong>Assorbimento annuo stimato:</strong> ${formatRoundedNumber(state.summary.totalCo2)} tonnellate di CO2.
+          <div>
+            <small>Scenario applicato</small>
+            <strong id="analysisScenarioLabel">${escapeHtml(selectedScenario?.label || "Scenario")}</strong>
+            <span id="analysisScenarioPrice">${formatRoundedNumber(selectedPrice)} €/tCO₂</span>
           </div>
         </div>
-        <div class="analysis-report-secondary">
-          <div class="analysis-valuation-card">
-            <div class="analysis-section-header">
-              <h4>Valorizzazione economica</h4>
-              <span class="analysis-section-meta">Prezzo scelto</span>
-            </div>
-            <div class="value-row">
-              <select id="testoValore">${renderPriceOptions()}</select>
-              <button id="butcalcolavalore" type="button" class="btn btn-info btn-sm text-light">
-                Calcola
-              </button>
-            </div>
-            <div id="valoreTotaleCalcolato" class="value-result"></div>
-            <div id="scenarioComparison" class="scenario-comparison-root">
-              ${renderScenarioComparisonTable(state.selectedEconomicPrice ?? priceOptions[0]?.value)}
-            </div>
-          </div>
+        <div class="value-row">
+          <label for="testoValore"><span>Prezzo del carbonio</span><select id="testoValore">${renderPriceOptions()}</select></label>
+          <button id="butcalcolavalore" type="button">Calcola valore</button>
         </div>
-      </div>
+        <div id="valoreTotaleCalcolato" class="value-result"></div>
+        <div id="scenarioComparison" class="scenario-comparison-root">
+          ${renderScenarioComparisonList(selectedPrice)}
+        </div>
+      </section>
+
+      <details class="analysis-disclosure analysis-category-section">
+        <summary>
+          <span><strong>Categorie forestali</strong><small>${state.summary.items.length} categorie · ${formatRoundedNumber(derivedMetrics.totalHectares)} ha</small></span>
+          <span class="disclosure-action">Espandi</span>
+        </summary>
+        <div class="analysis-category-toolbar">
+          <label for="analysisCategorySort">Ordina per</label>
+          <select id="analysisCategorySort">
+            <option value="hectares">Superficie</option>
+            <option value="co2">CO₂ annua</option>
+            <option value="label">Nome</option>
+          </select>
+        </div>
+        <div id="analysisCategoryList" class="analysis-category-list">${renderCategoryBreakdown()}</div>
+      </details>
+
+      <footer class="analysis-report-actions">
+        <div>
+          <strong>Analisi disponibile nello storico</strong>
+          <small>Puoi rinominarla o selezionarla per un confronto.</small>
+        </div>
+        <button id="focusAnalysisMap" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m4 6 5-2 6 2 5-2v14l-5 2-6-2-5 2Z"/><path d="M9 4v14M15 6v14"/></svg>
+          Vedi mappa
+        </button>
+      </footer>
     </div>
   `;
 
   const priceSelect = document.getElementById("testoValore");
   const calculateButton = document.getElementById("butcalcolavalore");
+  const categorySort = document.getElementById("analysisCategorySort");
+  const focusMapButton = document.getElementById("focusAnalysisMap");
+  const restoreMapButton = document.getElementById("restoreAnalysisMap");
+  const updateEconomicOverview = (value) => {
+    const scenario = priceOptions.find((option) => Number(option.value) === Number(value));
+    document.getElementById("analysisScenarioLabel").textContent = scenario?.label || "Scenario";
+    document.getElementById("analysisScenarioPrice").textContent = `${formatRoundedNumber(value)} €/tCO₂`;
+    document.getElementById("analysisEconomicValue").textContent = state.economicValueCalculated
+      ? formatCurrency(state.calculatedValue)
+      : "Da calcolare";
+  };
   priceSelect.value = String(state.selectedEconomicPrice ?? priceOptions[0]?.value ?? "");
+  categorySort.value = state.categorySort;
+  categorySort.addEventListener("change", () => {
+    state.categorySort = categorySort.value;
+    document.getElementById("analysisCategoryList").innerHTML = renderCategoryBreakdown();
+  });
+  focusMapButton.addEventListener("click", () => {
+    closePopup(state.mapController);
+    state.mapController?.syncLayout();
+  });
+  restoreMapButton?.addEventListener("click", () => {
+    if (getActiveStudyCondition() === "conversational" || !state.clipped) {
+      return;
+    }
+    state.mapController.renderNature(state.clipped);
+    state.mapController.renderIntersectedMunicipalities(state.intersectedMunicipalities);
+    state.mapFilter = null;
+    renderInfoSummary();
+    showNotice("Mappa ripristinata con tutte le categorie.", "success");
+  });
   priceSelect.addEventListener("change", () => {
     if (getActiveStudyCondition() === "conversational") {
       applyConditionPolicy();
@@ -2132,6 +2287,7 @@ function renderInfoSummary() {
     const selectedValue = Number(priceSelect.value || 0);
     state.selectedEconomicPrice = selectedValue;
     updateScenarioComparison(selectedValue);
+    updateEconomicOverview(selectedValue);
     recordExperiment({
       eventType: "interaction_completed",
       channel: "web_map",
@@ -2154,16 +2310,18 @@ function renderInfoSummary() {
 
   function renderSelectedScenarioValue(selectedValue, calculateButtonRef) {
     const resultRoot = document.getElementById("valoreTotaleCalcolato");
+    updateEconomicOverview(selectedValue);
     resultRoot.innerHTML = `
       <div class="analysis-value-total">
-        <span class="analysis-metric-label">Valore stimato</span>
-        <strong class="analysis-value-amount">${formatCurrency(state.calculatedValue)}</strong>
+        <span><small>Valore annuo calcolato</small><strong>${formatCurrency(state.calculatedValue)}</strong></span>
+        <span><small>Scenario</small><strong>${escapeHtml(priceOptions.find((option) => Number(option.value) === Number(selectedValue))?.label || "-")}</strong></span>
       </div>
-      <p class="analysis-value-actions">
-        <button id="butstampadettagli" type="button" class="btn btn-success btn-sm text-light mt-3">
+      <div class="analysis-value-actions">
+        <button id="butstampadettagli" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7Z"/><path d="M14 3v5h5M9.5 13h5M9.5 16h5"/></svg>
           Esporta PDF
         </button>
-      </p>
+      </div>
     `;
 
     document.getElementById("butstampadettagli").addEventListener("click", async () => {
@@ -2310,6 +2468,7 @@ function buildAnalysisPayload(mapController) {
 
 function resetAnalysis(mapController, { operation = "reset_analysis_workspace" } = {}) {
   state.analysisId = null;
+  state.analysisCreatedAt = null;
   state.summary = null;
   state.clipped = null;
   state.intersectedMunicipalities = [];
@@ -2317,6 +2476,8 @@ function resetAnalysis(mapController, { operation = "reset_analysis_workspace" }
   state.economicValueCalculated = false;
   state.selectedEconomicPrice = null;
   state.analysisContext = null;
+  state.mapFilter = null;
+  state.categorySort = "hectares";
   mapController.clearResults();
   mapController.clearUserSelections();
   clearMunicipalityChecks();
@@ -2873,12 +3034,18 @@ async function bootstrap() {
   });
 
   elements.analysisHistoryPanel.addEventListener("click", (event) => {
+    const comparisonCloseButton = event.target.closest("[data-comparison-close]");
     const renameButton = event.target.closest("[data-history-rename]");
     const renameSaveButton = event.target.closest("[data-history-rename-save]");
     const renameCancelButton = event.target.closest("[data-history-rename-cancel]");
     const deleteButton = event.target.closest("[data-history-delete]");
     const deleteConfirmButton = event.target.closest("[data-history-delete-confirm]");
     const deleteCancelButton = event.target.closest("[data-history-delete-cancel]");
+    if (comparisonCloseButton) {
+      state.analysisHistory.comparison = null;
+      renderHistoryPanel();
+      return;
+    }
     if (renameButton) {
       renameHistoryItem(renameButton.dataset.historyRename);
       return;
