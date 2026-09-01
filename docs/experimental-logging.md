@@ -17,6 +17,15 @@ Il logging prepara il sistema per un confronto controlled within-subject tra int
 Il log operativo ordinario vive nella sessione Django e può essere esportato come JSON.
 La modalità studio persistente usa file locali esclusi da git in `var/study-logs/`.
 
+## Archivio Locale
+
+La pagina locale `/progettoGIS/cartaNatura/study-admin/` elenca tutte le sessioni
+persistenti, mostra riepiloghi ed eventi e permette di scaricare JSON/JSONL o
+eliminare una sessione chiusa. Non richiede autenticazione ed è pensata solo per
+un'istanza eseguita sulla macchina dello sperimentatore. Una sessione attiva nella
+sessione Django corrente deve essere chiusa dalla console Studio prima di poterla
+eliminare.
+
 ## Attivazione Riservata
 
 La console operatore viene generata solo aprendo l'app con:

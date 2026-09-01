@@ -1183,7 +1183,7 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertNotEqual(completed_response.json()["event"]["durationMs"], 999999)
         self.assertEqual(exported["summary"]["tasks"][0]["status"], "completed")
 
-    def test_webgis_task_blocks_chat_and_clears_previous_operational_state(self):
+    def test_webgis_task_blocks_chat_and_preserves_previous_operational_state(self):
         with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
             client = Client()
             client.post(
@@ -1195,6 +1195,7 @@ class ViewSmokeTests(SimpleTestCase):
             session["interaction_context"] = {"last_intent": "generate_report"}
             session["interaction_analyses"] = [{"analysis_id": "analysis_previous"}]
             session.save()
+            client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
             started = client.post(
                 "/progettoGIS/cartaNatura/experiment/log",
                 data='{"eventType":"task_started","taskId":"area_co2","condition":"webgis"}',
@@ -1212,8 +1213,11 @@ class ViewSmokeTests(SimpleTestCase):
             ).json()["export"]
 
         self.assertEqual(blocked.status_code, 403)
-        self.assertNotIn("interaction_context", client.session)
-        self.assertNotIn("interaction_analyses", client.session)
+        self.assertEqual(client.session["interaction_context"]["last_intent"], "generate_report")
+        self.assertEqual(
+            client.session["interaction_analyses"][0]["analysis_id"],
+            "analysis_previous",
+        )
         violation = exported["events"][-1]
         self.assertEqual(violation["eventType"], "protocol_violation")
         self.assertEqual(violation["condition"], "webgis")
@@ -3405,6 +3409,93 @@ class StudyLoggingTests(SimpleTestCase):
         self.assertEqual(event["channel"], "system")
         self.assertNotIn("durationMs", event)
         self.assertNotIn("stepCount", event)
+
+
+class StudyAdminTests(SimpleTestCase):
+    def test_admin_lists_session_events_and_downloads_clean_exports(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            context = create_study_session(
+                participant_id="participant_admin_001",
+                condition="conversational",
+                task_id="asita_t1_area_analysis",
+                now=datetime(2026, 9, 1, 10, 30, tzinfo=UTC),
+                log_root=Path(temp_dir),
+            )
+            record_study_event(
+                context,
+                event_type="task_completed",
+                status="completed",
+                task_run_id="taskrun_admin_001",
+                duration_ms=1200,
+                log_root=Path(temp_dir),
+            )
+            client = Client()
+
+            page = client.get("/progettoGIS/cartaNatura/study-admin/")
+            json_export = client.get(
+                f"/progettoGIS/cartaNatura/study-admin/{context.participantId}/"
+                f"{context.studySessionId}/download/json/"
+            )
+            jsonl_export = client.get(
+                f"/progettoGIS/cartaNatura/study-admin/{context.participantId}/"
+                f"{context.studySessionId}/download/jsonl/"
+            )
+
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Esperimenti salvati")
+        self.assertContains(page, context.participantId)
+        self.assertContains(page, "task_completed")
+        self.assertEqual(json_export.status_code, 200)
+        self.assertEqual(jsonl_export.status_code, 200)
+        exported_payload = json.loads(json_export.content)
+        self.assertEqual(exported_payload["events"][0]["eventType"], "task_completed")
+        self.assertNotIn("prettyJson", exported_payload["events"][0])
+        self.assertIn('attachment; filename="participant_admin_001_', json_export["Content-Disposition"])
+        self.assertIn('"eventType": "task_completed"', jsonl_export.content.decode("utf-8"))
+
+    def test_admin_deletes_closed_session(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            context = create_study_session(
+                participant_id="participant_delete_001",
+                condition="webgis",
+                now=datetime(2026, 9, 1, 11, 0, tzinfo=UTC),
+                log_root=Path(temp_dir),
+            )
+            session_path = Path(temp_dir) / context.participantId / context.studySessionId
+            response = Client().post(
+                f"/progettoGIS/cartaNatura/study-admin/{context.participantId}/"
+                f"{context.studySessionId}/delete/"
+            )
+
+            self.assertEqual(response.status_code, 302)
+            self.assertFalse(session_path.exists())
+
+    def test_admin_does_not_delete_active_session(self):
+        with TemporaryDirectory() as temp_dir, override_settings(
+            STUDY_LOG_ROOT=Path(temp_dir),
+            SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
+        ):
+            client = Client()
+            started = client.post(
+                "/progettoGIS/cartaNatura/experiment/study/session",
+                data=json.dumps(
+                    {
+                        "participantId": "participant_active_001",
+                        "condition": "webgis",
+                        "taskId": "asita_t1_area_analysis",
+                    }
+                ),
+                content_type="application/json",
+            ).json()["session"]
+            session_path = Path(temp_dir) / started["participantId"] / started["studySessionId"]
+            response = client.post(
+                f"/progettoGIS/cartaNatura/study-admin/{started['participantId']}/"
+                f"{started['studySessionId']}/delete/"
+            )
+
+            self.assertEqual(response.status_code, 302)
+            self.assertIn("error=active", response.url)
+            self.assertTrue(session_path.exists())
 
 
 class VoiceTranscriptionTests(SimpleTestCase):

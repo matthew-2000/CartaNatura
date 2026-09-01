@@ -208,7 +208,7 @@ body.side-panel-open.assistant-panel-open.operational-panel-collapsed .workspace
 .map-card-toggle { border: 0; border-radius: 7px; background: var(--forest-soft); color: var(--forest); font-size: 11px; font-weight: 800; padding: 6px 9px; cursor: pointer; }
 .legend-card #legendContent { max-height: 230px; margin-top: 10px; overflow: auto; }
 .legend-card.is-collapsed #legendContent { display: none; }
-.legend-card.is-collapsed { width: 145px; }
+.legend-card.is-collapsed { width: min(190px, calc(100% - 28px)); }
 .legend-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; }
 .legend-item { display: flex; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 12px; line-height: 1.3; }
 .legend-swatch { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 3px; }
@@ -623,10 +623,11 @@ body.guide-modal-open::before { content: ""; position: fixed; z-index: 1410; ins
 .app-notice.is-success { border-left: 4px solid var(--forest-2); }
 .app-notice.is-warning { border-left: 4px solid var(--gold); }
 .app-notice.is-error { border-left: 4px solid var(--danger); }
-.study-console { position: fixed; z-index: 1500; right: 14px; bottom: 14px; width: min(350px, calc(100vw - 28px)); }
-.study-console-toggle, .study-action { min-height: 32px; border: 1px solid rgba(23,79,64,.2); border-radius: 8px; background: var(--forest); color: white; font-size: 11px; font-weight: 800; }
-.study-console-toggle { display: block; margin-left: auto; padding: 7px 10px; box-shadow: var(--shadow-soft); }
-.study-console-body { margin-top: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: var(--shadow-float); }
+.study-console { position: relative; z-index: 1500; flex: 0 0 auto; }
+.study-console-toggle, .study-action { min-height: 32px; border: 1px solid rgba(23,79,64,.2); border-radius: 8px; font-size: 11px; font-weight: 800; }
+.study-console-toggle { position: relative; }
+.study-console-toggle-badge { padding: 2px 5px; border-radius: 999px; background: var(--gold); color: white; font-size: 8px; letter-spacing: .04em; }
+.study-console-body { position: absolute; top: calc(100% + 12px); right: 0; width: min(390px, calc(100vw - 24px)); max-height: calc(100dvh - var(--header-height) - 24px); padding: 14px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: white; color: var(--ink); box-shadow: var(--shadow-float); }
 .study-console.is-collapsed .study-console-body { display: none; }
 .study-console-header { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
 .study-console-kicker, .study-console-grid span { color: var(--forest-2); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -639,8 +640,11 @@ body.guide-modal-open::before { content: ""; position: fixed; z-index: 1410; ins
 .study-console-grid input, .study-console-grid select { min-width: 0; width: 100%; height: 32px; padding: 0 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper-soft); font-size: 11px; }
 .study-console-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px; margin-top: 8px; }
 .study-action { background: white; color: var(--ink); }
+.study-admin-link { display: grid; place-items: center; text-decoration: none; }
+.study-admin-link:hover { color: var(--forest); text-decoration: none; }
 .study-action.is-primary { border-color: var(--earth); background: var(--earth); color: white; }
 .study-action.is-danger { color: var(--danger); }
+.study-action:disabled { cursor: not-allowed; opacity: .42; }
 
 /* Laptop breakpoints: desktop-first, no phone layout */
 @media (max-width: 1320px) {
@@ -653,6 +657,7 @@ body.guide-modal-open::before { content: ""; position: fixed; z-index: 1410; ins
   .workflow-action { padding-inline: 6px; }
   .workflow-divider { width: 5px; }
   .utility-action-assistant span { display: none; }
+  .study-console-toggle-label { display: none; }
   body.side-panel-open .workspace-main,
   body.side-panel-open.assistant-panel-open .workspace-main { grid-template-columns: minmax(0, 1fr) 0 var(--assistant-panel-width); }
   body.side-panel-open:not(.assistant-panel-open) .workspace-main { grid-template-columns: minmax(0, 1fr) 0 0; }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from django.conf import settings
@@ -10,7 +11,7 @@ from django.http import HttpResponse
 from django.http import HttpResponseNotFound
 from django.http import JsonResponse
 from django.http import StreamingHttpResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.middleware.csrf import get_token
 from django.templatetags.static import static
 from django.urls import reverse
@@ -30,6 +31,7 @@ from cartaNatura.experiments import (
     export_study_session,
     record_experiment_event,
 )
+from cartaNatura.experiments.study_logging import get_study_log_root, sanitize_identifier
 from cartaNatura.interaction import (
     DjangoSessionAnalysisStore,
     InteractionChannel,
@@ -350,6 +352,7 @@ def index(request):
         "study": {
             "enabled": _study_enabled(request),
             "sessionUrl": reverse("study_session"),
+            "adminUrl": reverse("study_admin"),
             "currentSession": _study_context_payload(request),
             "tasks": STUDY_TASKS,
         },
@@ -880,12 +883,6 @@ def experiment_log(request):
     if not isinstance(payload, dict):
         return JsonResponse({"error": "Richiesta non valida: payload non supportato."}, status=400)
 
-    active_task_before = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
-    previous_task_run_id = (
-        str(active_task_before.get("taskRunId") or "")
-        if isinstance(active_task_before, dict)
-        else ""
-    )
     event = record_experiment_event(
         request.session,
         event_type=str(payload.get("eventType") or ""),
@@ -905,11 +902,6 @@ def experiment_log(request):
         assistant_response=str(payload.get("assistantResponse") or ""),
         details=payload.get("details") if isinstance(payload.get("details"), dict) else {},
     )
-    if (
-        event.get("eventType") == "task_started"
-        and event.get("taskRunId") != previous_task_run_id
-    ):
-        _clear_operational_state_for_task(request)
     return JsonResponse({"event": event, "summary": export_experiment_log(request.session)["summary"]})
 
 
@@ -1005,3 +997,175 @@ def study_session(request):
         details={"taskId": context.taskId or ""},
     )
     return JsonResponse({"active": True, "session": context_payload, "event": event})
+
+
+def _read_study_json(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_study_jsonl(path: Path, *, with_pretty: bool = False) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    events: list[dict[str, object]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            if with_pretty:
+                event["prettyJson"] = json.dumps(event, ensure_ascii=False, indent=2, sort_keys=True)
+            events.append(event)
+    return events
+
+
+def _resolve_study_session_path(participant_id: str, study_session_id: str) -> Path | None:
+    if sanitize_identifier(participant_id, prefix="participant") != participant_id:
+        return None
+    if sanitize_identifier(study_session_id, prefix="session") != study_session_id:
+        return None
+    root = get_study_log_root().resolve()
+    session_path = (root / participant_id / study_session_id).resolve()
+    if root not in session_path.parents or not session_path.is_dir():
+        return None
+    return session_path
+
+
+def _study_admin_records() -> list[dict[str, object]]:
+    root = get_study_log_root()
+    if not root.exists():
+        return []
+    records: list[dict[str, object]] = []
+    for participant_path in root.iterdir():
+        if not participant_path.is_dir() or participant_path.name.startswith("."):
+            continue
+        for session_path in participant_path.iterdir():
+            if not session_path.is_dir() or session_path.name.startswith("."):
+                continue
+            summary = _read_study_json(session_path / "summary.json")
+            events = _read_study_jsonl(session_path / "events.jsonl", with_pretty=True)
+            last_event = events[-1] if events else {}
+            closed = (
+                last_event.get("eventType") == "reset_completed"
+                and last_event.get("operation") == "study_session_reset"
+            )
+            records.append(
+                {
+                    "participantId": participant_path.name,
+                    "studySessionId": session_path.name,
+                    "condition": summary.get("condition") or "—",
+                    "eventCount": summary.get("eventCount") or len(events),
+                    "taskCompletionCount": summary.get("taskCompletionCount") or 0,
+                    "failedTaskCount": summary.get("failedTaskCount") or 0,
+                    "errorCount": summary.get("errorCount") or 0,
+                    "unknownRequestCount": summary.get("unknownRequestCount") or 0,
+                    "startedAt": summary.get("startedAt"),
+                    "completedAt": summary.get("completedAt"),
+                    "statusLabel": "Chiusa" if closed else "Salvata",
+                    "summary": summary,
+                    "events": events,
+                }
+            )
+    return sorted(
+        records,
+        key=lambda item: str(item.get("startedAt") or item.get("studySessionId") or ""),
+        reverse=True,
+    )
+
+
+@ensure_csrf_cookie
+@require_http_methods(["GET"])
+def study_admin(request):
+    records = _study_admin_records()
+    requested_participant = str(request.GET.get("participant") or "")
+    requested_session = str(request.GET.get("session") or "")
+    selected = next(
+        (
+            record
+            for record in records
+            if record["participantId"] == requested_participant
+            and record["studySessionId"] == requested_session
+        ),
+        records[0] if records else None,
+    )
+    active_context = _study_context_payload(request)
+    active_key = None
+    if active_context:
+        active_key = (
+            active_context.get("participantId"),
+            active_context.get("studySessionId"),
+        )
+    if selected:
+        selected["isActive"] = active_key == (
+            selected["participantId"],
+            selected["studySessionId"],
+        )
+    return render(
+        request,
+        "cartaNatura/study_admin.html",
+        {
+            "records": records,
+            "selected": selected,
+            "participant_count": len({record["participantId"] for record in records}),
+            "event_count": sum(int(record["eventCount"] or 0) for record in records),
+            "deleted": request.GET.get("deleted") == "1",
+            "delete_blocked": request.GET.get("error") == "active",
+        },
+    )
+
+
+@require_http_methods(["GET"])
+def study_admin_download(request, participant_id: str, study_session_id: str, export_format: str):
+    session_path = _resolve_study_session_path(participant_id, study_session_id)
+    if session_path is None or export_format not in {"json", "jsonl"}:
+        return HttpResponseNotFound("Sessione non trovata.")
+    events_path = session_path / "events.jsonl"
+    if export_format == "jsonl":
+        body = events_path.read_text(encoding="utf-8") if events_path.exists() else ""
+        content_type = "application/jsonl; charset=utf-8"
+    else:
+        body = json.dumps(
+            {
+                "schema": "carta-natura-study-log",
+                "participantId": participant_id,
+                "studySessionId": study_session_id,
+                "summary": _read_study_json(session_path / "summary.json"),
+                "events": _read_study_jsonl(events_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        content_type = "application/json; charset=utf-8"
+    response = HttpResponse(body, content_type=content_type)
+    response["Content-Disposition"] = (
+        f'attachment; filename="{participant_id}_{study_session_id}.{export_format}"'
+    )
+    return response
+
+
+@require_POST
+def study_admin_delete(request, participant_id: str, study_session_id: str):
+    session_path = _resolve_study_session_path(participant_id, study_session_id)
+    if session_path is None:
+        return HttpResponseNotFound("Sessione non trovata.")
+    active_context = _study_context_payload(request)
+    if active_context and (
+        active_context.get("participantId") == participant_id
+        and active_context.get("studySessionId") == study_session_id
+    ):
+        return redirect(f'{reverse("study_admin")}?error=active')
+    participant_path = session_path.parent
+    shutil.rmtree(session_path)
+    try:
+        participant_path.rmdir()
+    except OSError:
+        pass
+    return redirect(f'{reverse("study_admin")}?deleted=1')

@@ -823,7 +823,18 @@ function updateStudyConditionIndicator() {
     return;
   }
   const condition = getActiveStudyCondition();
-  toggle.textContent = condition ? `Controllo · ${condition.toUpperCase()}` : "Controllo";
+  const label = toggle.querySelector(".study-console-toggle-label");
+  const badge = toggle.querySelector(".study-console-toggle-badge");
+  if (label) {
+    label.textContent = "Studio";
+  }
+  if (badge) {
+    badge.textContent = condition ? condition.toUpperCase() : "";
+    badge.hidden = !condition;
+  }
+  toggle.title = condition
+    ? `Controllo sperimentale · ${condition}`
+    : "Apri controllo sperimentale";
 }
 
 function applyConditionPolicy() {
@@ -946,10 +957,12 @@ function buildStudyConsole() {
   panel.id = "studyConsole";
   panel.className = "study-console is-collapsed";
   panel.innerHTML = `
-    <button type="button" class="study-console-toggle" aria-expanded="false" aria-controls="studyConsoleBody">
-      Controllo
+    <button type="button" class="utility-action study-console-toggle" aria-expanded="false" aria-haspopup="dialog" aria-controls="studyConsoleBody" title="Apri controllo sperimentale">
+      <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 5h6M9 3h6a1 1 0 0 1 1 1v2H8V4a1 1 0 0 1 1-1Z"/><path d="M7 5H5.75A1.75 1.75 0 0 0 4 6.75v12.5C4 20.22 4.78 21 5.75 21h12.5c.97 0 1.75-.78 1.75-1.75V6.75C20 5.78 19.22 5 18.25 5H17"/><path d="M8 11h8M8 15h5"/></svg>
+      <span class="study-console-toggle-label">Studio</span>
+      <span class="study-console-toggle-badge" hidden></span>
     </button>
-    <div id="studyConsoleBody" class="study-console-body">
+    <div id="studyConsoleBody" class="study-console-body" role="dialog" aria-label="Console operatore" aria-hidden="true">
       <div class="study-console-header">
         <div>
           <div class="study-console-kicker">Riservato</div>
@@ -975,32 +988,52 @@ function buildStudyConsole() {
         </label>
       </div>
       <div class="study-console-actions">
-        <button type="button" class="study-action is-primary" data-study-action="start-session">Avvia</button>
+        <button type="button" class="study-action is-primary" data-study-action="start-session">Avvia sessione</button>
         <button type="button" class="study-action" data-study-action="start-task">Inizia attività</button>
         <button type="button" class="study-action" data-study-action="complete-task">Completa</button>
         <button type="button" class="study-action" data-study-action="mark-error">Errore</button>
         <button type="button" class="study-action" data-study-action="mark-unknown">Non compresa</button>
-        <button type="button" class="study-action" data-study-action="export-json">JSON</button>
-        <button type="button" class="study-action" data-study-action="export-jsonl">JSONL</button>
-        <button type="button" class="study-action is-danger" data-study-action="reset-session">Reset</button>
+        <button type="button" class="study-action" data-study-action="export-json">Esporta JSON</button>
+        <button type="button" class="study-action" data-study-action="export-jsonl">Esporta JSONL</button>
+        <a class="study-action study-admin-link" href="${escapeHtml(appConfig.study.adminUrl)}">Archivio sessioni</a>
+        <button type="button" class="study-action is-danger" data-study-action="reset-session">Chiudi sessione</button>
       </div>
     </div>
   `;
-  document.body.appendChild(panel);
+  const headerTarget = elements.navbar?.querySelector(".utility-nav") || elements.navbar;
+  (headerTarget || document.body).appendChild(panel);
   state.study.panel = panel;
 
   panel.querySelector(".study-console-toggle").addEventListener("click", () => {
     const collapsed = !panel.classList.contains("is-collapsed");
     panel.classList.toggle("is-collapsed", collapsed);
     panel.querySelector(".study-console-toggle").setAttribute("aria-expanded", String(!collapsed));
+    panel.querySelector(".study-console-body").setAttribute("aria-hidden", String(collapsed));
   });
 
   panel.addEventListener("click", (event) => {
+    event.stopPropagation();
     const action = event.target.closest("[data-study-action]")?.dataset.studyAction;
     if (!action) {
       return;
     }
     handleStudyAction(action);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!panel.classList.contains("is-collapsed") && !panel.contains(event.target)) {
+      panel.classList.add("is-collapsed");
+      panel.querySelector(".study-console-toggle").setAttribute("aria-expanded", "false");
+      panel.querySelector(".study-console-body").setAttribute("aria-hidden", "true");
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !panel.classList.contains("is-collapsed")) {
+      panel.classList.add("is-collapsed");
+      panel.querySelector(".study-console-toggle").setAttribute("aria-expanded", "false");
+      panel.querySelector(".study-console-body").setAttribute("aria-hidden", "true");
+      panel.querySelector(".study-console-toggle").focus();
+    }
   });
 
   const currentSession = getStudySession();
@@ -1021,10 +1054,36 @@ function renderStudyStatus(message = null) {
   if (!session) {
     status.textContent = message || "Non avviata";
     status.classList.remove("is-active");
+    syncStudyControls();
+    updateStudyConditionIndicator();
     return;
   }
-  status.textContent = message || `${session.participantId} / ${session.condition}`;
+  status.textContent = message || (state.study.activeTask
+    ? `${state.study.activeTask.taskId} · ${session.condition}`
+    : `${session.participantId} · pronta`);
   status.classList.add("is-active");
+  syncStudyControls();
+  updateStudyConditionIndicator();
+}
+
+function syncStudyControls() {
+  const panel = state.study.panel;
+  if (!panel) {
+    return;
+  }
+  const hasSession = Boolean(getStudySession());
+  const hasActiveTask = Boolean(state.study.activeTask);
+  panel.querySelector('[data-study-action="start-session"]').disabled = hasSession;
+  panel.querySelector('[data-study-action="start-task"]').disabled = !hasSession || hasActiveTask;
+  panel.querySelector('[data-study-action="complete-task"]').disabled = !hasActiveTask;
+  panel.querySelector('[data-study-action="mark-error"]').disabled = !hasActiveTask;
+  panel.querySelector('[data-study-action="mark-unknown"]').disabled = !hasActiveTask;
+  panel.querySelector('[data-study-action="export-json"]').disabled = !hasSession;
+  panel.querySelector('[data-study-action="export-jsonl"]').disabled = !hasSession;
+  panel.querySelector('[data-study-action="reset-session"]').disabled = !hasSession;
+  panel.querySelector("#studyParticipantId").disabled = hasSession;
+  panel.querySelector("#studyCondition").disabled = hasSession;
+  panel.querySelector("#studyTaskId").disabled = hasActiveTask;
 }
 
 async function handleStudyAction(action) {
@@ -1038,9 +1097,7 @@ async function handleStudyAction(action) {
     } else if (action === "mark-error") {
       await finishStudyTask("task_failed", "failed", { error: "manual_task_failure" });
     } else if (action === "mark-unknown") {
-      await markStudyEvent("unknown_request", "manual_mark", "marked", {
-        error: "manual_unknown_request",
-      });
+      await markUnknownStudyTask();
     } else if (action === "export-json") {
       await downloadStudyExport("json");
     } else if (action === "export-jsonl") {
@@ -1079,11 +1136,6 @@ async function startStudyTask() {
     throw new Error("Avvia prima la sessione riservata.");
   }
   const taskId = state.study.panel.querySelector("#studyTaskId").value;
-  if (state.mapController) {
-    resetAnalysis(state.mapController, { operation: "task_transition_reset" });
-  }
-  state.assistantMessages = [{ role: "assistant", text: "Assistente pronto." }];
-  renderAssistantMessages();
   const result = await recordExperiment({
     eventType: "task_started",
     channel: "system",
@@ -1126,7 +1178,31 @@ async function finishStudyTask(eventType, status, extra = {}) {
   }
   state.study.activeTask = null;
   applyConditionPolicy();
-  renderStudyStatus(status === "completed" ? "Completata" : "Terminata con errore");
+  renderStudyStatus(
+    status === "completed"
+      ? "Attività completata"
+      : extra.error === "manual_unknown_request"
+        ? "Attività non compresa"
+        : "Attività terminata con errore"
+  );
+}
+
+async function markUnknownStudyTask() {
+  if (!state.study.activeTask) {
+    throw new Error("Nessuna attività in corso.");
+  }
+  await recordExperiment({
+    eventType: "unknown_request",
+    channel: "system",
+    operation: "manual_mark",
+    interactionMode: "system",
+    taskId: state.study.activeTask.taskId,
+    taskRunId: state.study.activeTask.taskRunId,
+    status: "marked",
+    error: "manual_unknown_request",
+    stepCount: 1,
+  });
+  await finishStudyTask("task_failed", "failed", { error: "manual_unknown_request" });
 }
 
 async function markStudyEvent(eventType, operation, status, extra = {}) {
@@ -1159,6 +1235,7 @@ async function downloadStudyExport(format) {
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = `${session.participantId}_${session.studySessionId}.${format}`;
+  link.addEventListener("click", (event) => event.stopPropagation());
   document.body.appendChild(link);
   link.click();
   URL.revokeObjectURL(link.href);
@@ -1170,15 +1247,6 @@ async function resetCurrentStudySession() {
   if (state.study.activeTask) {
     await finishStudyTask("task_interrupted", "interrupted", {
       error: "study_session_reset",
-    });
-  }
-  if (getStudySession()) {
-    await recordExperiment({
-      eventType: "reset_completed",
-      channel: "system",
-      operation: "study_console_reset",
-      interactionMode: "system",
-      status: "completed",
     });
   }
   await clearStudySession(appConfig.study.sessionUrl);
