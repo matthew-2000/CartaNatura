@@ -2319,7 +2319,7 @@ function renderInfoSummary() {
       <div class="analysis-value-actions">
         <button id="butstampadettagli" type="button">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7Z"/><path d="M14 3v5h5M9.5 13h5M9.5 16h5"/></svg>
-          Esporta PDF
+          Genera PDF
         </button>
       </div>
     `;
@@ -2331,9 +2331,11 @@ function renderInfoSummary() {
       calculateButtonRef.disabled = true;
       printButton.disabled = true;
       closeButton.disabled = true;
+      resultRoot.setAttribute("aria-busy", "true");
+      resultRoot.querySelectorAll(".pdf-ready, .pdf-status").forEach((element) => element.remove());
       resultRoot.insertAdjacentHTML(
         "beforeend",
-        `<div class="pdf-status"><strong>Generazione PDF in corso...</strong></div>`
+        `<div class="pdf-status" role="status" aria-live="polite"><strong>Generazione PDF in corso…</strong><span>La mappa e i dati vengono impaginati.</span></div>`
       );
 
       try {
@@ -2357,9 +2359,13 @@ function renderInfoSummary() {
             "beforeend",
             `<div class="pdf-ready">
               <span><strong>Report pronto</strong><small>4 pagine · PDF A4</small></span>
-              <a href="${escapeHtml(generatedPdf.objectUrl)}" target="_blank" rel="noopener">Apri anteprima</a>
+              <span class="pdf-ready-actions">
+                <a class="pdf-download" href="${escapeHtml(generatedPdf.objectUrl)}" download="${escapeHtml(generatedPdf.filename || "carta-natura-report.pdf")}">Scarica PDF</a>
+                <a class="pdf-preview" href="${escapeHtml(generatedPdf.objectUrl)}" target="_blank" rel="noopener">Anteprima</a>
+              </span>
             </div>`
           );
+          printButton.closest(".analysis-value-actions")?.setAttribute("hidden", "");
         }
         recordExperiment({
           eventType: "report_generated",
@@ -2399,11 +2405,16 @@ function renderInfoSummary() {
             taskOutcome: failureStatus,
           },
         });
+        resultRoot.insertAdjacentHTML(
+          "beforeend",
+          `<div class="pdf-status is-error" role="alert"><strong>PDF non generato.</strong><span>${escapeHtml(error.message || "Riprova tra qualche istante.")}</span></div>`
+        );
         showNotice(error.message || "Errore nella generazione del PDF.", "error");
       } finally {
         calculateButtonRef.disabled = false;
         printButton.disabled = false;
         closeButton.disabled = false;
+        resultRoot.setAttribute("aria-busy", "false");
         const status = resultRoot.querySelector(".pdf-status");
         if (status) {
           status.remove();

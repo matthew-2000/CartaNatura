@@ -20,6 +20,7 @@ const COLORS = Object.freeze({
 });
 
 let activePdfObjectUrl = null;
+const MAP_CAPTURE_TIMEOUT_MS = 10000;
 
 function getJsPdfConstructor() {
   return window.jsPDF || window.jspdf?.jsPDF || null;
@@ -157,20 +158,13 @@ function waitForLayout() {
   return new Promise((resolve) => window.setTimeout(resolve, 360));
 }
 
-function downloadDocument(doc, filename) {
+function prepareDocument(doc, filename) {
   if (activePdfObjectUrl) {
     URL.revokeObjectURL(activePdfObjectUrl);
   }
   const blob = doc.output("blob");
   const objectUrl = URL.createObjectURL(blob);
   activePdfObjectUrl = objectUrl;
-  const link = document.createElement("a");
-  link.href = objectUrl;
-  link.download = filename;
-  link.hidden = true;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
   return { filename, objectUrl };
 }
 
@@ -179,10 +173,18 @@ async function captureMap(mapElement) {
   window.dispatchEvent(new Event("resize"));
   try {
     await waitForLayout();
-    return await window.domtoimage.toPng(mapElement, {
-      bgcolor: "#dbe6e5",
-      quality: 1,
-    });
+    return await Promise.race([
+      window.domtoimage.toPng(mapElement, {
+        bgcolor: "#dbe6e5",
+        quality: 1,
+      }),
+      new Promise((_, reject) => {
+        window.setTimeout(
+          () => reject(new DOMException("Acquisizione mappa scaduta.", "TimeoutError")),
+          MAP_CAPTURE_TIMEOUT_MS
+        );
+      }),
+    ]);
   } finally {
     document.body.classList.remove("pdf-map-capture");
     window.dispatchEvent(new Event("resize"));
@@ -192,7 +194,16 @@ async function captureMap(mapElement) {
 function drawMapFrame(doc, mapImage, x, y, width, height) {
   doc.setFillColor(235, 240, 237);
   doc.roundedRect(x, y, width, height, 3, 3, "F");
-  doc.addImage(mapImage, "PNG", x, y, width, height);
+  if (mapImage) {
+    doc.addImage(mapImage, "PNG", x, y, width, height);
+  } else {
+    setText(doc, COLORS.forest, 11, "bold");
+    doc.text("Area analizzata", x + width / 2, y + height / 2 - 2, { align: "center" });
+    setText(doc, COLORS.soft, 7.5, "normal");
+    doc.text("Anteprima mappa non disponibile", x + width / 2, y + height / 2 + 5, {
+      align: "center",
+    });
+  }
   doc.setDrawColor(...COLORS.line);
   doc.roundedRect(x, y, width, height, 3, 3, "S");
   doc.setFillColor(...COLORS.forest);
@@ -576,7 +587,12 @@ export async function generatePdfReport({
     formatRoundedNumber,
   } = analysisUtils;
   const doc = new JsPdf({ orientation: "portrait", unit: "mm", format: "a4" });
-  const mapImage = await captureMap(mapElement);
+  let mapImage = null;
+  try {
+    mapImage = await captureMap(mapElement);
+  } catch (error) {
+    console.warn("PDF map capture unavailable; generating the data report without it.", error);
+  }
   const context = {
     analysisId,
     summary,
@@ -613,7 +629,7 @@ export async function generatePdfReport({
     drawFooter(doc, pageNumber, pageCount, analysisId);
   }
 
-  return downloadDocument(doc, "carta-natura-report.pdf");
+  return prepareDocument(doc, "carta-natura-report.pdf");
 }
 
 function hexToRgb(hexColor) {
