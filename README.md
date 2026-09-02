@@ -56,6 +56,8 @@ Variabili principali:
 - `DJANGO_DEBUG`
 - `DJANGO_ALLOWED_HOSTS`
 - `DJANGO_CORS_ALLOWED_ORIGINS`
+- `DJANGO_CSRF_TRUSTED_ORIGINS`
+- `DJANGO_DATA_DIR`: directory persistente per SQLite e log dello studio
 - `AI_ASSISTANT_ENABLED`
 - `LLM_PROVIDER`: `openai` oppure `ollama`
 - `LLM_MODEL`: override generico del modello selezionato
@@ -90,6 +92,20 @@ OLLAMA_THINK=false
 ```
 
 La scelta del provider è esplicita: se il provider selezionato è incompleto o non disponibile, l'app restituisce un errore controllato e non passa automaticamente all'altro provider.
+
+### Railway
+
+Il container applica automaticamente le migrazioni e avvia Django con Gunicorn sulla porta fornita dalla piattaforma. Per conservare database, sessioni e log tra i deploy, collegare un volume Railway montato su `/data` e impostare:
+
+```env
+DJANGO_DEBUG=false
+DJANGO_DATA_DIR=/data
+DJANGO_ALLOWED_HOSTS=.up.railway.app
+DJANGO_CSRF_TRUSTED_ORIGINS=https://nome-servizio.up.railway.app
+DJANGO_SECURE_SSL_REDIRECT=true
+```
+
+Se Railway espone `RAILWAY_PUBLIC_DOMAIN`, il dominio viene aggiunto automaticamente sia agli host consentiti sia alle origini CSRF attendibili.
 
 ## Architettura
 
