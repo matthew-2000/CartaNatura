@@ -95,11 +95,10 @@ La scelta del provider è esplicita: se il provider selezionato è incompleto o 
 
 ### Railway
 
-Il container applica automaticamente le migrazioni e avvia Django con Gunicorn sulla porta fornita dalla piattaforma. Per conservare database, sessioni e log tra i deploy, collegare un volume Railway montato su `/data` e impostare:
+Il container applica automaticamente le migrazioni e avvia Django con Gunicorn sulla porta fornita dalla piattaforma. Su Railway la modalità debug viene disattivata automaticamente e `/data` diventa il percorso predefinito per database e log. Per conservarli tra i deploy, collegare un volume Railway montato su `/data`.
 
 ```env
-DJANGO_DEBUG=false
-DJANGO_DATA_DIR=/data
+DJANGO_SECRET_KEY=<una-chiave-lunga-e-casuale>
 DJANGO_ALLOWED_HOSTS=.up.railway.app
 DJANGO_CSRF_TRUSTED_ORIGINS=https://nome-servizio.up.railway.app
 DJANGO_SECURE_SSL_REDIRECT=true

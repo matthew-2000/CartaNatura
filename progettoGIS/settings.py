@@ -20,6 +20,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(BASE_DIR / ".env")
 
+RUNNING_ON_RAILWAY = bool(
+    os.getenv("RAILWAY_PROJECT_ID") or os.getenv("RAILWAY_ENVIRONMENT_ID")
+)
+
 
 def env_list(name: str) -> list[str]:
     """Return a comma-separated environment variable as a clean list."""
@@ -34,7 +38,11 @@ def env_list(name: str) -> list[str]:
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-dev-only-secret-key")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
+DEBUG = (
+    False
+    if RUNNING_ON_RAILWAY
+    else os.getenv("DJANGO_DEBUG", "true").lower() == "true"
+)
 
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS") or ["localhost", "127.0.0.1"]
 
@@ -92,7 +100,13 @@ WSGI_APPLICATION = 'progettoGIS.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.1/ref/settings/#databases
 
-DATA_DIR = Path(os.getenv("DJANGO_DATA_DIR", str(BASE_DIR))).expanduser()
+configured_data_dir = os.getenv("DJANGO_DATA_DIR", "").strip()
+default_data_dir = Path("/data") if RUNNING_ON_RAILWAY else BASE_DIR
+DATA_DIR = (
+    Path(configured_data_dir).expanduser()
+    if configured_data_dir
+    else default_data_dir
+)
 
 DATABASES = {
     'default': {

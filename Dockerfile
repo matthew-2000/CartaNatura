@@ -20,4 +20,4 @@ RUN python manage.py collectstatic --noinput
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "mkdir -p \"${DJANGO_DATA_DIR:-/app}\" && python manage.py migrate --noinput && exec gunicorn progettoGIS.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers ${WEB_CONCURRENCY:-1} --threads ${GUNICORN_THREADS:-2} --timeout ${GUNICORN_TIMEOUT:-180} --access-logfile - --error-logfile -"]
+CMD ["sh", "-c", "DATA_DIR=${DJANGO_DATA_DIR:-}; if [ -z \"$DATA_DIR\" ]; then if [ -n \"${RAILWAY_PROJECT_ID:-}\" ]; then DATA_DIR=/data; else DATA_DIR=/app; fi; fi; mkdir -p \"$DATA_DIR\" && python manage.py migrate --noinput && exec gunicorn progettoGIS.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers ${WEB_CONCURRENCY:-1} --threads ${GUNICORN_THREADS:-2} --timeout ${GUNICORN_TIMEOUT:-180} --access-logfile - --error-logfile -"]
