@@ -6,7 +6,6 @@ from typing import Any, Generator
 
 from .analysis_store import AnalysisStore, NullAnalysisStore
 from .assistant_runtime import (
-    RULE_BASED_CHAT_INTENTS,
     AssistantToolExecutor,
     AssistantRuntime,
 )
@@ -18,7 +17,7 @@ from .handlers import (
     ExplainLastAnalysisHandler,
     ResetSessionHandler,
 )
-from .llm import build_optional_llm_provider
+from .llm import LlmProviderConfigurationError, build_optional_llm_provider
 from .models import (
     InteractionChannel,
     InteractionIntent,
@@ -48,26 +47,11 @@ class InteractionOrchestrator:
 
     def handle(self, request: InteractionRequest) -> InteractionResponse:
         session_context = self._session_store.load(request.session_id)
+        if not self._is_graphical_selection(request):
+            response = self._require_chat_runtime().handle(request, session_context)
+            return self._persist_response(request, session_context, response)
+
         resolution = self._resolver.resolve(request, session_context)
-
-        if request.channel is not InteractionChannel.WEB_MAP:
-            if self._should_use_rule_based_chat_path(resolution):
-                if (
-                    self._chat_runtime is not None
-                    and resolution.command.intent is not InteractionIntent.RESET_SESSION
-                ):
-                    response = self._chat_runtime.handle_preplanned(
-                        request,
-                        session_context,
-                        intent=resolution.command.intent,
-                        command_payload=resolution.command.payload,
-                    )
-                    return self._persist_response(request, session_context, response)
-                return self._handle_resolved_command(request, session_context, resolution)
-            if self._chat_runtime is not None:
-                response = self._chat_runtime.handle(request, session_context)
-                return self._persist_response(request, session_context, response)
-
         if resolution.command.intent is InteractionIntent.UNKNOWN:
             return InteractionResponse(
                 messages=(
@@ -88,29 +72,8 @@ class InteractionOrchestrator:
     ) -> Generator[dict[str, Any], None, InteractionResponse]:
         session_context = self._session_store.load(request.session_id)
 
-        resolution = self._resolver.resolve(request, session_context)
-        if resolution.command.intent is InteractionIntent.RESET_SESSION:
-            response = self._handle_resolved_command(request, session_context, resolution)
-            yield self._serialize_stream_done_event(response)
-            return response
-
-        if (
-            request.channel is not InteractionChannel.WEB_MAP
-            and self._chat_runtime is not None
-            and self._should_use_rule_based_chat_path(resolution)
-        ):
-            response = yield from self._chat_runtime.stream_preplanned(
-                request,
-                session_context,
-                intent=resolution.command.intent,
-                command_payload=resolution.command.payload,
-            )
-            response = self._persist_response(request, session_context, response)
-            yield self._serialize_stream_done_event(response)
-            return response
-
-        if request.channel is not InteractionChannel.WEB_MAP and self._chat_runtime is not None:
-            response = yield from self._chat_runtime.stream_handle(request, session_context)
+        if not self._is_graphical_selection(request):
+            response = yield from self._require_chat_runtime().stream_handle(request, session_context)
             response = self._persist_response(request, session_context, response)
             yield self._serialize_stream_done_event(response)
             return response
@@ -135,9 +98,8 @@ class InteractionOrchestrator:
         session_context,
         response: InteractionResponse,
     ) -> InteractionResponse:
-        if response.commands and response.commands[0].intent is InteractionIntent.RESET_SESSION:
+        if response.ui_hints.get("mode") == "reset":
             self._session_store.clear(request.session_id)
-            self._analysis_store.clear()
             return response
 
         self._session_store.save(
@@ -168,14 +130,18 @@ class InteractionOrchestrator:
         }
 
     @staticmethod
-    def _should_use_rule_based_chat_path(resolution) -> bool:
-        if resolution.command.intent not in RULE_BASED_CHAT_INTENTS:
-            return False
+    def _is_graphical_selection(request: InteractionRequest) -> bool:
+        return (
+            request.channel is InteractionChannel.WEB_MAP
+            and request.input.has_structured_selection()
+        )
 
-        if resolution.command.intent is InteractionIntent.ANALYZE_MUNICIPALITIES:
-            return "matchMode" not in resolution.command.payload
-
-        return True
+    def _require_chat_runtime(self) -> AssistantRuntime:
+        if self._chat_runtime is None:
+            raise LlmProviderConfigurationError(
+                "Assistente AI non configurato: serve un provider LLM con supporto ai tool."
+            )
+        return self._chat_runtime
 
 
 def build_default_orchestrator(

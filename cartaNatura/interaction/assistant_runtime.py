@@ -21,7 +21,6 @@ from .models import (
 )
 from .observability import elapsed_ms, log_provider_call, log_tool_call, start_timer
 from .llm import LlmProviderUnavailableError
-from .resolvers import RuleBasedIntentResolver
 from .tools import ToolName
 from .tools.registry import ToolRegistry
 from .ui_actions import ALLOWED_UI_ACTIONS, filter_ui_actions
@@ -55,13 +54,6 @@ MODEL_TOOL_NAMES = (
     MODEL_TOOL_PREPARE_REPORT,
     MODEL_TOOL_FILTER_LAST_ANALYSIS,
 )
-RULE_BASED_CHAT_INTENTS = {
-    InteractionIntent.ANALYZE_SELECTION,
-    InteractionIntent.ANALYZE_MUNICIPALITIES,
-    InteractionIntent.COMPARE_ANALYSES,
-    InteractionIntent.EXPLAIN_LAST_ANALYSIS,
-    InteractionIntent.RESET_SESSION,
-}
 
 
 @dataclass(frozen=True)
@@ -410,107 +402,6 @@ class AssistantRuntime:
             loop_result=loop_result,
         )
 
-    def handle_preplanned(
-        self,
-        request: InteractionRequest,
-        session_context: SessionContext,
-        *,
-        intent: InteractionIntent,
-        command_payload: dict[str, Any] | None = None,
-    ) -> InteractionResponse:
-        tool_call = self._preplanned_tool_call(intent, command_payload or {})
-        if tool_call is None:
-            raise ValueError(f"Intento operativo non pianificabile: {intent.value}.")
-        outcome = self._execute_tool_call(
-            tool_call=tool_call,
-            request=request,
-            session_context=session_context,
-        )
-        return self._build_interaction_response(
-            request=request,
-            session_context=session_context,
-            loop_result=self._loop_result_from_outcome(outcome, fallback_intent=intent),
-        )
-
-    def stream_preplanned(
-        self,
-        request: InteractionRequest,
-        session_context: SessionContext,
-        *,
-        intent: InteractionIntent,
-        command_payload: dict[str, Any] | None = None,
-    ) -> Generator[dict[str, Any], None, InteractionResponse]:
-        tool_call = self._preplanned_tool_call(intent, command_payload or {})
-        if tool_call is None:
-            raise ValueError(f"Intento operativo non pianificabile: {intent.value}.")
-        yield {"type": "status", "stage": "started", "message": "Richiesta ricevuta."}
-        yield {
-            "type": "tool_running",
-            "toolName": tool_call["name"],
-            "toolCallId": f"preplanned_{intent.value}",
-        }
-        outcome = self._execute_tool_call(
-            tool_call=tool_call,
-            request=request,
-            session_context=session_context,
-        )
-        yield {
-            "type": "tool_result",
-            "toolName": tool_call["name"],
-            "toolCallId": f"preplanned_{intent.value}",
-            "result": outcome.payload,
-        }
-        response = self._build_interaction_response(
-            request=request,
-            session_context=session_context,
-            loop_result=self._loop_result_from_outcome(outcome, fallback_intent=intent),
-        )
-        return response
-
-    @staticmethod
-    def _preplanned_tool_call(
-        intent: InteractionIntent,
-        command_payload: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if intent is InteractionIntent.ANALYZE_MUNICIPALITIES:
-            return {
-                "name": MODEL_TOOL_ANALYZE_MUNICIPALITIES,
-                "arguments": {
-                    "municipality_names": list(command_payload.get("municipality_names", []))
-                },
-            }
-        if intent is InteractionIntent.ANALYZE_SELECTION:
-            return {"name": MODEL_TOOL_ANALYZE_CURRENT_SELECTION, "arguments": {}}
-        if intent is InteractionIntent.COMPARE_ANALYSES:
-            return {"name": MODEL_TOOL_COMPARE_RECENT_ANALYSES, "arguments": {"recent_count": 2}}
-        if intent is InteractionIntent.EXPLAIN_LAST_ANALYSIS:
-            return {"name": MODEL_TOOL_GET_LAST_ANALYSIS, "arguments": {}}
-        return None
-
-    def _loop_result_from_outcome(
-        self,
-        outcome: ToolExecutionOutcome,
-        *,
-        fallback_intent: InteractionIntent,
-    ) -> RuntimeLoopResult:
-        intent = outcome.intent or fallback_intent
-        return RuntimeLoopResult(
-            response_body=self._authoritative_response_placeholder(intent),
-            latest_analysis_result=outcome.analysis_result,
-            latest_economic_result=outcome.economic_result,
-            latest_scenario_comparison=outcome.scenario_comparison,
-            latest_report_context=outcome.report_context,
-            latest_map_filter=outcome.map_filter,
-            latest_last_analysis_details=outcome.last_analysis_details,
-            latest_history_result=outcome.history_result,
-            latest_search_result=outcome.search_result,
-            latest_tool_error=outcome.tool_error,
-            latest_analysis=outcome.last_analysis,
-            latest_selection_payload=outcome.selection_payload,
-            derived_intent=intent,
-            clears_context=outcome.clears_context,
-        )
-
     def stream_handle(
         self,
         request: InteractionRequest,
@@ -563,6 +454,7 @@ class AssistantRuntime:
         derived_intent = InteractionIntent.UNKNOWN
         clears_context = False
         tool_rounds = 0
+        tool_request, tool_context = request, session_context
 
         while True:
             tool_calls = self._extract_tool_calls(response_body)
@@ -575,7 +467,6 @@ class AssistantRuntime:
                 )
 
             tool_outputs = []
-            tool_outcomes = []
             for tool_call in tool_calls:
                 yield {
                     "type": "tool_start",
@@ -584,10 +475,19 @@ class AssistantRuntime:
                 }
                 outcome = self._execute_tool_call(
                     tool_call=tool_call,
-                    request=request,
-                    session_context=session_context,
+                    request=tool_request,
+                    session_context=tool_context,
                 )
-                tool_outcomes.append(outcome)
+                tool_request, tool_context = self._advance_tool_context(tool_request, tool_context, outcome)
+                if outcome.clears_context:
+                    latest_analysis_result = latest_analysis = latest_selection_payload = None
+                    latest_economic_result = latest_scenario_comparison = latest_report_context = None
+                    latest_map_filter = latest_last_analysis_details = latest_history_result = latest_search_result = None
+                if outcome.analysis_result is not None and outcome.analysis_result.get("clipped") is not None:
+                    # A new area invalidates values and filters from an earlier
+                    # area in this same turn, just as it does in the WebGIS UI.
+                    latest_economic_result = latest_scenario_comparison = latest_report_context = None
+                    latest_map_filter = latest_last_analysis_details = None
                 if outcome.analysis_result is not None:
                     latest_analysis_result = outcome.analysis_result
                     yield {
@@ -608,8 +508,7 @@ class AssistantRuntime:
                     latest_history_result = outcome.history_result
                 if outcome.search_result is not None:
                     latest_search_result = outcome.search_result
-                if outcome.tool_error is not None:
-                    latest_tool_error = outcome.tool_error
+                latest_tool_error = outcome.tool_error
                 if outcome.last_analysis is not None:
                     latest_analysis = outcome.last_analysis
                 if outcome.selection_payload is not None:
@@ -642,13 +541,9 @@ class AssistantRuntime:
                     "tool_outputs": tool_outputs,
                 }
             )
-            response_phase = self._next_response_phase(tool_calls, tool_outcomes)
-            if (
-                response_phase == "final"
-                and self._outcomes_require_authoritative_text(tool_outcomes)
-            ):
-                response_body = self._authoritative_response_placeholder(derived_intent)
-                break
+            # The model decides whether to call another tool or answer. A GIS
+            # result is not necessarily the end of a compound request.
+            response_phase = "tool_planning"
             yield {
                 "type": "status",
                 "stage": "synthesizing_response",
@@ -669,7 +564,23 @@ class AssistantRuntime:
                     ),
                 ),
                 phase=response_phase,
-                emit_message_deltas=not self._outcomes_require_authoritative_text(tool_outcomes),
+            )
+
+        if self._parse_final_payload(response_body).get("_unstructured"):
+            response_body = yield from self._stream_response_body_events(
+                request=request,
+                payload=self._build_model_request_payload(
+                    request=request,
+                    session_context=session_context,
+                    response_input=self._formatting_request(),
+                    previous_response_id=str(response_body.get("id") or ""),
+                    provider_metadata=self._build_provider_metadata(
+                        current_turn_input=current_turn_input,
+                        tool_exchanges=provider_tool_exchanges,
+                        response_phase="final",
+                    ),
+                ),
+                phase="final",
             )
 
         response = self._build_interaction_response(
@@ -764,6 +675,7 @@ class AssistantRuntime:
         derived_intent = InteractionIntent.UNKNOWN
         clears_context = False
         tool_rounds = 0
+        tool_request, tool_context = request, session_context
 
         while True:
             tool_calls = self._extract_tool_calls(response_body)
@@ -776,7 +688,6 @@ class AssistantRuntime:
                 )
 
             tool_outputs = []
-            tool_outcomes = []
             for tool_call in tool_calls:
                 self._emit_event(
                     event_callback,
@@ -787,10 +698,19 @@ class AssistantRuntime:
                 )
                 outcome = self._execute_tool_call(
                     tool_call=tool_call,
-                    request=request,
-                    session_context=session_context,
+                    request=tool_request,
+                    session_context=tool_context,
                 )
-                tool_outcomes.append(outcome)
+                tool_request, tool_context = self._advance_tool_context(tool_request, tool_context, outcome)
+                if outcome.clears_context:
+                    latest_analysis_result = latest_analysis = latest_selection_payload = None
+                    latest_economic_result = latest_scenario_comparison = latest_report_context = None
+                    latest_map_filter = latest_last_analysis_details = latest_history_result = latest_search_result = None
+                if outcome.analysis_result is not None and outcome.analysis_result.get("clipped") is not None:
+                    # A new area invalidates values and filters from an earlier
+                    # area in this same turn, just as it does in the WebGIS UI.
+                    latest_economic_result = latest_scenario_comparison = latest_report_context = None
+                    latest_map_filter = latest_last_analysis_details = None
                 if outcome.analysis_result is not None:
                     latest_analysis_result = outcome.analysis_result
                     self._emit_event(
@@ -814,8 +734,7 @@ class AssistantRuntime:
                     latest_history_result = outcome.history_result
                 if outcome.search_result is not None:
                     latest_search_result = outcome.search_result
-                if outcome.tool_error is not None:
-                    latest_tool_error = outcome.tool_error
+                latest_tool_error = outcome.tool_error
                 if outcome.last_analysis is not None:
                     latest_analysis = outcome.last_analysis
                 if outcome.selection_payload is not None:
@@ -850,13 +769,9 @@ class AssistantRuntime:
                     "tool_outputs": tool_outputs,
                 }
             )
-            response_phase = self._next_response_phase(tool_calls, tool_outcomes)
-            if (
-                response_phase == "final"
-                and self._outcomes_require_authoritative_text(tool_outcomes)
-            ):
-                response_body = self._authoritative_response_placeholder(derived_intent)
-                break
+            # The model decides whether to call another tool or answer. A GIS
+            # result is not necessarily the end of a compound request.
+            response_phase = "tool_planning"
             response_body = self._request_response_body(
                 request=request,
                 session_context=session_context,
@@ -867,6 +782,20 @@ class AssistantRuntime:
                     current_turn_input=current_turn_input,
                     tool_exchanges=provider_tool_exchanges,
                     response_phase=response_phase,
+                ),
+            )
+
+        if self._parse_final_payload(response_body).get("_unstructured"):
+            response_body = self._request_response_body(
+                request=request,
+                session_context=session_context,
+                response_input=self._formatting_request(),
+                previous_response_id=str(response_body.get("id") or ""),
+                event_callback=event_callback,
+                provider_metadata=self._build_provider_metadata(
+                    current_turn_input=current_turn_input,
+                    tool_exchanges=provider_tool_exchanges,
+                    response_phase="final",
                 ),
             )
 
@@ -886,6 +815,29 @@ class AssistantRuntime:
             derived_intent=derived_intent,
             clears_context=clears_context,
         )
+
+    @staticmethod
+    def _advance_tool_context(
+        request: InteractionRequest,
+        context: SessionContext,
+        outcome: ToolExecutionOutcome,
+    ) -> tuple[InteractionRequest, SessionContext]:
+        if outcome.clears_context:
+            return replace(request, context=type(request.context)()), SessionContext()
+        if outcome.last_analysis is not None:
+            context = replace(
+                context,
+                last_analysis=outcome.last_analysis,
+                selection_payload=outcome.selection_payload or context.selection_payload,
+            )
+        if outcome.analysis_result is not None and outcome.analysis_result.get("clipped") is not None:
+            request = replace(request, context=replace(
+                request.context,
+                displayed_analysis_id=outcome.analysis_result.get("analysisId"),
+                selected_municipalities=(),
+                current_selection_payload=None,
+            ))
+        return request, context
 
     def _request_response_body(
         self,
@@ -1097,42 +1049,6 @@ class AssistantRuntime:
         return final_payload
 
     @staticmethod
-    def _outcomes_require_authoritative_text(
-        outcomes: list[ToolExecutionOutcome],
-    ) -> bool:
-        return any(
-            outcome.analysis_result is not None
-            or outcome.economic_result is not None
-            or outcome.scenario_comparison is not None
-            or outcome.report_context is not None
-            or outcome.map_filter is not None
-            or outcome.last_analysis_details is not None
-            or outcome.history_result is not None
-            or outcome.search_result is not None
-            or outcome.tool_error is not None
-            or outcome.clears_context
-            for outcome in outcomes
-        )
-
-    @staticmethod
-    def _authoritative_response_placeholder(intent: InteractionIntent) -> dict[str, Any]:
-        return {
-            "id": "",
-            "output_text": json.dumps(
-                {
-                    "intent": intent.value,
-                    "assistant_text": "",
-                    "needs_clarification": False,
-                    "clarification_question": "",
-                    "ui_actions": [],
-                    "citations_internal": [],
-                    "follow_up_suggestions": [],
-                }
-            ),
-            "output": [],
-        }
-
-    @staticmethod
     def _stream_model_created_message(phase: str) -> str:
         if phase in {"synthesis", "final"}:
             return "L'assistente sta scrivendo la risposta finale."
@@ -1143,37 +1059,6 @@ class AssistantRuntime:
         if phase == "tool_planning":
             return "Strumenti completati. Continuo l'elaborazione."
         return "Strumenti completati. Preparo la risposta finale."
-
-    @staticmethod
-    def _next_response_phase(
-        tool_calls: list[dict[str, Any]],
-        tool_outcomes: list[ToolExecutionOutcome],
-    ) -> str:
-        if tool_calls and all(
-            str(tool_call.get("name") or "") == MODEL_TOOL_SEARCH_MUNICIPALITIES
-            for tool_call in tool_calls
-        ):
-            if all(
-                AssistantRuntime._search_outcome_has_single_candidate(outcome)
-                for outcome in tool_outcomes
-            ):
-                return "tool_planning"
-            return "final"
-        return "final"
-
-    @staticmethod
-    def _search_outcome_has_single_candidate(outcome: ToolExecutionOutcome) -> bool:
-        exact_matches = (
-            outcome.payload.get("exactMatches")
-            if isinstance(outcome.payload.get("exactMatches"), list)
-            else []
-        )
-        matches = (
-            outcome.payload.get("matches")
-            if isinstance(outcome.payload.get("matches"), list)
-            else []
-        )
-        return len(exact_matches) == 1 or len(matches) == 1
 
     @staticmethod
     def _build_provider_metadata(
@@ -1218,11 +1103,12 @@ class AssistantRuntime:
         previous_response_id: str | None,
         provider_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        formatting_final_answer = (provider_metadata or {}).get("ollama_response_phase") == "final"
         return {
             "instructions": self._build_instructions(),
             "input": response_input,
-            "tools": self._build_model_tools(),
-            "tool_choice": "auto",
+            "tools": [] if formatting_final_answer else self._build_model_tools(),
+            "tool_choice": "none" if formatting_final_answer else "auto",
             "parallel_tool_calls": False,
             "previous_response_id": previous_response_id,
             "conversation_messages": self._conversation_messages(session_context),
@@ -1233,6 +1119,16 @@ class AssistantRuntime:
             },
         }
 
+    @staticmethod
+    def _formatting_request() -> list[dict[str, Any]]:
+        return [{
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "Le operazioni sono concluse. Restituisci la risposta finale nel formato JSON richiesto, usando i risultati già ottenuti e senza nuovi calcoli.",
+            }],
+        }]
+
     def _build_interaction_response(
         self,
         *,
@@ -1240,135 +1136,25 @@ class AssistantRuntime:
         session_context: SessionContext,
         loop_result: RuntimeLoopResult,
     ) -> InteractionResponse:
-        has_authoritative_result = any(
-            value is not None
-            for value in (
-                loop_result.latest_analysis_result,
-                loop_result.latest_economic_result,
-                loop_result.latest_scenario_comparison,
-                loop_result.latest_report_context,
-                loop_result.latest_map_filter,
-                loop_result.latest_last_analysis_details,
-                loop_result.latest_history_result,
-                loop_result.latest_search_result,
-                loop_result.latest_tool_error,
-            )
+        final_payload = self._parse_final_payload(loop_result.response_body)
+        if final_payload.get("_unstructured"):
+            raise LlmProviderUnavailableError("Il modello LLM non ha rispettato il formato della risposta finale.")
+        message_text = (
+            str(final_payload.get("assistant_text") or "").strip()
+            or str(final_payload.get("clarification_question") or "").strip()
         )
-        try:
-            final_payload = self._parse_final_payload(loop_result.response_body)
-        except LlmProviderUnavailableError:
-            if not has_authoritative_result:
-                fallback_outcome = self._fallback_tool_outcome(
-                    request=request,
-                    session_context=session_context,
-                )
-                if fallback_outcome is None:
-                    raise
-                loop_result = replace(
-                    loop_result,
-                    latest_analysis_result=fallback_outcome.analysis_result,
-                    latest_economic_result=fallback_outcome.economic_result,
-                    latest_scenario_comparison=fallback_outcome.scenario_comparison,
-                    latest_report_context=fallback_outcome.report_context,
-                    latest_map_filter=fallback_outcome.map_filter,
-                    latest_last_analysis_details=fallback_outcome.last_analysis_details,
-                    latest_history_result=fallback_outcome.history_result,
-                    latest_search_result=fallback_outcome.search_result,
-                    latest_tool_error=fallback_outcome.tool_error,
-                    latest_analysis=fallback_outcome.last_analysis,
-                    latest_selection_payload=fallback_outcome.selection_payload,
-                    derived_intent=fallback_outcome.intent or InteractionIntent.UNKNOWN,
-                    clears_context=fallback_outcome.clears_context,
-                )
-            final_payload = {
-                "intent": loop_result.derived_intent.value,
-                "assistant_text": "",
-                "needs_clarification": False,
-                "clarification_question": "",
-                "ui_actions": [],
-                "citations_internal": [],
-                "follow_up_suggestions": [],
-            }
+        if not message_text:
+            raise LlmProviderUnavailableError("Il modello LLM ha restituito una risposta testuale vuota.")
         ui_actions = filter_ui_actions(final_payload.get("ui_actions"))
         follow_up_suggestions = final_payload.get("follow_up_suggestions", [])
-        final_intent = (
-            loop_result.derived_intent
-            if loop_result.derived_intent is not InteractionIntent.UNKNOWN
-            else self._resolve_final_intent(
-                raw_intent=final_payload.get("intent"),
-                fallback=loop_result.derived_intent,
-            )
+        final_intent = self._resolve_final_intent(
+            raw_intent=final_payload.get("intent"),
+            fallback=loop_result.derived_intent,
         )
         needs_clarification = bool(final_payload.get("needs_clarification"))
-
-        if loop_result.latest_tool_error:
-            message_text = loop_result.latest_tool_error
-            ui_actions = []
-            follow_up_suggestions = []
-            needs_clarification = True
-            final_intent = InteractionIntent.UNKNOWN
-        elif loop_result.clears_context:
-            message_text = "Ho azzerato selezione, risultati e storico della sessione."
-            ui_actions = []
-            follow_up_suggestions = []
-            final_intent = InteractionIntent.RESET_SESSION
-        elif loop_result.latest_map_filter is not None:
-            message_text = self._build_map_filter_message(loop_result.latest_map_filter)
-            ui_actions = ["focus_map_results"]
-            follow_up_suggestions = []
-        elif isinstance(loop_result.latest_analysis_result, dict) and isinstance(
-            loop_result.latest_analysis_result.get("analyses"), list
-        ):
-            message_text = self._build_analysis_comparison_message(
-                loop_result.latest_analysis_result
-            )
-            ui_actions = []
-            follow_up_suggestions = []
-        elif loop_result.latest_analysis_result is not None:
-            message_text = self._build_analysis_message(loop_result.latest_analysis_result)
-            ui_actions = ["show_last_analysis", "focus_map_results"]
-            follow_up_suggestions = []
-        elif loop_result.latest_economic_result is not None:
-            message_text = self._build_economic_message(loop_result.latest_economic_result)
-            ui_actions = ["open_report_panel", "focus_map_results"]
-            follow_up_suggestions = [
-                "Confronta gli scenari economici",
-                "Apri il report",
-            ]
-        elif loop_result.latest_scenario_comparison is not None:
-            message_text = self._build_scenario_comparison_message(
-                loop_result.latest_scenario_comparison
-            )
-            ui_actions = ["open_report_panel"]
-            follow_up_suggestions = [
-                "Apri il report",
-            ]
-        elif loop_result.latest_report_context is not None:
-            message_text = self._build_report_message(loop_result.latest_report_context)
-            ui_actions = ["open_report_panel", "focus_map_results"]
-            follow_up_suggestions = []
-        elif loop_result.latest_last_analysis_details is not None:
-            message_text = self._build_analysis_message(
-                loop_result.latest_last_analysis_details,
-                lead="Nell'ultima analisi",
-            )
-            ui_actions = ["show_last_analysis"]
-            follow_up_suggestions = []
-        elif loop_result.latest_history_result is not None:
-            message_text = self._build_history_message(loop_result.latest_history_result)
-            ui_actions = []
-            follow_up_suggestions = []
-        elif loop_result.latest_search_result is not None:
-            message_text = self._build_search_message(loop_result.latest_search_result)
-            ui_actions = []
-            follow_up_suggestions = []
-            needs_clarification = True
-        else:
-            message_text = (
-                str(final_payload.get("assistant_text") or "").strip()
-                or str(final_payload.get("clarification_question") or "").strip()
-                or "Richiesta completata."
-            )
+        # Only an executed tool can reset application state. Merely talking
+        # about reset must never erase a session or its saved analyses.
+        reset_completed = loop_result.clears_context and loop_result.latest_analysis is None
         updated_context = self._build_updated_context(
             request=request,
             session_context=session_context,
@@ -1391,8 +1177,8 @@ class AssistantRuntime:
             ui_hints={
                 "mode": (
                     "reset"
-                    if final_intent is InteractionIntent.RESET_SESSION
-                    else final_intent.value
+                    if reset_completed
+                    else ("assistant_runtime" if final_intent is InteractionIntent.RESET_SESSION else final_intent.value)
                 ),
                 "providerMode": self.provider_name,
                 "providerModel": self.provider_model,
@@ -1406,277 +1192,24 @@ class AssistantRuntime:
             updated_context=updated_context,
         )
 
-    def _fallback_tool_outcome(
-        self,
-        *,
-        request: InteractionRequest,
-        session_context: SessionContext,
-    ) -> ToolExecutionOutcome | None:
-        """Recover clear operational requests when the model omits its function call."""
-        resolution = RuleBasedIntentResolver().resolve(request, session_context)
-        intent = resolution.command.intent
-        tool_name = None
-        arguments: dict[str, Any] = {}
-
-        if intent is InteractionIntent.COMPARE_ANALYSES:
-            tool_name = MODEL_TOOL_COMPARE_RECENT_ANALYSES
-            arguments = {"limit": 2}
-        elif intent is InteractionIntent.EXPLAIN_LAST_ANALYSIS:
-            tool_name = MODEL_TOOL_GET_LAST_ANALYSIS
-        elif intent is InteractionIntent.ANALYZE_SELECTION:
-            tool_name = MODEL_TOOL_ANALYZE_CURRENT_SELECTION
-        elif intent is InteractionIntent.ANALYZE_MUNICIPALITIES:
-            names = resolution.command.payload.get("municipality_names", [])
-            if names:
-                tool_name = MODEL_TOOL_ANALYZE_MUNICIPALITIES
-                arguments = {"municipality_names": list(names)}
-
-        if tool_name is None:
-            return None
-        return self._execute_tool_call(
-            tool_call={"name": tool_name, "arguments": arguments},
-            request=request,
-            session_context=session_context,
-        )
-
     @staticmethod
     def _build_model_tool_output(
         *,
         tool_name: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if tool_name in {
-            MODEL_TOOL_ANALYZE_MUNICIPALITIES,
-            MODEL_TOOL_ANALYZE_CURRENT_SELECTION,
-        }:
-            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-            summary_items = summary.get("items") if isinstance(summary.get("items"), list) else []
+        if tool_name in {MODEL_TOOL_ANALYZE_MUNICIPALITIES, MODEL_TOOL_ANALYZE_CURRENT_SELECTION}:
+            # Keep geometry out of the model context, but expose every computed
+            # metric and the id needed for subsequent tool calls.
             return {
                 "analysisId": payload.get("analysisId"),
                 "source": payload.get("source"),
                 "requestedMunicipalities": payload.get("requestedMunicipalities", []),
                 "intersectedMunicipalities": payload.get("intersectedMunicipalities", []),
-                "summary": {
-                    "totalCo2": summary.get("totalCo2"),
-                    "hasSupportedVegetation": summary.get("hasSupportedVegetation"),
-                    "items": summary_items[:8],
-                },
+                "summary": payload.get("summary", {}),
+                **({"ok": False, "error": payload["error"]} if "error" in payload else {}),
             }
-
-        if tool_name in {
-            MODEL_TOOL_COMPARE_RECENT_ANALYSES,
-            MODEL_TOOL_COMPARE_SAVED_ANALYSES,
-        }:
-            analyses = payload.get("analyses") if isinstance(payload.get("analyses"), list) else []
-            categories = (
-                payload.get("categoriesComparison")
-                if isinstance(payload.get("categoriesComparison"), dict)
-                else {}
-            )
-            return {
-                "analyses": [
-                    {
-                        "label": item.get("label"),
-                        "municipalities": item.get("municipalities", []),
-                        "totalCo2": item.get("totalCo2"),
-                        "totalHectares": item.get("totalHectares"),
-                        "co2PerHectare": item.get("co2PerHectare"),
-                        "topCategory": item.get("topCategory"),
-                    }
-                    for item in analyses
-                    if isinstance(item, dict)
-                ],
-                "pairwise": payload.get("pairwise"),
-                "commonCategories": categories.get("commonCategories", []),
-                "partialCategories": categories.get("partialCategories", []),
-                "economicComparison": payload.get("economicComparison", []),
-            }
-
-        if tool_name in {
-            MODEL_TOOL_CALCULATE_ECONOMIC_VALUE,
-            MODEL_TOOL_COMPARE_ECONOMIC_SCENARIOS,
-            MODEL_TOOL_PREPARE_REPORT,
-        }:
-            return payload
-
-        if tool_name == MODEL_TOOL_FILTER_LAST_ANALYSIS:
-            return {
-                "showAll": payload.get("showAll"),
-                "categories": payload.get("categories", []),
-                "availableCategories": payload.get("availableCategories", []),
-            }
-
         return payload
-
-    @classmethod
-    def _build_analysis_message(
-        cls,
-        result: dict[str, Any],
-        *,
-        lead: str | None = None,
-    ) -> str:
-        summary = result.get("summary") if isinstance(result.get("summary"), dict) else result
-        municipalities = (
-            result.get("intersectedMunicipalities")
-            or result.get("requestedMunicipalities")
-            or result.get("municipalities")
-            or []
-        )
-        area_label = ", ".join(str(item) for item in municipalities if str(item).strip())
-        subject = lead or (f"Analisi di {area_label}" if area_label else "Analisi corrente")
-        items = summary.get("items") if isinstance(summary.get("items"), list) else []
-        if not summary.get("hasSupportedVegetation") or not items:
-            return (
-                f"{subject}: l'area non contiene categorie forestali supportate dai dati disponibili. "
-                "La mappa e il report restano disponibili per verificare l'estensione analizzata."
-            )
-
-        ranked = sorted(
-            (item for item in items if isinstance(item, dict)),
-            key=lambda item: float(item.get("hectares") or 0) * float(item.get("co2PerHectare") or 0),
-            reverse=True,
-        )
-        main_items = []
-        for item in ranked[:2]:
-            hectares = float(item.get("hectares") or 0)
-            total_co2 = hectares * float(item.get("co2PerHectare") or 0)
-            main_items.append(
-                f"{item.get('label')}: {cls._format_number(hectares)} ha e "
-                f"{cls._format_number(total_co2)} t CO2/anno"
-            )
-
-        total_hectares = cls._format_number(summary.get("totalHectares"))
-        total_co2 = cls._format_number(summary.get("totalCo2"))
-        contributions = "; ".join(main_items)
-        return (
-            f"{subject}: {total_hectares} ha forestali e {total_co2} t CO2/anno stimate. "
-            f"I contributi principali sono {contributions}."
-        )
-
-    @classmethod
-    def _build_analysis_comparison_message(cls, comparison: dict[str, Any]) -> str:
-        analyses = [
-            item for item in comparison.get("analyses", []) if isinstance(item, dict)
-        ]
-        if len(analyses) < 2:
-            return "Il confronto non contiene almeno due analisi valide."
-
-        ranked_total = sorted(
-            analyses,
-            key=lambda item: float(item.get("totalCo2") or 0),
-            reverse=True,
-        )
-        winner, other = ranked_total[0], ranked_total[1]
-        winner_label = str(winner.get("label") or "La prima analisi")
-        other_label = str(other.get("label") or "la seconda analisi")
-        delta = float(winner.get("totalCo2") or 0) - float(other.get("totalCo2") or 0)
-        percent = (delta / abs(float(other.get("totalCo2") or 0)) * 100) if other.get("totalCo2") else 0
-        winner_intensity = float(winner.get("co2PerHectare") or 0)
-        other_intensity = float(other.get("co2PerHectare") or 0)
-        intensity_note = (
-            f"{other_label} ha però più CO2 per ettaro "
-            f"({cls._format_number(other_intensity)} contro {cls._format_number(winner_intensity)} t/ha)"
-            if other_intensity > winner_intensity
-            else f"ha anche il valore per ettaro più alto ({cls._format_number(winner_intensity)} t/ha)"
-        )
-        return (
-            f"{winner_label} assorbe {cls._format_number(winner.get('totalCo2'))} t CO2/anno, "
-            f"{cls._format_number(delta)} t ({cls._format_number(percent)}%) in più di {other_label}. "
-            f"A parità di prezzo vale di più perché il valore economico dipende dalla CO2 totale; {intensity_note}."
-        )
-
-    @staticmethod
-    def _build_search_message(result: dict[str, Any]) -> str:
-        matches = result.get("matches") if isinstance(result.get("matches"), list) else []
-        if not matches:
-            return "Non ho trovato un comune campano compatibile. Puoi indicare il nome completo?"
-        if len(matches) == 1:
-            return f"Ho trovato {matches[0]}. Vuoi analizzare questo comune?"
-        return f"Ho trovato più comuni compatibili: {', '.join(str(item) for item in matches)}. Quale intendi?"
-
-    @staticmethod
-    def _build_history_message(result: dict[str, Any]) -> str:
-        items = result.get("items") if isinstance(result.get("items"), list) else []
-        if not items:
-            return "Non ci sono ancora analisi salvate nello storico."
-        labels = [str(item.get("label") or "Analisi senza nome") for item in items[:3] if isinstance(item, dict)]
-        suffix = "" if len(items) <= 3 else f" e altre {len(items) - 3}"
-        return f"Nello storico ci sono {len(items)} analisi: {', '.join(labels)}{suffix}."
-
-    @staticmethod
-    def _build_map_filter_message(result: dict[str, Any]) -> str:
-        if result.get("showAll"):
-            return "Ho ripristinato tutte le categorie dell'ultima analisi sulla mappa."
-        labels = [
-            str(item.get("label") or item.get("key"))
-            for item in result.get("categories", [])
-            if isinstance(item, dict)
-        ]
-        return f"Sulla mappa ora mostro solo: {', '.join(labels)}. Il report resta riferito all'analisi completa."
-
-    @staticmethod
-    def _format_number(value: Any, *, decimals: int = 2) -> str:
-        number = float(value or 0)
-        formatted = f"{number:,.{decimals}f}"
-        integer_part, decimal_part = formatted.split(".")
-        integer_part = integer_part.replace(",", ".")
-        decimal_part = decimal_part.rstrip("0")
-        return f"{integer_part},{decimal_part}" if decimal_part else integer_part
-
-    @classmethod
-    def _build_economic_message(cls, result: dict[str, Any]) -> str:
-        area = result.get("areaReference") if isinstance(result.get("areaReference"), dict) else {}
-        area_label = str(area.get("label") or "analisi corrente")
-        total_co2 = float(result.get("totalCo2") or 0)
-        price = float(result.get("priceEurPerTon") or 0)
-        base_price = float(PRICE_OPTIONS[0].get("value") or 0) if PRICE_OPTIONS else price
-        base_value = total_co2 * base_price
-        difference = float(result.get("totalValueEur") or 0) - base_value
-        comparison = ""
-        if base_price and price != base_price:
-            direction = "in meno" if difference < 0 else "in più"
-            comparison = (
-                f" Sono {cls._format_number(abs(difference))} € {direction} rispetto allo "
-                f"scenario da {cls._format_number(base_price)} €/t."
-            )
-        return (
-            f"Per {area_label}, con {cls._format_number(price)} €/t il valore stimato è "
-            f"{cls._format_number(result.get('totalValueEur'))} € su "
-            f"{cls._format_number(total_co2)} t CO2/anno.{comparison}"
-        )
-
-    @classmethod
-    def _build_scenario_comparison_message(cls, comparison: dict[str, Any]) -> str:
-        scenarios = comparison.get("scenarios") if isinstance(comparison.get("scenarios"), list) else []
-        valid = [item for item in scenarios if isinstance(item, dict)]
-        if not valid:
-            return "Non ci sono scenari economici configurati da confrontare."
-        ordered = sorted(valid, key=lambda item: float(item.get("totalValueEur") or 0))
-        lowest, highest = ordered[0], ordered[-1]
-        return (
-            f"Per {cls._format_number(comparison.get('totalCo2'))} t CO2/anno, i valori vanno da "
-            f"{cls._format_number(lowest.get('totalValueEur'))} € ({lowest.get('scenarioLabel')}) a "
-            f"{cls._format_number(highest.get('totalValueEur'))} € ({highest.get('scenarioLabel')}). "
-            "Il dettaglio di tutti gli scenari è nel report."
-        )
-
-    @classmethod
-    def _build_report_message(cls, report_context: dict[str, Any]) -> str:
-        economic_result = report_context.get("economicResult")
-        if isinstance(economic_result, dict):
-            return (
-                "Apro il report dell'ultima analisi, "
-                f"con valore economico {cls._format_number(economic_result.get('totalValueEur'))} €. "
-                "Per generare il PDF usa il pulsante Esporta PDF nel report."
-            )
-        return (
-            "Apro il report dell'ultima analisi. "
-            "Per generare il PDF, scegli uno scenario economico, calcola il valore e usa Esporta PDF."
-        )
-
-    @staticmethod
-    def _merge_ui_actions(current: list[str], required: list[str]) -> list[str]:
-        return list(dict.fromkeys([*current, *required]))
 
     @staticmethod
     def _serialize_response(response: InteractionResponse) -> dict[str, Any]:
@@ -1716,8 +1249,8 @@ class AssistantRuntime:
         clears_context: bool,
         assistant_text: str,
     ) -> SessionContext:
-        if clears_context or final_intent is InteractionIntent.RESET_SESSION:
-            return SessionContext(last_intent=InteractionIntent.RESET_SESSION)
+        if clears_context:
+            session_context = SessionContext()
 
         metadata = dict(session_context.metadata)
         # Cross-turn continuity is carried explicitly in conversation_messages and
@@ -1821,52 +1354,11 @@ class AssistantRuntime:
 
         try:
             payload = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            text = AssistantRuntime._fallback_text_from_invalid_json(raw_text)
-            if text:
-                return {
-                    "intent": InteractionIntent.UNKNOWN.value,
-                    "assistant_text": text,
-                    "needs_clarification": True,
-                    "clarification_question": text,
-                    "ui_actions": [],
-                    "citations_internal": [],
-                    "follow_up_suggestions": [],
-                }
-            raise LlmProviderUnavailableError(
-                "Il modello LLM non ha rispettato il formato JSON richiesto."
-            ) from exc
+        except json.JSONDecodeError:
+            return {"_unstructured": True}
         if not isinstance(payload, dict):
             raise LlmProviderUnavailableError("Il modello LLM ha restituito un payload strutturato non valido.")
         return payload
-
-    @staticmethod
-    def _fallback_text_from_invalid_json(raw_text: str) -> str:
-        raw_text = raw_text.strip()
-        match = re.search(r'"assistant_text"\s*:\s*"', raw_text)
-        if not match:
-            return raw_text
-
-        start = match.end()
-        index = start
-        escaped = False
-        while index < len(raw_text):
-            char = raw_text[index]
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                break
-            index += 1
-
-        raw_value = raw_text[start:index]
-        while raw_value:
-            try:
-                return json.loads(f'"{raw_value}"').strip()
-            except json.JSONDecodeError:
-                raw_value = raw_value[:-1]
-        return raw_text
 
     @staticmethod
     def _resolve_final_intent(
@@ -1889,6 +1381,14 @@ class AssistantRuntime:
             "Non mostrare JSON, nomi tecnici di tool, identificativi interni o dettagli di implementazione. "
             "Non inventare mai dati GIS: per ogni fatto numerico o analitico devi usare i tool. "
             "I valori geografici ed economici finali devono arrivare solo dai tool backend. "
+            "Interpreta l'intera richiesta e pianifica tutti i passaggi necessari, anche quando richiede più operazioni. "
+            "Dopo ogni risultato di tool, continua con i tool ancora necessari prima della risposta finale. "
+            "Per analizzare separatamente più comuni, chiama analyze_municipalities una volta per ciascun comune; "
+            "una chiamata con più nomi produce invece un'unica analisi congiunta. "
+            "Per analizzare e poi confrontare, crea prima tutte le analisi richieste e poi confronta i loro id "
+            "con compare_saved_analyses. Non usare analisi pregresse al posto di quelle appena richieste. "
+            "Se un tool restituisce un errore, valutalo e correggi la chiamata oppure chiedi il chiarimento necessario. "
+            "Scrivi tu la risposta finale, rispondendo a tutte le domande e usando i risultati dei tool. "
             "Quando citi numeri, formatta in italiano e arrotonda a massimo 2 decimali. "
             "Non mostrare precisione grezza lunga da float. "
             "Se il messaggio corrente nomina uno o più comuni e chiede situazione, dati, boschi, CO2 o analisi, "
@@ -1908,7 +1408,7 @@ class AssistantRuntime:
             "Se chiede elenco storico o analisi recenti usa list_recent_analyses. "
             "Se chiede 'confrontalo con il precedente' o un confronto di risultati recenti usa compare_recent_analyses: "
             "ultime due per default, ultime tre se richiesto. "
-            "Se cita id, label o comune di analisi salvate usa compare_saved_analyses; se ambiguo lista le analisi e chiedi chiarimento. "
+            "Per confrontare analisi già salvate identificate da id, label o comune usa compare_saved_analyses; se ambiguo lista le analisi e chiedi chiarimento. "
             "Quando non servono altri tool, rispondi solo con JSON valido con i campi: intent, assistant_text, "
             "needs_clarification, clarification_question, ui_actions, citations_internal, follow_up_suggestions. "
             "Classifica intenti finali in operazioni di dominio: analisi area/comuni, informazioni forestali, stima CO2, "
@@ -1917,9 +1417,9 @@ class AssistantRuntime:
             "Per richieste metodologiche usa get_methodology prima di spiegare. "
             "Se manca contesto sufficiente, non improvvisare: chiedi chiarimento. "
             "Azioni UI consentite: show_last_analysis, open_report_panel, show_legend, focus_map_results. "
-            "Non emettere altre ui_actions. "
+            "Non emettere altre ui_actions. Usa open_report_panel dopo prepare_report e per mostrare valutazioni e scenari. "
             "Chiedi chiarimenti solo quando manca una scelta indispensabile; non chiedere dati già presenti nel contesto. "
-            "Mantieni risposte brevi: massimo 3 frasi operative e nessuna ripetizione. "
+            "Mantieni risposte concise ma complete: copri tutti i risultati richiesti, senza un limite fisso di frasi. "
             "Dopo aver usato i tool, restituisci solo JSON conforme allo schema finale."
         )
 

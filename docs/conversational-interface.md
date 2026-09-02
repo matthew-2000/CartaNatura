@@ -40,12 +40,25 @@ Il runtime LLM usa un contratto provider-neutral e può usare solo tool registra
 
 Regola: il modello non calcola direttamente superfici, CO2 o valori GIS. Deve chiamare tool o chiedere chiarimento.
 
+## Interpretazione e richieste composte
+
+Ogni richiesta testuale o vocale passa dall'LLM, inclusi analisi semplici, confronti e reset. Non ci sono scorciatoie basate su parole chiave, esecuzioni di ripiego scelte dal codice o risposte di dominio composte da template. La selezione strutturata inviata dai controlli WebGIS resta un'operazione grafica diretta.
+
+Il modello sceglie i tool e riceve ogni risultato o errore prima di decidere il passo successivo. Il ciclo prosegue finché restituisce la risposta finale, entro il limite operativo di sei round di tool. Il testo finale e i suggerimenti provengono dall'LLM; le azioni UI sono limitate al contratto applicativo. Errori tecnici di input o del provider restano segnalazioni applicative.
+
+Se il modello ha concluso le operazioni ma risponde fuori dal formato JSON previsto, gli viene richiesta una sola riformattazione finale, senza tool. Il codice non sostituisce il testo con una risposta precompilata e non deduce automaticamente che serva un chiarimento.
+
+Per esempio, «Analizza separatamente Avellino e Benevento e confrontali» richiede due chiamate di analisi con un comune ciascuna, seguite dal confronto. Una singola chiamata con entrambi i comuni produce invece un'analisi congiunta. Il modello può concatenare anche analisi, valutazione e apertura report; il PDF viene generato dal pulsante del report.
+
+Se il provider non è disponibile o restituisce una risposta vuota, il sistema segnala l'errore senza sostituire il modello con regole locali. Il reset viene eseguito soltanto dal relativo tool, non perché il testo o l'intento finale contengono la parola «reset».
+
 ## Provider LLM
 
 Il provider conversazionale si seleziona da variabili d'ambiente:
 
 - `LLM_PROVIDER=openai`: usa OpenAI remoto. Richiede `OPENAI_API_KEY`; usa `LLM_MODEL` o `OPENAI_MODEL` e `LLM_BASE_URL` o `OPENAI_BASE_URL`.
 - `LLM_PROVIDER=ollama`: usa un modello locale esposto da Ollama. Richiede `LLM_MODEL` o `OLLAMA_MODEL` e `LLM_BASE_URL` o `OLLAMA_BASE_URL`. `OLLAMA_THINK=false` disattiva il reasoning per i modelli che supportano il flag `think`.
+- `OLLAMA_NUM_CTX`: numero di token del contesto locale, default `16384`. Le richieste composte includono tutti gli scambi con i tool; un contesto troppo piccolo può troncare la richiesta originale o le istruzioni. Il valore è configurabile in funzione della memoria disponibile.
 
 OpenAI e Ollama sono normalizzati nello stesso contratto runtime: testo, tool calling, output JSON strutturato, streaming e cronologia. Non esiste fallback automatico tra provider: errori di configurazione, indisponibilità o modelli non compatibili producono errori espliciti.
 

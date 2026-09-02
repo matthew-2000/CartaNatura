@@ -71,6 +71,7 @@ Variabili principali:
 - `OLLAMA_MODEL`: richiesto se `LLM_PROVIDER=ollama` e `LLM_MODEL` è vuoto
 - `OLLAMA_BASE_URL`: richiesto se `LLM_PROVIDER=ollama` e `LLM_BASE_URL` è vuoto
 - `OLLAMA_THINK`: `false` per disattivare il reasoning dei modelli Ollama che lo supportano
+- `OLLAMA_NUM_CTX`: contesto Ollama in token, default `16384`, per conservare istruzioni e risultati nelle richieste con più tool; valori maggiori richiedono più memoria
 
 Gli scenari di prezzo CO2 sono configurati in [cartaNatura/domain/economics.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/domain/economics.py:8) come `PRICE_OPTIONS` e inviati al frontend via config applicativa.
 

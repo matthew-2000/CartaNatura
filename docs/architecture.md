@@ -66,7 +66,8 @@ Dataset locali
 - [interaction/orchestrator.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction/orchestrator.py:1)
 - [interaction/assistant_runtime.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction/assistant_runtime.py:1)
 - intenti di dominio
-- fast path deterministici
+- interpretazione e pianificazione delle richieste testuali/vocali sempre affidate all'LLM
+- calcoli e modifiche allo stato eseguiti esclusivamente dai tool
 - runtime LLM provider-neutral con tool use
 - stato conversazionale in sessione Django
 
@@ -110,13 +111,12 @@ flowchart TD
 ```mermaid
 flowchart TD
   A["Utente scrive o detta richiesta"] --> B["InteractionRequest"]
-  B --> C["Intent resolver"]
-  C --> D{"Serve LLM?"}
-  D -->|no| E["Handler deterministico"]
-  D -->|si| F["Provider LLM configurato + tool registry"]
-  E --> G["Analisi GIS"]
-  F --> G
-  G --> H["Risposta testuale + uiHints"]
+  B --> C["LLM interpreta l'intera richiesta"]
+  C --> D{"LLM richiede un tool?"}
+  D -->|si| E["Tool deterministico: analisi, confronto, valutazione o contesto"]
+  E --> F["Risultato o errore restituito all'LLM"]
+  F --> D
+  D -->|no| H["Risposta dell'LLM + uiHints validati"]
   H --> I["Mappa aggiornata e verificabile"]
 ```
 

@@ -2816,7 +2816,7 @@ async function runAssistantInteraction(mapController, message, { interactionMode
             }
             setAssistantStreamingProgress(
               streamingMessageIndex,
-              "Analisi completata. Scrivo la risposta..."
+              "Risultato disponibile. L'assistente continua l'elaborazione..."
             );
           },
         });
@@ -2831,9 +2831,6 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       );
       attachAssistantHints(streamingMessageIndex, response.uiHints);
 
-      if (!analysisApplied && response.analysisResult?.clipped) {
-        applyAnalysisResult(mapController, response.analysisResult);
-      }
     } else {
       response = await sendInteractionMessage(appConfig.interactionUrl, payload);
       let lastAssistantMessageIndex = -1;
@@ -2848,6 +2845,12 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       attachAssistantHints(lastAssistantMessageIndex, response.uiHints);
     }
 
+    // Apply the area before its valuation or filter, including non-streamed
+    // compound requests. Reapplying it afterwards would erase those results.
+    if (!analysisApplied && response.analysisResult?.clipped) {
+      applyAnalysisResult(mapController, response.analysisResult);
+      analysisApplied = true;
+    }
     setAssistantStatus(response.uiHints?.providerMode || null, assistantConfig.providerConfigured);
     if (response.economicResult) {
       applyEconomicResult(response.economicResult, { interactionMode });
@@ -2862,8 +2865,6 @@ async function runAssistantInteraction(mapController, message, { interactionMode
 
     if (["reset", "reset_session"].includes(response.uiHints?.mode)) {
       resetAnalysis(mapController);
-    } else if (!analysisApplied && response.analysisResult?.clipped) {
-      applyAnalysisResult(mapController, response.analysisResult);
     } else if (response.uiHints?.needsClarification) {
       showNotice("Serve un chiarimento per continuare.", "warning");
     }

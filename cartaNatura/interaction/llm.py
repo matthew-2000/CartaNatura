@@ -42,6 +42,7 @@ class LlmProviderConfig:
     api_key: str = ""
     timeout_seconds: float = 60.0
     think: bool | None = None
+    context_length: int = 16384
 
     @property
     def is_configured(self) -> bool:
@@ -132,6 +133,7 @@ class OllamaChatLlmProvider:
     base_url: str
     timeout_seconds: float = 60.0
     think: bool | None = None
+    context_length: int = 16384
 
     provider_name = "ollama"
     runtime_name = "ollama_chat"
@@ -182,7 +184,9 @@ class OllamaChatLlmProvider:
             "model": self.model,
             "messages": messages,
             "stream": stream,
-            "options": {"temperature": 0},
+            # Compound turns include instructions, tools and several results.
+            # Ollama's small machine-dependent default can drop the request.
+            "options": {"temperature": 0, "num_ctx": self.context_length},
         }
         if self.think is not None:
             body["think"] = self.think
@@ -386,6 +390,7 @@ def build_optional_llm_provider() -> LlmProvider | None:
             config.base_url,
             config.timeout_seconds,
             config.think,
+            config.context_length,
         )
     raise _configuration_error(config)
 
@@ -417,6 +422,7 @@ def load_llm_provider_config() -> LlmProviderConfig:
             base_url=generic_base_url or _env_or_setting("OLLAMA_BASE_URL", "").strip(),
             timeout_seconds=timeout_seconds,
             think=_load_ollama_think_config(),
+            context_length=_load_ollama_context_length(),
         )
 
     return LlmProviderConfig(provider=provider, model=generic_model, base_url=generic_base_url)
@@ -484,12 +490,14 @@ def _cached_ollama_provider(
     base_url: str,
     timeout_seconds: float,
     think: bool | None,
+    context_length: int,
 ) -> OllamaChatLlmProvider:
     return OllamaChatLlmProvider(
         model=model,
         base_url=base_url,
         timeout_seconds=timeout_seconds,
         think=think,
+        context_length=context_length,
     )
 
 
@@ -523,6 +531,16 @@ def _load_ollama_think_config() -> bool | None:
     if generic_value:
         return _coerce_optional_bool(generic_value)
     return _coerce_optional_bool(_env_or_setting("OLLAMA_THINK", ""))
+
+
+def _load_ollama_context_length() -> int:
+    try:
+        value = int(_env_or_setting("OLLAMA_NUM_CTX", "16384"))
+        if value > 0:
+            return value
+    except (TypeError, ValueError):
+        pass
+    raise LlmProviderConfigurationError("OLLAMA_NUM_CTX deve essere un intero positivo.")
 
 
 def _without_provider_only_payload(payload: dict[str, Any]) -> dict[str, Any]:
