@@ -116,6 +116,7 @@ DATABASES = {
 }
 
 STUDY_LOG_ROOT = DATA_DIR / "study-logs"
+STUDY_ADMIN_PASSWORD = os.getenv("STUDY_ADMIN_PASSWORD", "").strip()
 
 
 # Password validation

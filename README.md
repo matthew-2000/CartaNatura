@@ -58,6 +58,7 @@ Variabili principali:
 - `DJANGO_CORS_ALLOWED_ORIGINS`
 - `DJANGO_CSRF_TRUSTED_ORIGINS`
 - `DJANGO_DATA_DIR`: directory persistente per SQLite e log dello studio
+- `STUDY_ADMIN_PASSWORD`: password condivisa richiesta dall'archivio delle sessioni
 - `AI_ASSISTANT_ENABLED`
 - `LLM_PROVIDER`: `openai` oppure `ollama`
 - `LLM_MODEL`: override generico del modello selezionato
@@ -99,6 +100,7 @@ Il container applica automaticamente le migrazioni e avvia Django con Gunicorn s
 
 ```env
 DJANGO_SECRET_KEY=<una-chiave-lunga-e-casuale>
+STUDY_ADMIN_PASSWORD=<una-password-lunga-e-casuale>
 DJANGO_ALLOWED_HOSTS=.up.railway.app
 DJANGO_CSRF_TRUSTED_ORIGINS=https://nome-servizio.up.railway.app
 DJANGO_SECURE_SSL_REDIRECT=true

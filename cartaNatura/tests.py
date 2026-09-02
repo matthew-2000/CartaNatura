@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import geopandas
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, SimpleTestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 from shapely.geometry import box
 
 from cartaNatura.domain.economics import (
@@ -3411,7 +3411,18 @@ class StudyLoggingTests(SimpleTestCase):
         self.assertNotIn("stepCount", event)
 
 
+@override_settings(
+    STUDY_ADMIN_PASSWORD="test-study-admin-password",
+    SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
+)
 class StudyAdminTests(SimpleTestCase):
+    @staticmethod
+    def _login(client: Client, password: str = "test-study-admin-password"):
+        return client.post(
+            "/progettoGIS/cartaNatura/study-admin/login/",
+            {"password": password},
+        )
+
     def test_admin_lists_session_events_and_downloads_clean_exports(self):
         with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
             context = create_study_session(
@@ -3430,6 +3441,7 @@ class StudyAdminTests(SimpleTestCase):
                 log_root=Path(temp_dir),
             )
             client = Client()
+            self._login(client)
 
             page = client.get("/progettoGIS/cartaNatura/study-admin/")
             json_export = client.get(
@@ -3447,6 +3459,8 @@ class StudyAdminTests(SimpleTestCase):
         self.assertContains(page, "task_completed")
         self.assertEqual(json_export.status_code, 200)
         self.assertEqual(jsonl_export.status_code, 200)
+        for protected_response in (page, json_export, jsonl_export):
+            self.assertIn("no-store", protected_response["Cache-Control"])
         exported_payload = json.loads(json_export.content)
         self.assertEqual(exported_payload["events"][0]["eventType"], "task_completed")
         self.assertNotIn("prettyJson", exported_payload["events"][0])
@@ -3462,7 +3476,9 @@ class StudyAdminTests(SimpleTestCase):
                 log_root=Path(temp_dir),
             )
             session_path = Path(temp_dir) / context.participantId / context.studySessionId
-            response = Client().post(
+            client = Client()
+            self._login(client)
+            response = client.post(
                 f"/progettoGIS/cartaNatura/study-admin/{context.participantId}/"
                 f"{context.studySessionId}/delete/"
             )
@@ -3487,6 +3503,7 @@ class StudyAdminTests(SimpleTestCase):
                 ),
                 content_type="application/json",
             ).json()["session"]
+            self._login(client)
             session_path = Path(temp_dir) / started["participantId"] / started["studySessionId"]
             response = client.post(
                 f"/progettoGIS/cartaNatura/study-admin/{started['participantId']}/"
@@ -3496,6 +3513,153 @@ class StudyAdminTests(SimpleTestCase):
             self.assertEqual(response.status_code, 302)
             self.assertIn("error=active", response.url)
             self.assertTrue(session_path.exists())
+
+    def test_anonymous_archive_exports_and_delete_are_blocked_for_both_route_aliases(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            context = create_study_session(
+                participant_id="participant_private_001",
+                condition="webgis",
+                now=datetime(2026, 9, 1, 12, 0, tzinfo=UTC),
+                log_root=Path(temp_dir),
+            )
+            session_path = Path(temp_dir) / context.participantId / context.studySessionId
+            client = Client()
+
+            for prefix in ("", "/progettoGIS/cartaNatura"):
+                page = client.get(f"{prefix}/study-admin/")
+                download = client.get(
+                    f"{prefix}/study-admin/{context.participantId}/"
+                    f"{context.studySessionId}/download/json/"
+                )
+                delete = client.post(
+                    f"{prefix}/study-admin/{context.participantId}/"
+                    f"{context.studySessionId}/delete/"
+                )
+
+                self.assertEqual(page.status_code, 302)
+                self.assertIn("/study-admin/login/", page.url)
+                self.assertNotIn(context.participantId, page.content.decode("utf-8"))
+                self.assertEqual(download.status_code, 302)
+                self.assertIn("/study-admin/login/", download.url)
+                self.assertEqual(delete.status_code, 302)
+                self.assertIn("/study-admin/login/", delete.url)
+                self.assertTrue(session_path.exists())
+
+    def test_login_rejects_wrong_password_and_allows_correct_password(self):
+        client = Client()
+
+        wrong = self._login(client, "wrong-password")
+        still_blocked = client.get("/progettoGIS/cartaNatura/study-admin/")
+        correct = self._login(client)
+        allowed = client.get("/progettoGIS/cartaNatura/study-admin/")
+
+        self.assertEqual(wrong.status_code, 401)
+        self.assertContains(wrong, "Password non corretta", status_code=401)
+        self.assertEqual(still_blocked.status_code, 302)
+        self.assertEqual(correct.status_code, 302)
+        self.assertEqual(allowed.status_code, 200)
+        self.assertContains(allowed, "Esperimenti salvati")
+
+    def test_login_rejects_external_next_redirect(self):
+        response = Client().post(
+            "/progettoGIS/cartaNatura/study-admin/login/",
+            {"password": "test-study-admin-password", "next": "https://attacker.example/"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/progettoGIS/cartaNatura/study-admin/")
+        self.assertNotIn("attacker.example", response.url)
+
+    @override_settings(STUDY_ADMIN_PASSWORD="")
+    def test_unconfigured_password_fails_closed(self):
+        client = Client()
+
+        archive = client.get("/progettoGIS/cartaNatura/study-admin/")
+        login = client.get("/progettoGIS/cartaNatura/study-admin/login/")
+
+        self.assertEqual(archive.status_code, 302)
+        self.assertEqual(login.status_code, 503)
+        self.assertContains(login, "Password amministrativa non configurata", status_code=503)
+
+    def test_password_rotation_invalidates_existing_admin_session(self):
+        client = Client()
+        self._login(client)
+
+        before_rotation = client.get("/progettoGIS/cartaNatura/study-admin/")
+        with override_settings(STUDY_ADMIN_PASSWORD="rotated-study-password"):
+            after_rotation = client.get("/progettoGIS/cartaNatura/study-admin/")
+
+        self.assertEqual(before_rotation.status_code, 200)
+        self.assertEqual(after_rotation.status_code, 302)
+        self.assertIn("/study-admin/login/", after_rotation.url)
+
+    def test_logout_preserves_active_study_context(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            client = Client()
+            started = client.post(
+                "/progettoGIS/cartaNatura/experiment/study/session",
+                data='{"participantId":"participant_logout","condition":"webgis"}',
+                content_type="application/json",
+            ).json()["session"]
+            self._login(client)
+
+            logout = client.post("/progettoGIS/cartaNatura/study-admin/logout/")
+            archive = client.get("/progettoGIS/cartaNatura/study-admin/")
+
+            self.assertEqual(logout.status_code, 302)
+            self.assertEqual(archive.status_code, 302)
+            self.assertEqual(client.session[STUDY_CONTEXT_SESSION_KEY]["studySessionId"], started["studySessionId"])
+
+    def test_admin_mutations_keep_csrf_protection(self):
+        client = Client(enforce_csrf_checks=True)
+        login_page = client.get("/progettoGIS/cartaNatura/study-admin/login/")
+        csrf_token = login_page.cookies["csrftoken"].value
+
+        rejected_login = client.post(
+            "/progettoGIS/cartaNatura/study-admin/login/",
+            {"password": "test-study-admin-password"},
+        )
+        accepted_login = client.post(
+            "/progettoGIS/cartaNatura/study-admin/login/",
+            {"password": "test-study-admin-password", "csrfmiddlewaretoken": csrf_token},
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+        rejected_logout = client.post("/progettoGIS/cartaNatura/study-admin/logout/")
+        rejected_delete = client.post("/study-admin/participant_001/session_001/delete/")
+
+        self.assertEqual(rejected_login.status_code, 403)
+        self.assertEqual(accepted_login.status_code, 302)
+        self.assertEqual(rejected_logout.status_code, 403)
+        self.assertEqual(rejected_delete.status_code, 403)
+
+
+@override_settings(
+    STUDY_ADMIN_PASSWORD="test-study-admin-password",
+    SESSION_ENGINE="django.contrib.sessions.backends.db",
+)
+class StudyAdminDatabaseSessionTests(TestCase):
+    def test_login_rotates_session_and_logout_preserves_study_context(self):
+        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
+            client = Client()
+            started = client.post(
+                "/experiment/study/session",
+                data='{"participantId":"participant_db_auth","condition":"webgis"}',
+                content_type="application/json",
+            ).json()["session"]
+            previous_session_key = client.session.session_key
+
+            login = StudyAdminTests._login(client)
+            self.assertEqual(login.status_code, 302)
+            self.assertNotEqual(client.session.session_key, previous_session_key)
+            self.assertEqual(client.get("/study-admin/").status_code, 200)
+            self.assertNotIn("test-study-admin-password", json.dumps(dict(client.session)))
+
+            client.post("/study-admin/logout/")
+            self.assertEqual(client.get("/study-admin/").status_code, 302)
+            self.assertEqual(
+                client.session[STUDY_CONTEXT_SESSION_KEY]["studySessionId"],
+                started["studySessionId"],
+            )
 
 
 class VoiceTranscriptionTests(SimpleTestCase):

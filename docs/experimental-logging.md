@@ -19,12 +19,14 @@ La modalità studio persistente usa file locali esclusi da git in `var/study-log
 
 ## Archivio Locale
 
-La pagina locale `/progettoGIS/cartaNatura/study-admin/` elenca tutte le sessioni
+La pagina `/progettoGIS/cartaNatura/study-admin/` elenca tutte le sessioni
 persistenti, mostra riepiloghi ed eventi e permette di scaricare JSON/JSONL o
-eliminare una sessione chiusa. Non richiede autenticazione ed è pensata solo per
-un'istanza eseguita sulla macchina dello sperimentatore. Una sessione attiva nella
-sessione Django corrente deve essere chiusa dalla console Studio prima di poterla
-eliminare.
+eliminare una sessione chiusa. Pagina, download ed eliminazione richiedono la
+password condivisa configurata in `STUDY_ADMIN_PASSWORD`. Se la variabile non è
+configurata, l'archivio resta chiuso. La password non viene salvata nella sessione:
+la sessione conserva soltanto un token HMAC, che viene invalidato quando la
+password cambia. Una sessione attiva nella sessione Django corrente deve essere
+chiusa dalla console Studio prima di poterla eliminare.
 
 ## Attivazione Riservata
 

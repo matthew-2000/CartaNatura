@@ -19,7 +19,13 @@
       <span class="brand-badge">GIS</span>
       <span><strong>Carta Natura</strong><small>Archivio sperimentale locale</small></span>
     </a>
-    <a class="back-link" href="{% url 'index' %}?study=1">Torna alla mappa</a>
+    <div class="admin-header-actions">
+      <a class="back-link" href="{% url 'index' %}?study=1">Torna alla mappa</a>
+      <form method="post" action="{% url 'study_admin_logout' %}">
+        {% csrf_token %}
+        <button class="logout-button" type="submit">Esci</button>
+      </form>
+    </div>
   </header>
 
   <main class="admin-main">

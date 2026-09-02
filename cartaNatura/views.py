@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import shutil
+from functools import wraps
 from pathlib import Path
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.http import HttpResponse
@@ -15,6 +17,9 @@ from django.shortcuts import redirect, render
 from django.middleware.csrf import get_token
 from django.templatetags.static import static
 from django.urls import reverse
+from django.utils.crypto import constant_time_compare, salted_hmac
+from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.http import require_POST
@@ -76,6 +81,56 @@ STUDY_TASKS = (
     {"id": "asita_t5_report_pdf", "label": "T5 - Report e PDF"},
     {"id": "asita_t6_map_verify", "label": "T6 - Verifica in mappa"},
 )
+
+STUDY_ADMIN_AUTH_SESSION_KEY = "study_admin_auth"
+
+
+def _study_admin_password() -> str:
+    return str(getattr(settings, "STUDY_ADMIN_PASSWORD", "") or "")
+
+
+def _study_admin_auth_token() -> str | None:
+    password = _study_admin_password()
+    if not password:
+        return None
+    return salted_hmac(
+        "cartaNatura.study_admin",
+        password,
+        secret=settings.SECRET_KEY,
+    ).hexdigest()
+
+
+def _study_admin_is_authenticated(request) -> bool:
+    expected = _study_admin_auth_token()
+    actual = request.session.get(STUDY_ADMIN_AUTH_SESSION_KEY)
+    return bool(
+        expected
+        and isinstance(actual, str)
+        and constant_time_compare(actual, expected)
+    )
+
+
+def _study_admin_redirect_target(request) -> str:
+    candidate = str(request.POST.get("next") or request.GET.get("next") or "")
+    if candidate and url_has_allowed_host_and_scheme(
+        candidate,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return candidate
+    return reverse("study_admin")
+
+
+def study_admin_required(view_func):
+    @wraps(view_func)
+    def wrapped(request, *args, **kwargs):
+        if _study_admin_is_authenticated(request):
+            return view_func(request, *args, **kwargs)
+        login_url = reverse("study_admin_login")
+        query = urlencode({"next": request.get_full_path()})
+        return redirect(f"{login_url}?{query}")
+
+    return wrapped
 
 
 def _ensure_session_id(request) -> str:
@@ -1081,6 +1136,50 @@ def _study_admin_records() -> list[dict[str, object]]:
     )
 
 
+@never_cache
+@ensure_csrf_cookie
+@require_http_methods(["GET", "POST"])
+def study_admin_login(request):
+    if _study_admin_is_authenticated(request):
+        return redirect(_study_admin_redirect_target(request))
+
+    configured = bool(_study_admin_password())
+    error = None
+    status = 200
+    if request.method == "POST":
+        submitted = str(request.POST.get("password") or "")
+        if configured and constant_time_compare(submitted, _study_admin_password()):
+            request.session.cycle_key()
+            request.session[STUDY_ADMIN_AUTH_SESSION_KEY] = _study_admin_auth_token()
+            request.session.modified = True
+            return redirect(_study_admin_redirect_target(request))
+        error = "Password non corretta." if configured else "Password amministrativa non configurata."
+        status = 401 if configured else 503
+    elif not configured:
+        error = "Password amministrativa non configurata."
+        status = 503
+
+    return render(
+        request,
+        "cartaNatura/study_admin_login.html",
+        {
+            "error": error,
+            "configured": configured,
+            "next": _study_admin_redirect_target(request),
+        },
+        status=status,
+    )
+
+
+@require_POST
+def study_admin_logout(request):
+    request.session.pop(STUDY_ADMIN_AUTH_SESSION_KEY, None)
+    request.session.modified = True
+    return redirect("study_admin_login")
+
+
+@never_cache
+@study_admin_required
 @ensure_csrf_cookie
 @require_http_methods(["GET"])
 def study_admin(request):
@@ -1122,6 +1221,8 @@ def study_admin(request):
     )
 
 
+@never_cache
+@study_admin_required
 @require_http_methods(["GET"])
 def study_admin_download(request, participant_id: str, study_session_id: str, export_format: str):
     session_path = _resolve_study_session_path(participant_id, study_session_id)
@@ -1151,6 +1252,7 @@ def study_admin_download(request, participant_id: str, study_session_id: str, ex
     return response
 
 
+@study_admin_required
 @require_POST
 def study_admin_delete(request, participant_id: str, study_session_id: str):
     session_path = _resolve_study_session_path(participant_id, study_session_id)

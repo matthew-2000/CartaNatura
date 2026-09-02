@@ -1,0 +1,42 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Accesso riservato all'archivio sperimentale di Carta Natura.">
+  <link rel="icon" type="image/x-icon" href="{% static 'assets/favicon.png' %}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=Spectral:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'css/study-admin.css' %}">
+  <title>Accesso archivio · Carta Natura</title>
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-card" aria-labelledby="loginTitle">
+      <a class="login-brand" href="{% url 'index' %}?study=1">
+        <span class="brand-badge">GIS</span>
+        <span><strong>Carta Natura</strong><small>Archivio sperimentale</small></span>
+      </a>
+      <p class="login-kicker">Area riservata</p>
+      <h1 id="loginTitle">Accedi all’archivio</h1>
+      <p>Inserisci la password amministrativa per consultare, esportare o eliminare le sessioni dello studio.</p>
+      {% if error %}<div class="admin-notice is-warning" role="alert">{{ error }}</div>{% endif %}
+      {% if configured %}
+        <form class="login-form" method="post" action="{% url 'study_admin_login' %}">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{{ next }}">
+          <label for="studyAdminPassword">Password</label>
+          <input id="studyAdminPassword" name="password" type="password" autocomplete="current-password" required autofocus>
+          <button type="submit">Accedi</button>
+        </form>
+      {% else %}
+        <p class="login-configuration-help">Configura <code>STUDY_ADMIN_PASSWORD</code> nell’ambiente del server e riavvia il servizio.</p>
+      {% endif %}
+      <a class="login-back" href="{% url 'index' %}?study=1">Torna alla mappa</a>
+    </section>
+  </main>
+</body>
+</html>
