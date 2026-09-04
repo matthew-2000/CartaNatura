@@ -3,10 +3,10 @@ export class MapController {
     mapConfig,
     municipalitySource,
     municipalityBoundaries,
-    categoryByCode,
+    resolveFeatureCategory,
     onSelectionChange = () => {},
   }) {
-    this.categoryByCode = categoryByCode;
+    this.resolveFeatureCategory = resolveFeatureCategory;
     this.onSelectionChange = onSelectionChange;
     this.municipalitySource = municipalitySource;
     this.municipalityBoundaries = municipalityBoundaries;
@@ -221,7 +221,7 @@ export class MapController {
 
     this.natureLayer = L.geoJSON(clippedGeoJson, {
       style: (feature) => {
-        const category = this.categoryByCode.get(feature.properties?.CODICE);
+        const category = this.resolveFeatureCategory(feature);
         const color = category?.color || "#4f4f4f";
         return {
           color,

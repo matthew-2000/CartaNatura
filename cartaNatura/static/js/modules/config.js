@@ -15,3 +15,7 @@ for (const category of categories) {
     categoryByCode.set(code, category);
   }
 }
+
+export function resolveFeatureCategory(feature) {
+  return categoryByCode.get(String(feature?.properties?.CODICE ?? "")) || null;
+}

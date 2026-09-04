@@ -1,12 +1,11 @@
-export function summarizeClippedFeatures(clipped, categories, categoryByCode) {
+export function summarizeClippedFeatures(clipped, categories, resolveFeatureCategory) {
   const totalsByKey = new Map(categories.map((category) => [category.key, 0]));
   let totalCo2 = 0;
   let totalHectares = 0;
 
   for (const feature of clipped.features) {
-    const code = feature.properties?.CODICE;
     const hectares = Number(feature.properties?.ettari || 0);
-    const category = categoryByCode.get(code);
+    const category = resolveFeatureCategory(feature);
 
     if (!category) {
       continue;

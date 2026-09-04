@@ -6,7 +6,7 @@ from typing import Any
 
 import geopandas
 
-from cartaNatura.domain.vegetation import VEGETATION_BY_CODE, VEGETATION_CATEGORIES
+from cartaNatura.domain.vegetation import VEGETATION_CATEGORIES, resolve_vegetation_category
 
 
 def summarize_clipped_features(clipped: geopandas.GeoDataFrame) -> dict[str, Any]:
@@ -17,7 +17,7 @@ def summarize_clipped_features(clipped: geopandas.GeoDataFrame) -> dict[str, Any
     for _, row in clipped.iterrows():
         code = row.get("CODICE")
         hectares = float(row.get("ettari") or 0)
-        category = VEGETATION_BY_CODE.get(str(code))
+        category = resolve_vegetation_category(code)
 
         if category is None:
             continue

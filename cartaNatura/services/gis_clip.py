@@ -14,6 +14,8 @@ SOURCE_EPSG_BY_KIND = {
     "municipalities": 32633,
     "drawn": 4326,
 }
+AREA_EPSG = 32633
+SQUARE_METERS_PER_HECTARE = 10_000
 
 
 def _area_to_geodataframe(area: SelectionArea) -> geopandas.GeoDataFrame:
@@ -69,6 +71,11 @@ def clip_selection(selection: SelectionRequest) -> ClipResult:
         analysis_mask,
         keep_geom_type=False,
     )
+    if (~clipped.geometry.is_valid).any():
+        raise ValueError("Il clipping ha prodotto geometrie non valide.")
+    if not clipped.empty:
+        projected = clipped.to_crs(epsg=AREA_EPSG)
+        clipped["ettari"] = projected.geometry.area / SQUARE_METERS_PER_HECTARE
 
     return ClipResult(
         clipped=clipped,

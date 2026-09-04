@@ -25,7 +25,7 @@ let formatRoundedNumber;
 let appConfig;
 let assistantConfig;
 let categories;
-let categoryByCode;
+let resolveFeatureCategory;
 let priceOptions;
 let MapController;
 let generatePdfReport;
@@ -112,7 +112,7 @@ async function loadModules() {
   } = apiModule);
   ({ deriveSummaryMetrics, summarizeClippedFeatures, buildEconomicScenarioRows, formatCurrency, formatRoundedNumber } =
     analysisModule);
-  ({ appConfig, assistantConfig, categories, categoryByCode, priceOptions } = configModule);
+  ({ appConfig, assistantConfig, categories, resolveFeatureCategory, priceOptions } = configModule);
   ({ MapController } = mapControllerModule);
   ({ generatePdfReport } = pdfExportModule);
   ({ renderAnalysisHistoryList, renderAnalysisComparison } = analysisHistoryModule);
@@ -1890,7 +1890,7 @@ function applyAnalysisResult(mapController, analysisResult, analysisContext = nu
   state.intersectedMunicipalities = analysisResult.intersectedMunicipalities || [];
   state.summary =
     analysisResult.summary ||
-    summarizeClippedFeatures(analysisResult.clipped, categories, categoryByCode);
+    summarizeClippedFeatures(analysisResult.clipped, categories, resolveFeatureCategory);
   state.calculatedValue = 0;
   state.economicValueCalculated = false;
   state.selectedEconomicPrice = priceOptions[0]?.value ?? null;
@@ -1935,7 +1935,7 @@ function applyAssistantMapFilter(mapController, mapFilter) {
   const filteredFeatures = mapFilter.showAll
     ? sourceFeatures
     : sourceFeatures.filter((feature) => {
-        const category = categoryByCode.get(feature.properties?.CODICE);
+        const category = resolveFeatureCategory(feature);
         return category && selectedKeys.has(category.key);
       });
 
@@ -3009,7 +3009,7 @@ async function bootstrap() {
     mapConfig: appConfig.map,
     municipalitySource,
     municipalityBoundaries,
-    categoryByCode,
+    resolveFeatureCategory,
     onSelectionChange: (selectionState) => refreshSelectionStatus(selectionState),
   });
   state.mapController = mapController;

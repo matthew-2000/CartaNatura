@@ -1,5 +1,7 @@
 # Carta Natura — System Design Dossier
 
+> **Nota di versione — 4 settembre 2026.** Le sezioni che descrivono il riuso di `ettari` dopo il clipping, i mismatch case-sensitive e le relative limitazioni fotografano la revisione pre-stabilizzazione. La nuova baseline GIS ufficiale è in [`asita-2026-gis-baseline.md`](asita-2026-gis-baseline.md). L'architettura generale resta applicabile; i claim numerici vanno riletti alla luce della correzione.
+
 Stato dell'audit: 4 settembre 2026  
 Scopo: base tecnica verificabile per la futura sezione *System Design*; questo documento non è il testo del paper.  
 Repository auditato: `/Users/matteoercolino/IdeaProjects/CartaNatura`

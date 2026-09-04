@@ -10,7 +10,7 @@ import geopandas
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, TestCase, override_settings
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
 
 from cartaNatura.domain.economics import (
     PRICE_OPTIONS,
@@ -47,13 +47,25 @@ from cartaNatura.interaction.tools.analysis_history import (
     get_recent_analyses,
 )
 from cartaNatura.interaction.tools.gis_analysis import analyze_selection
+from cartaNatura.interaction.tools.gis_analysis import analyze_municipalities
 from cartaNatura.interaction.tools.map_filtering import filter_analysis_categories
 from cartaNatura.interaction.ui_context import build_interaction_context
 from cartaNatura.interaction.tools.contracts import ToolName
 from cartaNatura.interaction.voice import transcribe_uploaded_audio
 from cartaNatura.schemas import SelectionArea, SelectionRequest
 from cartaNatura.services.gis_clip import clip_selection
+from cartaNatura.services.analysis_summary import summarize_clipped_features
+from cartaNatura.services.datasets import (
+    NATURE_SHAPEFILE_PATH,
+    load_nature_shapes,
+    prepare_nature_shapes,
+)
+from cartaNatura.domain.vegetation import (
+    VEGETATION_BY_CODE,
+    serialize_categories,
+)
 from cartaNatura.services.municipality_text import (
+    build_municipality_selection_payload_dict,
     extract_municipality_names,
     suggest_municipality_names,
 )
@@ -666,6 +678,316 @@ class GisClipServiceTests(SimpleTestCase):
 
         self.assertTrue(result.clipped.empty)
         self.assertEqual(result.intersected_municipalities, [])
+
+
+class GeographicCorrectnessRegressionTests(SimpleTestCase):
+    METRIC_CRS = "EPSG:32633"
+    ORIGIN_X = 500_000
+    ORIGIN_Y = 4_500_000
+
+    @classmethod
+    def _metric_box(cls, min_x: float, min_y: float, max_x: float, max_y: float):
+        return box(
+            cls.ORIGIN_X + min_x,
+            cls.ORIGIN_Y + min_y,
+            cls.ORIGIN_X + max_x,
+            cls.ORIGIN_Y + max_y,
+        )
+
+    @classmethod
+    def _nature_frame(cls, geometries, codes=None):
+        codes = codes or ["41.732"] * len(geometries)
+        return geopandas.GeoDataFrame(
+            {
+                "CODICE": codes,
+                # Deliberately wrong source values: clip_selection must replace them.
+                "ettari": [999.0] * len(geometries),
+            },
+            geometry=geometries,
+            crs=cls.METRIC_CRS,
+        ).to_crs(epsg=4326)
+
+    @classmethod
+    def _area(cls, kind: str, geometries, names=None):
+        frame = geopandas.GeoDataFrame(
+            {"COMUNE": names or [""] * len(geometries)},
+            geometry=geometries,
+            crs=cls.METRIC_CRS,
+        )
+        if kind == "drawn":
+            frame = frame.to_crs(epsg=4326)
+        return SelectionArea(
+            kind=kind,
+            geojson=json.loads(frame.to_json(drop_id=True)),
+        )
+
+    @classmethod
+    def _boundaries(cls):
+        return geopandas.GeoDataFrame(
+            {"COMUNE": ["Comune A", "Comune B"]},
+            geometry=[cls._metric_box(0, 0, 1_000, 1_000), cls._metric_box(1_000, 0, 2_000, 1_000)],
+            crs=cls.METRIC_CRS,
+        ).to_crs(epsg=4326)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_partial_clip_uses_intersection_area_not_source_ettari(
+        self,
+        load_nature,
+        load_boundaries,
+    ):
+        load_nature.return_value = self._nature_frame([self._metric_box(0, 0, 1_000, 1_000)])
+        load_boundaries.return_value = self._boundaries()
+        selection = SelectionRequest(
+            areas=(self._area("drawn", [self._metric_box(0, 0, 500, 1_000)]),)
+        )
+
+        result = clip_selection(selection)
+        summary = summarize_clipped_features(result.clipped)
+
+        self.assertAlmostEqual(result.clipped["ettari"].sum(), 50.0, delta=0.001)
+        self.assertAlmostEqual(summary["totalHectares"], 50.0, delta=0.001)
+        self.assertAlmostEqual(summary["totalCo2"], 165.0, delta=0.01)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_total_clip_preserves_full_geometric_area(
+        self,
+        load_nature,
+        load_boundaries,
+    ):
+        load_nature.return_value = self._nature_frame([self._metric_box(0, 0, 1_000, 1_000)])
+        load_boundaries.return_value = self._boundaries()
+        selection = SelectionRequest(
+            areas=(self._area("drawn", [self._metric_box(0, 0, 1_000, 1_000)]),)
+        )
+
+        result = clip_selection(selection)
+
+        self.assertAlmostEqual(result.clipped["ettari"].sum(), 100.0, delta=0.001)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_multiple_municipalities_use_union_without_area_duplication(
+        self,
+        load_nature,
+        load_boundaries,
+    ):
+        load_nature.return_value = self._nature_frame([self._metric_box(0, 0, 2_000, 1_000)])
+        load_boundaries.return_value = self._boundaries()
+        selection = SelectionRequest(
+            areas=(
+                self._area(
+                    "municipalities",
+                    [self._metric_box(0, 0, 1_000, 1_000), self._metric_box(1_000, 0, 2_000, 1_000)],
+                    ["Comune A", "Comune B"],
+                ),
+            )
+        )
+
+        result = clip_selection(selection)
+
+        self.assertAlmostEqual(result.clipped["ettari"].sum(), 200.0, delta=0.001)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_mixed_overlapping_selection_counts_union_once(
+        self,
+        load_nature,
+        load_boundaries,
+    ):
+        load_nature.return_value = self._nature_frame([self._metric_box(0, 0, 1_000, 1_000)])
+        load_boundaries.return_value = self._boundaries()
+        selection = SelectionRequest(
+            areas=(
+                self._area(
+                    "municipalities",
+                    [self._metric_box(0, 0, 750, 1_000)],
+                    ["Comune A"],
+                ),
+                self._area("drawn", [self._metric_box(250, 0, 1_000, 1_000)]),
+            )
+        )
+
+        result = clip_selection(selection)
+
+        self.assertAlmostEqual(result.clipped["ettari"].sum(), 100.0, delta=0.001)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    def test_problematic_codes_contribute_to_categories_colors_and_co2(
+        self,
+        load_nature,
+        load_boundaries,
+    ):
+        geometries = [self._metric_box(index * 100, 0, (index + 1) * 100, 100) for index in range(4)]
+        codes = ["41.B", "41.C1", "41.Lcn", "44.D2cn"]
+        load_nature.return_value = self._nature_frame(geometries, codes)
+        load_boundaries.return_value = self._boundaries()
+        selection = SelectionRequest(
+            areas=(self._area("drawn", [self._metric_box(0, 0, 400, 100)]),)
+        )
+
+        result = clip_selection(selection)
+        summary = summarize_clipped_features(result.clipped)
+        serialized_by_code = {
+            code: category
+            for category in serialize_categories()
+            for code in category["codes"]
+        }
+
+        self.assertEqual(set(codes), set(result.clipped["CODICE"]))
+        self.assertEqual({item["key"] for item in summary["items"]}, {"caducifogli", "conifere_miste", "igrofili"})
+        self.assertAlmostEqual(summary["totalHectares"], 4.0, delta=0.001)
+        self.assertAlmostEqual(summary["totalCo2"], 27.52, delta=0.01)
+        self.assertEqual(summary["topCategory"]["key"], "caducifogli")
+        for code in codes:
+            self.assertEqual(serialized_by_code[code]["color"], VEGETATION_BY_CODE[code].color)
+            self.assertEqual(serialized_by_code[code]["key"], VEGETATION_BY_CODE[code].key)
+
+    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
+    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
+    @patch("cartaNatura.services.municipality_text.load_municipality_shapes")
+    @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.cache")
+    def test_gui_and_conversational_paths_return_identical_geographic_metrics(
+        self,
+        load_municipalities,
+        load_nature,
+        load_boundaries,
+    ):
+        municipality_frame = geopandas.GeoDataFrame(
+            {"COMUNE": ["Comune A"]},
+            geometry=[self._metric_box(0, 0, 500, 1_000)],
+            crs=self.METRIC_CRS,
+        )
+        load_municipalities.return_value = municipality_frame
+        load_nature.return_value = self._nature_frame(
+            [self._metric_box(0, 0, 1_000, 1_000)],
+            ["41.B"],
+        )
+        load_boundaries.return_value = self._boundaries()
+        selection_payload = {
+            "areas": [
+                {
+                    "kind": "municipalities",
+                    "geojson": json.loads(municipality_frame.to_json(drop_id=True)),
+                }
+            ]
+        }
+
+        gui_response = Client().post(
+            "/progettoGIS/cartaNatura/gis",
+            data=json.dumps(selection_payload),
+            content_type="application/json",
+        )
+        conversational = analyze_municipalities(municipality_names=["Comune A"])
+
+        self.assertEqual(gui_response.status_code, 200)
+        gui_summary = gui_response.json()["summary"]
+        self.assertEqual(gui_summary, conversational["summary"])
+        self.assertAlmostEqual(gui_summary["totalHectares"], 50.0, delta=0.001)
+        self.assertAlmostEqual(gui_summary["totalCo2"], 293.5, delta=0.01)
+        self.assertEqual(gui_summary["topCategory"]["key"], "caducifogli")
+        self.assertEqual([item["key"] for item in gui_summary["items"]], ["caducifogli"])
+
+    def test_real_nature_dataset_repairs_all_21_invalid_geometries_without_area_change(self):
+        raw = geopandas.read_file(NATURE_SHAPEFILE_PATH)
+        raw_invalid = ~raw.geometry.is_valid
+
+        prepared = prepare_nature_shapes(raw)
+
+        self.assertEqual(int(raw_invalid.sum()), 21)
+        self.assertFalse((~prepared.geometry.is_valid).any())
+        self.assertEqual(len(prepared), len(raw))
+        self.assertAlmostEqual(
+            prepared.loc[raw_invalid].geometry.area.sum(),
+            raw.loc[raw_invalid].geometry.area.sum(),
+            places=5,
+        )
+        self.assertEqual(set(prepared["CODICE"]), set(VEGETATION_BY_CODE))
+
+    def test_dataset_preparation_rejects_unclassified_codes(self):
+        frame = geopandas.GeoDataFrame(
+            {"CODICE": ["UNMAPPED"], "ettari": [1.0]},
+            geometry=[self._metric_box(0, 0, 100, 100)],
+            crs=self.METRIC_CRS,
+        )
+
+        with self.assertRaisesMessage(ValueError, "codici vegetazionali non classificati"):
+            prepare_nature_shapes(frame)
+
+    def test_dataset_preparation_rejects_unexpected_crs(self):
+        frame = geopandas.GeoDataFrame(
+            {"CODICE": ["41.18"], "ettari": [1.0]},
+            geometry=[box(14, 40, 14.01, 40.01)],
+            crs="EPSG:4326",
+        )
+
+        with self.assertRaisesMessage(ValueError, "CRS Carta Natura inatteso"):
+            prepare_nature_shapes(frame)
+
+    def test_dataset_preparation_rejects_material_geometry_repair(self):
+        bow_tie = Polygon([(0, 0), (200, 200), (0, 200), (200, 0), (0, 0)])
+        frame = geopandas.GeoDataFrame(
+            {"CODICE": ["41.18"], "ettari": [0.0]},
+            geometry=[bow_tie],
+            crs=self.METRIC_CRS,
+        )
+
+        with self.assertRaisesMessage(ValueError, "modificherebbe materialmente la superficie"):
+            prepare_nature_shapes(frame)
+
+    def test_frontend_receives_canonical_codes_and_uses_one_feature_resolver(self):
+        response = Client().get("/progettoGIS/cartaNatura/")
+        app_config = json.loads(response.context["app_config_json"])
+        serialized_by_code = {
+            code: category
+            for category in app_config["categories"]
+            for code in category["codes"]
+        }
+
+        expected = {
+            "41.B": ("caducifogli", "aqua"),
+            "41.C1": ("caducifogli", "aqua"),
+            "41.Lcn": ("conifere_miste", "gold"),
+            "44.D2cn": ("igrofili", "maroon"),
+        }
+        for code, (key, color) in expected.items():
+            self.assertEqual(serialized_by_code[code]["key"], key)
+            self.assertEqual(serialized_by_code[code]["color"], color)
+
+        js_root = Path(settings.BASE_DIR) / "cartaNatura" / "static" / "js"
+        for relative_path in ("app.js", "modules/analysis.js", "modules/map-controller.js"):
+            source = (js_root / relative_path).read_text(encoding="utf-8")
+            self.assertIn("resolveFeatureCategory", source)
+            self.assertNotIn("categoryByCode.get", source)
+
+
+class RealGisBaselineRegressionTests(SimpleTestCase):
+    BASELINES = {
+        ("Benevento",): (805.440630340188, 2795.8470414099634, 3, "querceti_roverella"),
+        ("Montella",): (4477.965786844206, 32560.574226989276, 8, "faggete"),
+        ("Avellino",): (66.97362990413458, 338.507407400973, 3, "castagneti"),
+        ("Salerno",): (1651.6147961532392, 8071.154614338076, 7, "leccete"),
+        ("Caserta",): (1070.2854609693334, 4476.6287197090915, 3, "querceti_roverella"),
+        ("Serino",): (2428.699816017515, 15370.997064533913, 6, "castagneti"),
+        ("Avellino", "Salerno"): (1718.588426057374, 8409.662021739048, 7, "leccete"),
+    }
+
+    def test_real_baselines_and_shared_paths(self):
+        for names, (expected_hectares, expected_co2, expected_count, expected_top) in self.BASELINES.items():
+            with self.subTest(names=names):
+                conversational = analyze_municipalities(municipality_names=list(names))
+                gui = analyze_selection(
+                    selection_payload=build_municipality_selection_payload_dict(list(names))
+                )
+
+                self.assertEqual(gui["summary"], conversational["summary"])
+                summary = gui["summary"]
+                self.assertAlmostEqual(summary["totalHectares"], expected_hectares, delta=0.001)
+                self.assertAlmostEqual(summary["totalCo2"], expected_co2, delta=0.01)
+                self.assertEqual(len(summary["items"]), expected_count)
+                self.assertEqual(summary["topCategory"]["key"], expected_top)
 
 
 class AnalysisCompareServiceTests(SimpleTestCase):
