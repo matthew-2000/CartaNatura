@@ -1,308 +1,83 @@
-# Task sheet operatore — pilot ASITA 2026
+# Due incarichi estesi per i partecipanti
 
-Versione: `ASITA-2026-PILOT-v0.1`
-Protocollo: [docs/asita-2026-pilot-protocol.md](asita-2026-pilot-protocol.md)
-URL: `/progettoGIS/cartaNatura/?study=1`
+Versione: **ASITA-TASK-v0.5** · 3 settembre 2026.
 
-## Setup sessione
+La versione corrente contiene soltanto **due task lunghi** e sostituisce entrambe le precedenti proposte, da due e da quattro task. Ogni task è un incarico unico con più fasi e un risultato finale verificabile. Il PDF contiene una pagina per task.
 
-Partecipante: `participant_###`
-Ordine condizioni:
+T1 integra confronto territoriale e approfondimento delle categorie; T2 integra correzione dell'area, valutazione economica e revisione del documento. Analisi e lettura dei risultati sono comuni, mentre confronto dello storico, categorie e legenda caratterizzano T1; analisi congiunta, rettifica, scenari e PDF caratterizzano T2. I comuni dei due incarichi sono diversi.
 
-- partecipante dispari: `webgis` → `conversational`
-- partecipante pari: `conversational` → `webgis`
+Il tempo obiettivo resta **5–7 minuti per incarico**, da verificare con partecipanti: il numero di fasi non garantisce la durata, soprattutto quando l'assistente esegue una richiesta composta. Non si impongono attese, un numero minimo di messaggi o la ripetizione di operazioni già concluse. Le fasi sono parti della stessa consegna, tutte visibili sulla pagina. Assegnazione delle modalità, questionari e metriche restano a cura del ricercatore.
 
-Input standard:
+## T1 — Preparare un confronto territoriale
 
-- comuni: `Avellino` e `Benevento`
-- scenario valore singolo: `social_cost`
-- timeout T1-T5: 6 min
-- timeout T6: 4 min
+Sottotitolo: Benevento e Montella
 
-## Procedura per ogni condizione
+Obiettivo: Prepara un confronto dei due comuni che permetta di riconoscere le differenze negli indicatori e nella composizione forestale, verificando anche la rappresentazione sulla mappa.
 
-1. Console operatore: scegliere `participantId`, `condition`, task T1.
-2. Premere `Avvia`.
-3. Premere `Inizia attività`.
-4. Leggere solo consegna task.
-5. Osservare senza guidare.
-6. Premere `Completa`, `Errore` o `Non compresa`.
-7. Passare al task successivo e premere `Inizia attività`.
-8. A fine condizione: esportare JSON e JSONL.
-9. Somministrare misure soggettive di condizione.
-10. Premere `Reset` prima della condizione successiva.
+### 1. Costruisci le due analisi
 
-## Regole rapide per condizione
+> Analizza prima Benevento e poi Montella, separatamente. Per ciascun comune individua superficie forestale analizzata, CO₂ annua totale, CO₂ per ettaro e numero di categorie presenti. Verifica che siano disponibili due risultati distinti e che l'analisi corrente riguardi Montella.
 
-### `webgis`
+### 2. Approfondisci il profilo di Montella
 
-Partecipante deve completare con controlli grafici.
+> Nel dettaglio di Montella individua le tre categorie con maggiore superficie e ordinale dalla più estesa alla meno estesa. Per ognuna riporta superficie e CO₂ per ettaro. Cerca poi, fra tutte le categorie presenti, quella con il maggiore valore di CO₂ per ettaro, segnalando eventuali pari merito. Verifica se coincide con la categoria più estesa.
 
-Consentito:
+### 3. Verifica mappa e legenda
 
-- pannello comuni/disegno;
-- analisi UI;
-- report;
-- scenario prezzo UI;
-- calcolo valore UI;
-- export PDF;
-- verifica mappa.
+> Consulta la mappa del risultato di Montella e la legenda. Associa a ciascuna delle tre categorie più estese il colore usato nell'app e verifica la corrispondenza con il dettaglio delle categorie. Mantieni questi riferimenti per descrivere il profilo forestale del comune.
 
-Non consentito:
+### 4. Completa il confronto
 
-- chat;
-- voce;
-- prompt suggeriti.
+> Confronta le due analisi salvate. Indica quale comune prevale in superficie, CO₂ annua totale e CO₂ per ettaro, mostrando i valori di entrambi. Riporta lo scarto assoluto di CO₂ annua mostrato dal sistema. Dal dettaglio del confronto individua una categoria comune e una presente in un solo comune, se esistono. Per quella comune indica dove occupa più superficie. Concludi con una breve sintesi che includa questi risultati e il profilo delle tre categorie di Montella, con dati e colori. Lascia disponibile il confronto completo.
 
-### `conversational`
+Risultato finale: confronto dei due comuni e profilo di Montella con tre categorie ordinate, valori e colori verificati.
 
-Partecipante deve completare tramite chat/voce.
+## T2 — Consegnare un report aggiornato
 
-Consentito:
+Sottotitolo: Da Avellino e Salerno al solo Salerno
 
-- chat;
-- voce se configurata;
-- mappa per verifica;
-- report aperto dalla chat;
-- export PDF dal pulsante visibile nel report.
+Obiettivo: Prepara un documento sulla CO₂ e sul suo valore economico, gestendo prima una rettifica del territorio e poi un cambiamento dello scenario richiesto dal destinatario.
 
-Non consentito:
+### 1. Analizza l'area iniziale
 
-- selezione comuni da UI per completare;
-- disegno area per completare;
-- analisi UI;
-- selezione/calcolo economico UI;
-- storico come sorgente di completamento.
+> Analizza Avellino e Salerno insieme, come un'unica area. Verifica i comuni inclusi e individua superficie forestale analizzata, CO₂ annua totale e categoria prevalente per superficie. Conserva questa analisi come riferimento iniziale.
 
-## Task
+### 2. Correggi il territorio
 
-### T1 — Analisi comuni/area
+> L'incarico viene rettificato: il documento deve riguardare soltanto Salerno. Produci una nuova analisi del solo Salerno, conservando la precedente. Verifica che risultato corrente e mappa riguardino il comune corretto. Individua i nuovi valori di superficie e CO₂ annua e la categoria prevalente; indica quali sono cambiati rispetto al risultato iniziale.
 
-ID log: `asita_t1_area_analysis`
+### 3. Esamina le alternative economiche
 
-Consegna WebGIS:
-“Seleziona Avellino e Benevento e produci l’analisi dell’area.”
+> Sull'analisi del solo Salerno consulta tutti gli scenari economici disponibili. Per ciascuno individua il prezzo per tonnellata e il valore economico annuo mostrato dal sistema. Riconosci gli scenari con il valore più basso e più alto e verifica che usino la stessa quantità annua di CO₂.
 
-Consegna conversazionale:
-“Chiedi al sistema di analizzare Avellino e Benevento.”
+### 4. Prepara la prima versione
 
-Successo osservabile:
+> Applica Costo sociale all'analisi di Salerno. Verifica comune, CO₂ annua, scenario, prezzo e valore economico. Genera e scarica il PDF; aprilo e controlla che riporti Salerno e la valutazione scelta. Conserva il file prima di proseguire.
 
-- risultato visibile in mappa/report;
-- `analysisId` presente.
+### 5. Aggiorna e verifica la consegna
 
-Log da controllare:
+> Il destinatario richiede ora un prezzo di 82 EUR per tonnellata di CO₂. Individua lo scenario corrispondente e applicalo alla stessa analisi di Salerno. Genera, scarica e apri il nuovo PDF. Confronta i due documenti: comune e CO₂ annua devono restare uguali, mentre scenario, prezzo e valore economico devono cambiare. Indica quale file soddisfa la richiesta finale e riporta il suo valore economico annuo, mantenendo disponibili entrambe le versioni.
 
-- `task_started`;
-- `analysis_completed` oppure `tool_completed`;
-- `details.analysisId`;
-- `task_completed`.
+Risultato finale: due PDF del solo Salerno, con scenari diversi, e identificazione del documento che soddisfa la richiesta finale.
 
-Fallimento:
+## Verifica per il ricercatore
 
-- niente analisi entro timeout;
-- comuni errati;
-- uso canale non consentito per completare.
+Le consegne non prescrivono prompt o pulsanti. Non richiedono calcoli manuali, modifica di geometrie salvate, filtri di mappa, ripristino arbitrario di vecchi report o PDF di confronti. In T1 Montella resta l'analisi corrente mentre se ne consultano dettaglio e legenda; il confronto arriva dopo. In T2 la valutazione e i PDF usano sempre l'analisi corrente del solo Salerno.
 
-### T2 — Categorie forestali e CO2
+| Task | Risultati osservabili |
+| --- | --- |
+| T1 | Due analisi separate; quattro dati per comune; tre categorie di Montella ordinate con superficie e coefficiente; massimo del coefficiente fra tutte le categorie; colori verificati; confronto dei tre indicatori con dati e scarto; categoria comune e relativa superficie confrontata; categoria distintiva o assenza confermata; sintesi conclusiva |
+| T2 | Analisi congiunta iniziale; nuova analisi del solo Salerno; controllo di territorio, indicatori e prevalenza; prezzi e valori dei quattro scenari; minimo e massimo; Costo sociale applicato; primo PDF scaricato e verificato; scenario a 82 EUR/t riconosciuto e applicato alla stessa analisi; secondo PDF scaricato e verificato; cambiamenti e documento finale riconosciuti |
 
-ID log: `asita_t2_forest_co2`
+La correzione del territorio avviene tramite nuova analisi, senza eliminare la precedente. Il confronto dei documenti di T2 è una verifica dei file da parte del partecipante, non una funzione automatica dell'app. Il secondo scenario atteso è Mercato regolamentato; questa risposta non compare nella scheda partecipante. La sintesi di T1 non richiede la generazione di un documento nell'app.
 
-Consegna WebGIS:
-“Trova nel risultato le categorie forestali e la CO2 assorbita.”
+| Funzioni | WebGIS | Assistente conversazionale |
+| --- | --- | --- |
+| Analisi singola o congiunta | Selezione dei comuni e avvio analisi | Richiesta di analisi separata o congiunta |
+| Indicatori e categorie | Report, dettaglio e ordinamento | Risultati e dettaglio dell'analisi tramite tool |
+| Mappa e legenda | Consultazione dei controlli visibili | Richiesta di mostrare risultato e legenda, poi consultazione visiva |
+| Confronto territoriale T1 | Selezione di due schede nello storico | Confronto delle analisi salvate tramite tool |
+| Scenari T2 | Tabella scenari, selezione e calcolo | Confronto scenari e applicazione tramite tool |
+| PDF T2 | Generazione e download dal report | Apertura del report tramite assistente; stessi pulsanti di generazione e download |
 
-Consegna conversazionale:
-“Chiedi al sistema quali categorie forestali sono state trovate e quanta CO2 assorbono.”
-
-Successo osservabile:
-
-- partecipante indica categorie/assenza motivata;
-- partecipante indica CO2 totale.
-
-Log da controllare:
-
-- `task_started`;
-- `report_opened` o eventi chat/tool;
-- `details.analysisId`;
-- `task_completed`.
-
-Fallimento:
-
-- valori non collegabili ad analisi corrente;
-- risposta chat non verificabile;
-- timeout.
-
-### T3 — Valore economico
-
-ID log: `asita_t3_economic_value`
-
-Consegna WebGIS:
-“Calcola il valore economico usando lo scenario Costo sociale.”
-
-Consegna conversazionale:
-“Chiedi al sistema di calcolare il valore economico con lo scenario Costo sociale.”
-
-Successo osservabile:
-
-- risultato include CO2, scenario/prezzo, valore totale, area/analisi.
-
-Log da controllare:
-
-- `task_started`;
-- `valuation_completed`;
-- `details.analysisId`;
-- `details.scenarioKey: social_cost`;
-- `details.priceEurPerTon`;
-- `details.totalCo2`;
-- `details.totalValueEur`;
-- `task_completed`.
-
-Fallimento:
-
-- scenario errato;
-- valore inventato/non tracciato;
-- nessun `analysisId`.
-
-### T4 — Confronto scenari
-
-ID log: `asita_t4_scenario_compare`
-
-Consegna WebGIS:
-“Confronta gli scenari economici disponibili per l’analisi corrente.”
-
-Consegna conversazionale:
-“Chiedi al sistema di confrontare tutti gli scenari economici disponibili.”
-
-Successo osservabile:
-
-- tutti gli scenari disponibili sono mostrati;
-- prezzi e valori sono coerenti tra UI/chat.
-
-Log da controllare:
-
-- `task_started`;
-- WebGIS: `interaction_completed` con `scenario_comparison_viewed` o `report_opened`;
-- conversazionale: `chat_message`, `tool_started`, `tool_completed`, `chat_response`;
-- `details.analysisId`;
-- `task_completed`.
-
-Fallimento:
-
-- scenari mancanti;
-- prezzi incoerenti;
-- confronto fatto con controllo UI in condizione conversazionale.
-
-### T5 — Report e PDF
-
-ID log: `asita_t5_report_pdf`
-
-Consegna WebGIS:
-“Apri il report ed esporta il PDF.”
-
-Consegna conversazionale:
-“Chiedi al sistema di aprire il report, poi esporta il PDF dal comando visibile.”
-
-Successo osservabile:
-
-- report aperto;
-- PDF generato.
-
-Log da controllare:
-
-- `task_started`;
-- `report_opened`;
-- `report_generated`;
-- `details.reportFormat: pdf`;
-- `details.analysisId`;
-- `task_completed`.
-
-Fallimento:
-
-- report non aperto;
-- PDF non generato;
-- chat dichiara generazione PDF senza evento `report_generated`.
-
-### T6 — Verifica mappa
-
-ID log: `asita_t6_map_verify`
-
-Consegna WebGIS:
-“Verifica sulla mappa che il risultato corrisponda ai comuni analizzati.”
-
-Consegna conversazionale:
-“Usa la mappa per verificare il risultato ottenuto tramite chat, senza rifare l’analisi dai controlli grafici.”
-
-Successo osservabile:
-
-- partecipante localizza area/comuni;
-- report/chat/mappa sono coerenti.
-
-Log da controllare:
-
-- `task_started`;
-- `ui_action` di verifica mappa, `report_opened` o azione chat di focus/legenda;
-- nessuna nuova analisi UI non dichiarata in conversazionale;
-- `task_completed`.
-
-Fallimento:
-
-- area non localizzata;
-- risultato mappa diverso da report/chat;
-- uso controllo grafico bloccato per produrre nuovo risultato.
-
-## Misure soggettive
-
-Dopo ogni task, modulo esterno:
-
-- difficoltà 1-7;
-- fiducia nel risultato 1-7;
-- chiarezza risultato 1-7;
-- nota libera opzionale.
-
-Dopo ogni condizione:
-
-- SUS o UMUX-LITE;
-- NASA-TLX short/raw;
-- percezione di controllo;
-- percezione di verificabilità;
-- commento libero.
-
-Dopo entrambe:
-
-- preferenza complessiva;
-- motivazione preferenza;
-- problemi principali.
-
-## Checklist post-condizione
-
-- JSON esportato.
-- JSONL esportato.
-- 6 task presenti in `summary.tasks`.
-- Ogni task ha `taskRunId` diverso.
-- Ogni task ha status terminale.
-- `condition` corretta.
-- `analysisId` coerente nei task T1-T6.
-- `protocolViolationCount` controllato.
-- errori annotati.
-- misure soggettive raccolte.
-
-## Classificazione sessione
-
-Valida:
-
-- tutti i task tracciati e completati;
-- nessuna contaminazione sostanziale;
-- export e misure soggettive presenti.
-
-Parzialmente valida:
-
-- task fallito/interrotto ma log chiaro;
-- violazione non usata per completare;
-- misura soggettiva minore mancante.
-
-Non valida:
-
-- export mancante;
-- condizione contaminata e non isolabile;
-- completamento fuori log;
-- aiuto sostanziale non documentato.
+Le funzioni e i comuni sono supportati dai controlli online precedenti e dall'ispezione dei tool. La sequenza grafica Avellino-Salerno → solo Salerno è stata provata online; confronto, legenda e revisione economica sono stati provati anche in chat su comuni documentati nella [verifica di fattibilità](asita-2026-feasibility-check.md). Il nuovo confronto Benevento-Montella e le due consegne complete v0.5 non sono stati collaudati integralmente in entrambe le modalità. Nessuna durata è stata misurata con partecipanti.

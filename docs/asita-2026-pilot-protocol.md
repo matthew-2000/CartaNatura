@@ -1,487 +1,215 @@
 # Protocollo pilot ASITA 2026
 
-Versione: `ASITA-2026-PILOT-v0.1`
-Data: 2026-07-07
-Stato: protocollo operativo per pilot, non raccolta definitiva.
-App: `/progettoGIS/cartaNatura/?study=1`
+> **Proposta precedente v0.2.** Le consegne correnti sono nella [task sheet v0.5](asita-2026-task-sheet.md): due incarichi estesi, distinti per obiettivo e percorso, che sostituiscono la proposta a quattro task. Le batterie A/B, la relativa corrispondenza con gli ID e le tabelle di assegnazione riportate sotto appartengono alla proposta precedente e non definiscono l'uso delle nuove consegne. L'assegnazione delle modalità resta a cura del ricercatore.
 
-## 1. Scopo
+Versione: **ASITA-2026-PILOT-v0.2**
 
-Questo protocollo guida un pilot within-subject per confrontare:
+Data: 2 settembre 2026
 
-- condizione `webgis`: interfaccia WebGIS tradizionale;
-- condizione `conversational`: interfaccia conversazionale testuale o vocale, con mappa usata per verifica.
+Stato: proposta operativa con funzioni verificate online; durata ed equivalenza da calibrare con partecipanti pilota.
 
-Il pilot verifica eseguibilità, logging, equivalenza minima dei task e chiarezza operativa. Non dichiara risultati sperimentali definitivi.
+App: [Carta Natura, modalità studio](https://cartanatura-production.up.railway.app/progettoGIS/cartaNatura/?study=1)
 
-## 2. Regole generali
+[Consegne correnti: due task estesi](asita-2026-task-sheet.md) · [Evidenze e limiti di fattibilità](asita-2026-feasibility-check.md)
 
-- Ogni partecipante usa codice anonimo stabile, formato consigliato `participant_001`.
-- Ogni task deve essere avviato dalla console operatore con `Inizia attività`.
-- Ogni task deve terminare con un solo evento terminale: `task_completed`, `task_failed` o `task_interrupted`.
-- La durata valida è quella tra `task_started` e evento terminale dello stesso `taskRunId`.
-- Il completamento del task richiede criterio osservabile più evento terminale. Una semplice visualizzazione non basta se manca prova applicativa o conferma operatore.
-- Errori, timeout, aiuti non consentiti o uso di canali bloccati vanno registrati come `error`, `unknown_request`, `task_failed`, `task_interrupted` o `protocol_violation`.
-- I risultati numerici non sono hard-coded nel protocollo: dipendono dal dataset locale. Per il pilot si controlla coerenza tra UI, chat, storico, report e log.
+La v0.2 sostituisce la sequenza T1–T6 di micro-task dipendenti della v0.1. Si confrontano percorsi completi che iniziano sempre da un'analisi comunale. Questa revisione riguarda la documentazione: il catalogo della console online mantiene i vecchi titoli, con la corrispondenza operativa descritta sotto.
 
-## 3. Input standard pilot
+## 1. Obiettivo e unità di confronto
 
-Input primario:
+Confronto entro partecipante tra:
 
-- comuni: `Avellino` e `Benevento`;
-- scenario economico per valore singolo: `social_cost` (`Costo sociale: 138 EUR/t`);
-- confronto scenari: tutti gli scenari disponibili dall'app;
-- canale conversazionale: testo. Voce ammessa solo se ambiente audio/API configurato.
+- **webgis**: selezione e operazioni tramite controlli grafici;
+- **conversational**: richieste testuali interpretate dall'LLM, con tool applicativi e mappa per verifica.
 
-Input di riserva, se il dataset locale non restituisce categorie forestali supportate:
+Il trattamento conversazionale include la consultazione visiva e i controlli comuni per generare/scaricare il PDF. Non è una condizione priva di grafica. Usare testo come canale standard; mescolare testo e voce aggiungerebbe un fattore diverso da quello qui studiato.
 
-- comune: `Salerno`;
-- annotare la sostituzione nel foglio operatore e nei log di sessione.
+Un task è un obiettivo completo con più risultati osservabili, un solo avvio e un solo termine. L'unità di confronto è il percorso svolto dal partecipante, non un clic, messaggio o singolo tool.
 
-## 4. Condizioni sperimentali
+**Scelta proposta**: partire dalla batteria B di due dossier, se la priorità è ridurre la durata della sessione. La batteria A di quattro task permette di distinguere meglio confronto ambientale e valutazione economica. Non mescolare le batterie nello stesso campione senza un disegno dichiarato.
 
-### 4.1 Condizione WebGIS tradizionale
+## 2. Batterie e copertura
 
-Consentito:
+| Batteria | Task per partecipante | Per modalità | Tempo operativo obiettivo |
+| --- | --- | --- | --- |
+| A — confronto e dossier separati | A1, A2, A3, A4: quattro totali | Un confronto + un dossier | 10–14 minuti |
+| B — dossier integrati | B1, B2: due totali | Un dossier integrato | 5–7 minuti |
 
-- selezione comuni da UI;
-- disegno/uso area in mappa;
-- pulsante analisi;
-- apertura report;
-- selezione scenario prezzo;
-- calcolo valore economico da UI;
-- esportazione PDF;
-- zoom/pan/legenda/storico se utili alla verifica.
+Totale delle sole attività: A 20–28 minuti, B 10–14. Addestramento, pause, questionari e operazioni dell'operatore sono aggiuntivi. Le durate sono ipotesi di progetto, non tempi osservati di partecipanti.
 
-Non consentito:
+La batteria A comprende:
 
-- chat testuale;
-- input vocale;
-- comandi conversazionali per completare task.
+- A1: analisi separate Avellino → Benevento, confronto ambientale e verifica;
+- A2: nuova analisi di Serino, scenari, cambio valutazione e PDF;
+- A3: analisi separate Caserta → Salerno, confronto ambientale e verifica;
+- A4: nuova analisi di Montella, scenari, cambio valutazione e PDF.
 
-Controllo implementato:
+La batteria B comprende:
 
-- durante task attivo `webgis`, pannello assistente e invio chat/voce sono disabilitati;
-- endpoint chat/stream/voice rispondono con blocco di condizione;
-- tentativi bloccati sono registrati come `protocol_violation`.
+- B1: analisi separate Avellino → Benevento, confronto e dossier economico/PDF di Benevento;
+- B2: analisi separate Caserta → Salerno, confronto e dossier economico/PDF di Salerno.
 
-### 4.2 Condizione conversazionale
+Copertura comune: ricerca/selezione nominale del territorio, analisi GIS, categorie, superficie e CO₂, confronto di analisi salvate e CO₂/ha, scenari economici, applicazione di uno scenario, mappa/legenda, report e PDF.
 
-Consentito:
+Esclusi dai task comparativi: disegno/modifica di geometrie, filtro per categoria, rinomina/eliminazione selettiva dello storico e recupero arbitrario di un vecchio report. Non hanno un percorso equivalente verificato nei due canali. Escluse anche funzioni assenti come buffer, distanze, vincoli territoriali o scenari di riforestazione. Dettagli nella verifica di fattibilità.
 
-- messaggi chat;
-- input vocale, se configurato;
-- tool conversazionali deterministici;
-- apertura report tramite azione chat;
-- esportazione PDF dal comando visibile nel report, dopo risultato economico disponibile;
-- zoom/pan/legenda e ispezione mappa per verifica.
+## 3. Comparabilità e assegnazione
 
-Non consentito per completare task:
+Consegne identiche per obiettivi e risultati, con varianti territoriali. Non assegnare stabilmente i compiti semplici alla chat e quelli complessi al WebGIS. Nella batteria A ogni condizione include entrambe le famiglie.
 
-- selezione comuni da UI;
-- disegno area;
-- pulsante analisi;
-- storico come sorgente di completamento;
-- selezione scenario prezzo da UI;
-- pulsante calcolo valore economico da UI.
+Bilanciare **sia l'ordine dei canali sia l'assegnazione delle varianti**. L'inversione del solo canale non basta se una certa variante viene eseguita sempre per prima. L'uso di comuni diversi limita il riuso delle risposte, ma non elimina apprendimento e differenze di difficoltà. La nota metodologica di [I. Scott MacKenzie sul controbilanciamento](https://www.yorku.ca/mack/RN-Counterbalancing.html) motiva il controllo dell'ordine; gli schemi seguenti sono una proposta specifica per questa app.
 
-Controllo implementato:
+### Batteria A — quattro sequenze
 
-- durante task attivo `conversational`, controlli grafici di completamento sono disabilitati o bloccati;
-- endpoint GIS risponde con blocco di condizione;
-- tentativi bloccati sono registrati come `protocol_violation`;
-- mappa resta disponibile per verifica.
+| Gruppo | Primo blocco | Secondo blocco |
+| --- | --- | --- |
+| 1 | WebGIS: A1 → A2 | Conversazionale: A3 → A4 |
+| 2 | Conversazionale: A1 → A2 | WebGIS: A3 → A4 |
+| 3 | WebGIS: A3 → A4 | Conversazionale: A1 → A2 |
+| 4 | Conversazionale: A3 → A4 | WebGIS: A1 → A2 |
 
-Differenza dichiarata:
+Ogni partecipante esegue tutti e quattro i task, ciascuno una sola volta. L'ordine interno confronto → economia resta fisso in questo pilota ed è uguale nei due trattamenti. Non attribuire un eventuale effetto dell'ordine delle famiglie alla sola interfaccia.
 
-- nella condizione conversazionale la chat apre/attiva il report; il PDF viene esportato tramite pulsante visibile nel report. Il pulsante PDF è considerato export del risultato, non canale di calcolo GIS/economico.
+### Batteria B — quattro sequenze
 
-## 5. Task sperimentali
+| Gruppo | Primo blocco | Secondo blocco |
+| --- | --- | --- |
+| 1 | WebGIS: B1 | Conversazionale: B2 |
+| 2 | Conversazionale: B1 | WebGIS: B2 |
+| 3 | WebGIS: B2 | Conversazionale: B1 |
+| 4 | Conversazionale: B2 | WebGIS: B1 |
 
-Timeout default: 6 minuti per task. Timeout breve: 4 minuti per task di sola verifica o confronto. Timeout massimo sessione: 75 minuti, pause escluse.
+Assegnare casualmente i partecipanti alle sequenze mantenendo gruppi il più possibile bilanciati; registrare il gruppo sul foglio operatore. Non decidere l'ordine dopo aver osservato le prestazioni.
 
-Aiuti consentiti:
+Stessa struttura non dimostra equivalenza: Avellino/Benevento e Caserta/Salerno hanno numeri di categorie diversi. La consegna chiede un numero fisso di informazioni; controllare nel pilota eventuali differenze sistematiche di difficoltà. Due task offrono una sola osservazione per canale: risultati più sensibili alla variante, agli errori e alla latenza del modello.
 
-- ripetere consegna del task;
-- indicare dove si trova la console operatore solo al facilitatore, non al partecipante;
-- ricordare che in conversazionale può usare mappa per verifica;
-- chiarire significato di "scenario economico" senza indicare sequenza di click o formulazione esatta del prompt.
+## 4. Tempi, addestramento e istruzioni
 
-Aiuti non consentiti:
+- Obiettivo 5–7 minuti per task; timeout iniziale proposto 10 minuti, uguale per entrambe le modalità.
+- Un risultato corretto in meno di 5 minuti resta un successo. Non imporre un numero minimo di click o messaggi.
+- Fare una familiarizzazione di durata uguale per canale su un comune diverso da quelli della batteria, verificato prima dal facilitatore.
+- Durante il task permettere uno o più prompt, incluse richieste composte. Non consegnare un prompt già pronto da copiare né obbligare il partecipante a usare uno specifico numero di turni.
+- Presentare la stessa scheda di risposta esterna nei due canali. Nessun modulo di restituzione è stato aggiunto all'app.
+- Avviare il timer all'esposizione della consegna e fermarlo alla restituzione richiesta, includendo lettura e controlli. Tenere costante la procedura.
+- Includere la latenza nell'indicatore principale end-to-end; registrare separatamente attese e guasti tecnici. Non usare la lentezza dell'LLM per raggiungere il tempo obiettivo.
 
-- dire quale pulsante usare per completare il task;
-- suggerire prompt esatto durante task, salvo fallimento tecnico documentato;
-- completare azioni al posto del partecipante;
-- sbloccare manualmente controlli non consentiti.
+Aiuti consentiti: ripetere la consegna, chiarire il significato di un termine di dominio, ricordare che la mappa è consultabile nella condizione conversazionale. Non indicare il prossimo pulsante, dettare prompt o completare azioni. Registrare qualunque aiuto.
 
-### T1 — Analisi di comuni/area
+Calibrazione proposta: prima prova con 4–6 persone non esperte, bilanciando ordine e varianti; rivedere densità e comprensibilità prima della raccolta definitiva. Questa proposta non determina la numerosità statistica dello studio.
 
-ID log: `asita_t1_area_analysis`
+## 5. Regole dei trattamenti
 
-Obiettivo: produrre un'analisi GIS per uno o più comuni.
+### WebGIS
 
-Input: `Avellino` e `Benevento`.
+Consentiti: selezione dei comuni, analisi grafica, report e categorie, selezione delle analisi nello storico e confronto, scenari e calcolo, PDF, mappa/zoom/pan/legenda.
 
-Risultato atteso: analisi completata con `analysisId`, comuni interessati e risultati visibili in mappa/report.
+Non consentiti per completare il task: chat e voce. Durante un task attivo webgis il pannello assistente è disabilitato; gli endpoint conversazionali applicano il blocco di condizione.
 
-Successo:
+### Conversazionale
 
-- WebGIS: partecipante seleziona i comuni e avvia analisi da UI;
-- conversazionale: partecipante chiede analisi dei comuni alla chat;
-- log contiene `analysis_completed` o tool conversazionale equivalente, stesso `taskRunId`, con `details.analysisId`;
-- operatore marca `task_completed`.
+Consentiti: chat per analisi, interrogazione dei risultati, confronto, calcolo e apertura del report; consultazione della mappa e dei risultati; controlli comuni PDF e Anteprima.
 
-Fallimento:
+Non consentiti per completare il task: selezione comunale grafica, disegno, pulsante analisi, selezione di analisi nello storico, cambio prezzo o calcolo tramite i controlli grafici. Questi controlli sono bloccati durante il task attivo.
 
-- nessuna analisi entro timeout;
-- area/comuni errati non corretti;
-- completamento tramite canale non consentito;
-- errore backend non risolto entro timeout.
+Leggere i risultati del confronto aperto dalla chat è consultazione ammessa. Se il partecipante deve tornare al report corrente, può richiederlo all'assistente. Il PDF nasce dai pulsanti del report: una frase della chat che ne promette il download non equivale al file.
 
-Log attesi:
+Per entrambe le modalità:
 
-- `task_started`;
-- WebGIS: `ui_action`, `analysis_completed`;
-- conversazionale: `chat_message`, `tool_started`, `tool_completed`, `chat_response` o `interaction_completed`;
-- `task_completed` oppure terminale negativo.
+- due comuni da confrontare richiedono due analisi separate, non un'analisi congiunta;
+- il dossier di B1/B2 riguarda il secondo comune, che resta corrente;
+- il PDF dell'analisi corrente non è il PDF del confronto;
+- il filtro della mappa non ricalcola gli indicatori: non usarlo come analisi di un sottoinsieme;
+- non richiedere la percentuale di copertura del territorio comunale; l'app mostra la superficie forestale analizzata;
+- chiedere scarti assoluti, evitando ambiguità nel denominatore degli scarti percentuali.
 
-### T2 — Categorie forestali e CO2
+## 6. Console attuale e identificativi
 
-ID log: `asita_t2_forest_co2`
+La console online espone ancora T1–T6. I titoli sono quelli del vecchio protocollo; il selettore assegna un identificativo al log e non impone una sequenza di azioni o un criterio automatico di completamento.
 
-Obiettivo: individuare categorie forestali e CO2 assorbita dall'analisi corrente.
+Per usare subito le nuove consegne senza modificare l'app, adottare questa corrispondenza esplicita e registrare batteria/versione sul foglio operatore:
 
-Input: analisi prodotta in T1 nella stessa condizione.
+| Task del protocollo | Voce attuale della console | taskId registrato |
+| --- | --- | --- |
+| A1 | T1 - Analisi comuni/area | asita_t1_area_analysis |
+| A2 | T2 - Categorie forestali e CO2 | asita_t2_forest_co2 |
+| A3 | T3 - Valore economico | asita_t3_economic_value |
+| A4 | T4 - Confronto scenari | asita_t4_scenario_compare |
+| B1 | T1 - Analisi comuni/area | asita_t1_area_analysis |
+| B2 | T2 - Categorie forestali e CO2 | asita_t2_forest_co2 |
 
-Risultato atteso: partecipante identifica almeno categorie forestali presenti/assenza motivata e CO2 totale annua.
+T5 e T6 non vanno avviati. Il titolo storico della voce non è la consegna da leggere al partecipante. Non mescolare questi log con quelli v0.1 senza la colonna batteria/versione: gli ID da soli non distinguono le due definizioni del task. Questa corrispondenza è una compatibilità operativa, non una modifica del catalogo dell'app.
 
-Successo:
+### Sessioni pulite: una sessione tecnica per macro-task
 
-- WebGIS: partecipante apre/ispeziona report o popup risultati e indica categoria/e e CO2;
-- conversazionale: partecipante chiede categorie forestali e CO2 alla chat;
-- log collega risultato allo stesso `analysisId` di T1 o a nuova analisi dichiarata;
-- operatore marca `task_completed`.
+Per isolare anche il contesto conversazionale, usare una nuova sessione della console per **ogni macro-task**, mantenendo lo stesso participantId. Non basta cambiare la voce Attività: questo non azzera il contesto. Il solo pulsante Reset area e risultati pulisce l'area grafica, non garantisce l'azzeramento della conversazione e dello storico.
 
-Fallimento:
+1. Aprire la console; impostare codice anonimo, percorso e voce del task.
+2. Premere **Avvia sessione**. Verificare che risultati e conversazione partano vuoti.
+3. Preparare la consegna; premere **Inizia attività** e presentarla.
+4. Osservare senza guidare; annotare risultati, errori e aiuti.
+5. A esito verificato premere **Completa**; se il task fallisce o scade, **Errore**, annotando il motivo esternamente. **Non compresa** è per incomprensione, non un sinonimo di timeout.
+6. Esportare JSON e JSONL **prima** di chiudere.
+7. Premere **Chiudi sessione**. La chiusura azzera lo stato operativo; non chiudere un task riuscito senza averlo prima completato.
+8. Se resta un task nello stesso blocco, avviare una nuova sessione con stesso codice e stesso percorso; al cambio trattamento scegliere il nuovo percorso.
 
-- partecipante non trova CO2/categorie entro timeout;
-- valori riferiti ad analisi diversa non dichiarata;
-- chat produce risposta senza tool/stato applicativo verificabile;
-- protocol violation usata per completare.
+Con A si producono quattro sessioni tecniche e quattro taskRunId per partecipante, due per condizione. Con B se ne producono due, uno per condizione. Ogni export contiene un macro-task; aggregare gli export per participantId e condition. Questionario di condizione dopo l'intero blocco, non dopo ogni sessione tecnica.
 
-Log attesi:
+Una chiusura con task ancora attivo produce interruzione; conservarla come tale. I dati persistenti non devono essere cancellati per mascherare un fallimento.
 
-- `task_started`;
-- `report_opened` oppure eventi chat/tool con intento `extract_forest_information` o `estimate_co2_sequestration`;
-- `details.analysisId`;
-- `task_completed`.
+## 7. Misure ed esiti
 
-### T3 — Valore economico con scenario specifico
+Ogni task ha risultati osservabili numerati nella task sheet. Il facilitatore assegna a ciascuno **corretto / parziale / mancante o errato**. Completamento pieno solo con tutti i risultati, unità e analisi corretti. Conservare il profilo dei risultati parziali, non solo il terminale binario della console.
 
-ID log: `asita_t3_economic_value`
+Per i numeri confrontare le viste dell'app, accettando gli arrotondamenti mostrati. I tool e il PDF possono usare maggiore precisione della CO₂ arrotondata a schermo. Non calcolare manualmente una risposta di riferimento da un numero già arrotondato.
 
-Obiettivo: calcolare valore economico usando scenario `social_cost`.
+Dati oggettivi:
 
-Input: analisi corrente; scenario `social_cost`.
+- tempo end-to-end tra task_started e il terminale dello stesso taskRunId;
+- completamento totale e risultati parziali;
+- errori, richieste non comprese, recuperi, aiuti e violazioni;
+- latenza e problemi tecnici, distinguendoli dagli errori del partecipante;
+- messaggi, tool e azioni UI come descrittori separati, non unità di sforzo equivalenti;
+- corrispondenza tra analisi, confronto, valutazione finale e report.
 
-Risultato atteso: valore totale in EUR, CO2 usata, prezzo/scenario usato, `analysisId`.
+I tempi dei soli successi non riassumono tutti i partecipanti: riportare separatamente fallimenti e timeout. Un task fallito con log ricostruibile è un dato valido dell'esperimento, non un motivo automatico per escludere la sessione. Non trattare clic/tool dello stesso partecipante come osservazioni indipendenti.
 
-Successo:
+Dopo ogni task: difficoltà, fiducia e chiarezza (1–7), nota facoltativa. Dopo ogni blocco: scegliere prima dello studio SUS oppure UMUX-LITE; eventuale NASA-TLX nella versione dichiarata, controllo e verificabilità. Dopo entrambi: preferenza e motivazione. Moduli esterni all'app.
 
-- WebGIS: partecipante seleziona scenario e calcola da UI;
-- conversazionale: partecipante chiede alla chat di calcolare valore con `social_cost`;
-- log contiene `valuation_completed` con `details.analysisId`, `details.scenarioKey`, `details.priceEurPerTon`, `details.totalCo2`, `details.totalValueEur`;
-- scenario e arrotondamenti sono coerenti con report/UI.
+## 8. Evidenze nel logging e limiti
 
-Fallimento:
+Campi da conservare: participantId, studySessionId, condition, taskId, taskRunId, timestamp, eventType, status, durationMs, operation, interactionMode, details.analysisId e, quando presenti, scenarioKey, priceEurPerTon, totalCo2, totalValueEur, reportFormat, toolName.
 
-- scenario diverso non corretto;
-- valore non collegabile ad analisi;
-- prezzo inventato o non presente negli scenari app;
-- timeout.
+| Operazione | Evidenza disponibile |
+| --- | --- |
+| Avvio/termine | task_started; task_completed, task_failed o task_interrupted |
+| Analisi | analysis_completed e/o eventi tool con risultati, analysisId e comune verificabile |
+| Confronto WebGIS | interaction_completed con operation analysis_history_compare |
+| Confronto chat | tool_started/tool_completed del confronto e risposta finale |
+| Economia | valuation_completed con analisi, scenario, prezzo, CO₂ e valore |
+| Report/PDF | report_opened; report_generated con reportFormat pdf e analysisId |
+| Consultazione/interpretazione | osservazione e scheda esterna; non tutta la lettura produce eventi specifici |
 
-Log attesi:
+Il confronto WebGIS non allega necessariamente tutti gli ID delle analisi all'evento: registrarli anche sul foglio operatore. Non supporre che apertura di ogni dettaglio, cambio ordinamento o comprensione siano misurati automaticamente.
 
-- `task_started`;
-- WebGIS: `valuation_completed` con `interactionMode: map`;
-- conversazionale: `chat_message`, tool economico, `valuation_completed` con `interactionMode: text` o `voice`;
-- `task_completed`.
+L'evento PDF può avere interactionMode map anche nella condizione conversational, perché il pulsante è comune: classificare il trattamento tramite **condition**, non dal solo canale dell'evento. report_generated dimostra la generazione; il download effettivo e il controllo del file richiedono osservazione, non un evento dedicato garantito.
 
-### T4 — Confronto scenari economici
+Sul foglio operatore registrare: versione/batteria, gruppo di assegnazione, codice task A/B, corrispondenza taskId, sessione/taskRunId, comuni, analysisId, risultati parziali, tempi, motivo del fallimento, aiuti, file PDF/export e misure soggettive.
 
-ID log: `asita_t4_scenario_compare`
+## 9. Checklist e validità
 
-Obiettivo: confrontare tutti gli scenari economici disponibili.
+Prima della raccolta:
 
-Input: analisi corrente.
+- congelare batteria, versione dell'app/dataset, modello/provider e impostazioni;
+- riprovare i percorsi su entrambi i canali nell'istanza online;
+- calibrare durata e varianti; verificare un comune separato per addestramento;
+- preparare consegne, scheda risposte, assegnazione e moduli soggettivi;
+- verificare generazione/scaricamento PDF ed export del log;
+- escludere i codici qa_ dalle analisi dei partecipanti.
 
-Risultato atteso: elenco scenari con prezzo e valore totale, ordinamento o differenze comprensibili.
+Dopo ciascun blocco:
 
-Successo:
+- controllare un task per export e il numero di export atteso;
+- verificare un solo start/terminale per taskRunId;
+- controllare condition, analisi/scenario finali, violazioni e risposte parziali;
+- conservare anche errori e timeout; completare le misure soggettive.
 
-- WebGIS: partecipante visualizza tabella/confronto scenari nel report;
-- conversazionale: partecipante chiede confronto scenari alla chat;
-- valori derivano dagli stessi scenari definiti in `cartaNatura/domain/economics.py`;
-- operatore verifica che tutti gli scenari disponibili siano rappresentati.
-
-Fallimento:
-
-- scenari mancanti;
-- prezzi incoerenti tra UI e chat;
-- confronto basato su valori inventati;
-- task completato tramite selettore prezzo UI in condizione conversazionale.
-
-Log attesi:
-
-- `task_started`;
-- WebGIS: `interaction_completed` con `operation: scenario_comparison_viewed` o `report_opened`;
-- conversazionale: `chat_message`, tool economico/confronto, `chat_response`;
-- `details.analysisId`;
-- `task_completed`.
-
-### T5 — Report e PDF
-
-ID log: `asita_t5_report_pdf`
-
-Obiettivo: aprire report e produrre export PDF del risultato.
-
-Input: analisi corrente; se valore economico non già disponibile, usare scenario `social_cost` prima dell'export.
-
-Risultato atteso: report aperto, PDF generato, log con `analysisId` e scenario/prezzo se presenti.
-
-Successo:
-
-- WebGIS: partecipante apre report e usa `Esporta PDF`;
-- conversazionale: partecipante chiede alla chat di aprire/generare report; poi usa comando visibile `Esporta PDF` nel report;
-- log contiene `report_opened` e `report_generated` con `details.reportFormat: pdf`;
-- PDF include mappa, sintesi CO2 e valore economico se calcolato.
-
-Fallimento:
-
-- report non aperto;
-- PDF non generato entro timeout;
-- chat afferma di aver generato PDF senza `report_generated`;
-- export riferito ad analisi diversa.
-
-Log attesi:
-
-- `task_started`;
-- `report_opened`;
-- `report_generated`;
-- `details.analysisId`;
-- `details.scenarioKey`, `details.priceEurPerTon`, `details.totalValueEur` se valore disponibile;
-- `task_completed`.
-
-### T6 — Verifica risultati in mappa
-
-ID log: `asita_t6_map_verify`
-
-Obiettivo: verificare spazialmente sulla mappa i risultati prodotti.
-
-Input: analisi corrente.
-
-Risultato atteso: partecipante mostra area/comuni analizzati e controlla coerenza visiva con report/chat.
-
-Successo:
-
-- WebGIS: partecipante usa mappa, layer/zoom/pan/risultati per confermare area;
-- conversazionale: partecipante usa mappa solo per verifica, non per completare analisi o calcolo;
-- se serve, chat può usare azioni `focus_map_results`/`show_legend`;
-- operatore osserva corrispondenza tra area in mappa e `analysisId` usato.
-
-Fallimento:
-
-- impossibile localizzare area;
-- mappa mostra risultato diverso dall'analisi/report;
-- in conversazionale partecipante usa controllo grafico bloccato/non consentito per produrre nuovo risultato;
-- timeout.
-
-Log attesi:
-
-- `task_started`;
-- `ui_action` di verifica mappa, `report_opened` o azione chat di focus/legenda;
-- nessun nuovo `analysis_completed` non dichiarato, salvo reset/nuova analisi registrata;
-- `task_completed`.
-
-## 6. Reset
-
-### 6.1 Reset tra task
-
-Procedura:
-
-1. esportare log parziale se richiesto dal pilot;
-2. premere `Completa` o `Errore` prima di cambiare task;
-3. selezionare task successivo nella console;
-4. premere `Inizia attività`;
-5. verificare stato console `In corso: <taskId> / <condition>`;
-6. non cancellare risultati se task successivo dipende dall'analisi corrente.
-
-Effetto atteso:
-
-- nuovo `taskRunId`;
-- stato operativo incoerente pulito dove previsto dall'app;
-- eventi successivi associati al task nuovo.
-
-### 6.2 Reset tra condizioni
-
-Procedura:
-
-1. terminare task attivo;
-2. esportare JSON e JSONL della condizione;
-3. premere `Reset`;
-4. ricaricare pagina se operatore osserva stato UI ambiguo;
-5. selezionare nuova condizione;
-6. avviare nuova sessione con stesso `participantId` e condizione diversa;
-7. iniziare T1 della nuova condizione.
-
-Effetto atteso:
-
-- nuovo `studySessionId`;
-- log precedente conservato su export/file persistente;
-- assistant, selezioni, risultati e storico operativo non contaminano condizione successiva.
-
-## 7. Controbilanciamento pilot
-
-Assegnazione minima:
-
-- partecipanti dispari: `webgis` → `conversational`;
-- partecipanti pari: `conversational` → `webgis`.
-
-Task order nel pilot:
-
-1. T1;
-2. T2;
-3. T3;
-4. T4;
-5. T5;
-6. T6.
-
-Nota metodologica: ordine fisso semplifica pilot e debug. Per raccolta definitiva si può controbilanciare anche ordine task, ma non in questa milestone.
-
-## 8. Dati oggettivi da esportare
-
-Per ogni condizione esportare JSON e JSONL.
-
-Campi/eventi minimi:
-
-- `participantId`;
-- `studySessionId`;
-- `condition`;
-- `taskId`;
-- `taskRunId`;
-- `eventType`;
-- `timestamp`;
-- `durationMs`;
-- `channel`;
-- `interactionMode`;
-- `operation`;
-- `status`;
-- `error`;
-- `details.analysisId`;
-- `details.scenarioKey`;
-- `details.priceEurPerTon`;
-- `details.totalCo2`;
-- `details.totalValueEur`;
-- `details.reportFormat`;
-- `details.toolName`;
-- `summary.taskCompletionDurationMs`;
-- `summary.uiActionCount`;
-- `summary.chatMessageCount`;
-- `summary.toolCallCount`;
-- `summary.errorCount`;
-- `summary.unknownRequestCount`;
-- `summary.protocolViolationCount`;
-- `summary.tasks`.
-
-Metriche derivate:
-
-- durata end-to-end per task;
-- numero azioni UI;
-- numero messaggi chat;
-- numero tool call;
-- errori/fallimenti/timeout;
-- violazioni protocollo;
-- report aperti/generati;
-- coerenza `analysisId` tra analisi, valutazione, report e task.
-
-## 9. Misure soggettive
-
-Raccolta esterna, non dentro l'app.
-
-Dopo ogni task:
-
-- difficoltà percepita: scala 1-7;
-- fiducia nel risultato: scala 1-7;
-- chiarezza del risultato: scala 1-7;
-- nota libera breve opzionale.
-
-Dopo ogni condizione:
-
-- SUS o UMUX-LITE;
-- NASA-TLX short/raw;
-- preferenza parziale: cosa ha aiutato/ostacolato;
-- percezione di controllo e verificabilità del risultato.
-
-Dopo entrambe le condizioni:
-
-- preferenza complessiva;
-- confronto qualitativo tra WebGIS e conversazionale;
-- eventuali strategie usate.
-
-## 10. Validità sessione
-
-Sessione valida:
-
-- tutti i task hanno un solo start e un solo terminale;
-- condizione corretta per tutti gli eventi principali;
-- nessuna violazione protocollo che completa un task;
-- export JSON/JSONL disponibile;
-- `analysisId` coerente nei task dipendenti;
-- misure soggettive raccolte.
-
-Sessione parzialmente valida:
-
-- uno o più task falliti o interrotti, ma log ricostruibile;
-- una misura soggettiva mancante non critica;
-- violazione protocollo non usata per completare;
-- errore tecnico documentato con retry controllato.
-
-Sessione non valida:
-
-- contaminazione tra condizioni non ricostruibile;
-- task completati fuori console/log;
-- export mancante;
-- partecipante usa condizione sbagliata per completare task e violazione non è isolabile;
-- operatore fornisce aiuto sostanziale non documentato.
-
-## 11. Checklist pilot
-
-Pre-pilot:
-
-- app avviata con `?study=1`;
-- provider conversazionale configurato (`LLM_PROVIDER=openai` con `OPENAI_API_KEY`, oppure `LLM_PROVIDER=ollama` con `OLLAMA_BASE_URL` e modello); `OPENAI_API_KEY` resta necessaria se si testa la voce;
-- console operatore visibile;
-- lista task ASITA T1-T6 visibile;
-- export JSON/JSONL provato;
-- PDF provato con almeno un'analisi;
-- foglio soggettivo esterno pronto;
-- ID partecipante assegnato;
-- ordine condizioni assegnato.
-
-Durante sessione:
-
-- avviare sessione;
-- avviare task;
-- leggere consegna task;
-- non aiutare oltre regole;
-- terminare task con esito corretto;
-- annotare errori/aiuti;
-- esportare a fine condizione.
-
-Post-sessione:
-
-- controllare `summary.tasks`;
-- controllare `protocolViolationCount`;
-- verificare presenza misure soggettive;
-- classificare sessione valida/parziale/non valida;
-- salvare export con nome `participant_condition_timestamp`.
+Escludere o classificare separatamente secondo regole fissate prima della raccolta solo casi come log mancanti, contaminazione del canale non ricostruibile o aiuto sostanziale che rende il risultato non attribuibile al partecipante. Documentare il motivo; non cancellare gli originali.

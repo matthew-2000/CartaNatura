@@ -161,6 +161,10 @@ Protocollo operativo: [docs/asita-2026-pilot-protocol.md](/Users/matteoercolino/
 
 Task sheet operatore: [docs/asita-2026-task-sheet.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/asita-2026-task-sheet.md:1).
 
+La task sheet v0.5 contiene due incarichi estesi: confronto territoriale con approfondimento delle categorie e della legenda; preparazione di un report con correzione dell'area, esame degli scenari economici e revisione del PDF. Sostituisce la proposta a quattro task. Il tempo obiettivo è di 5–7 minuti per incarico, da verificare nel pilota. La proposta di protocollo v0.2 resta consultabile come versione precedente; l'assegnazione delle modalità è a cura del ricercatore.
+
+Funzioni provate online e limiti: [docs/asita-2026-feasibility-check.md](docs/asita-2026-feasibility-check.md).
+
 ## Test
 
 ```bash
