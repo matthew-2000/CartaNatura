@@ -21,6 +21,57 @@ def municipality_names() -> list[str]:
     return sorted(frame["COMUNE"].dropna().astype(str).unique().tolist())
 
 
+def resolve_municipality_names(names: list[str]) -> list[str]:
+    """Resolve every supplied name exactly (case/accent insensitive), or fail atomically."""
+
+    catalog: dict[str, list[str]] = {}
+    for canonical_name in municipality_names():
+        catalog.setdefault(_normalize_phrase(canonical_name), []).append(canonical_name)
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    invalid: list[str] = []
+    ambiguous: list[tuple[str, list[str]]] = []
+    for raw_name in names:
+        display_name = str(raw_name or "").strip()
+        normalized_name = _normalize_phrase(display_name)
+        if not normalized_name:
+            invalid.append(display_name or "<vuoto>")
+            continue
+        matches = catalog.get(normalized_name, [])
+        if not matches:
+            invalid.append(display_name)
+            continue
+        if len(matches) > 1:
+            ambiguous.append((display_name, matches))
+            continue
+        canonical_name = matches[0]
+        if canonical_name not in seen:
+            seen.add(canonical_name)
+            resolved.append(canonical_name)
+
+    if invalid or ambiguous:
+        parts = []
+        if invalid:
+            parts.append("non riconosciuti: " + ", ".join(invalid))
+        if ambiguous:
+            parts.append(
+                "ambigui: "
+                + "; ".join(
+                    f"{raw_name} ({', '.join(matches)})"
+                    for raw_name, matches in ambiguous
+                )
+            )
+        raise ValueError(
+            "Analisi non avviata: tutti i comuni devono essere risolti correttamente ("
+            + "; ".join(parts)
+            + ")."
+        )
+    if not resolved:
+        raise ValueError("Nessun comune valido riconosciuto nel messaggio.")
+    return resolved
+
+
 def suggest_municipality_names(text: str, limit: int = 5) -> list[str]:
     normalized_text = _normalize_phrase(text)
     if not normalized_text:
@@ -93,7 +144,7 @@ def extract_municipality_names(text: str) -> list[str]:
 
 def build_municipality_selection_payload(names: list[str]) -> dict[str, Any]:
     frame = load_municipality_shapes().copy()
-    canonical_names = [str(name) for name in names if name]
+    canonical_names = resolve_municipality_names(names)
     filtered = frame[frame["COMUNE"].isin(canonical_names)]
     if filtered.empty:
         raise ValueError("Nessun comune valido riconosciuto nel messaggio.")

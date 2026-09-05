@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Generator
 
-from .analysis_store import AnalysisStore, NullAnalysisStore
+from .analysis_store import AnalysisStore, NullAnalysisStore, TransactionalAnalysisStore
 from .assistant_runtime import (
     AssistantToolExecutor,
     AssistantRuntime,
@@ -38,18 +38,22 @@ class InteractionOrchestrator:
         chat_runtime: AssistantRuntime | None = None,
         session_store: SessionStore | None = None,
         analysis_store: AnalysisStore | None = None,
+        chat_analysis_store: TransactionalAnalysisStore | None = None,
     ):
         self._resolver = resolver
         self._handlers = {handler.intent: handler for handler in handlers}
         self._chat_runtime = chat_runtime
         self._session_store = session_store or NullSessionStore()
         self._analysis_store = analysis_store or NullAnalysisStore()
+        self._chat_analysis_store = chat_analysis_store
 
     def handle(self, request: InteractionRequest) -> InteractionResponse:
         session_context = self._session_store.load(request.session_id)
         if not self._is_graphical_selection(request):
             response = self._require_chat_runtime().handle(request, session_context)
-            return self._persist_response(request, session_context, response)
+            response = self._persist_response(request, session_context, response)
+            self._commit_chat_mutations()
+            return response
 
         resolution = self._resolver.resolve(request, session_context)
         if resolution.command.intent is InteractionIntent.UNKNOWN:
@@ -75,6 +79,7 @@ class InteractionOrchestrator:
         if not self._is_graphical_selection(request):
             response = yield from self._require_chat_runtime().stream_handle(request, session_context)
             response = self._persist_response(request, session_context, response)
+            self._commit_chat_mutations()
             yield self._serialize_stream_done_event(response)
             return response
 
@@ -134,7 +139,12 @@ class InteractionOrchestrator:
         return (
             request.channel is InteractionChannel.WEB_MAP
             and request.input.has_structured_selection()
+            and not request.input.primary_text()
         )
+
+    def _commit_chat_mutations(self) -> None:
+        if self._chat_analysis_store is not None:
+            self._chat_analysis_store.commit()
 
     def _require_chat_runtime(self) -> AssistantRuntime:
         if self._chat_runtime is None:
@@ -152,13 +162,15 @@ def build_default_orchestrator(
     llm_provider = llm_provider if llm_provider is not None else build_optional_llm_provider()
     analysis_store = analysis_store or NullAnalysisStore()
     tool_registry = build_default_tool_registry(analysis_store)
+    chat_analysis_store = TransactionalAnalysisStore(analysis_store)
+    chat_tool_registry = build_default_tool_registry(chat_analysis_store)
     chat_runtime = None
     if llm_provider is not None and hasattr(llm_provider, "create_response"):
         chat_runtime = AssistantRuntime(
             llm_provider=llm_provider,
             tool_executor=AssistantToolExecutor(
-                tool_registry=tool_registry,
-                analysis_store=analysis_store,
+                tool_registry=chat_tool_registry,
+                analysis_store=chat_analysis_store,
             ),
         )
     return InteractionOrchestrator(
@@ -188,4 +200,5 @@ def build_default_orchestrator(
         chat_runtime=chat_runtime,
         session_store=session_store or NullSessionStore(),
         analysis_store=analysis_store,
+        chat_analysis_store=chat_analysis_store,
     )

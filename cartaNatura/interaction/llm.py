@@ -58,6 +58,7 @@ class OpenAiResponsesLlmProvider:
     api_key: str
     model: str = DEFAULT_OPENAI_MODEL
     base_url: str = DEFAULT_OPENAI_BASE_URL
+    timeout_seconds: float = 60.0
 
     provider_name = "openai"
     runtime_name = "responses_api"
@@ -69,6 +70,8 @@ class OpenAiResponsesLlmProvider:
             OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
+                timeout=self.timeout_seconds,
+                max_retries=0,
             ),
         )
 
@@ -118,13 +121,28 @@ class _OpenAiStreamManager:
 
     def __enter__(self):
         try:
-            return self._stream_manager.__enter__()
+            self._stream = self._stream_manager.__enter__()
+            return self
         except OpenAIError as exc:
             logger.warning("OpenAI provider stream failed: %s", exc)
             raise LlmProviderUnavailableError("Provider OpenAI non raggiungibile.") from exc
 
     def __exit__(self, exc_type, exc, tb):
         return self._stream_manager.__exit__(exc_type, exc, tb)
+
+    def __iter__(self):
+        try:
+            yield from self._stream
+        except OpenAIError as exc:
+            logger.warning("OpenAI provider stream iteration failed: %s", exc)
+            raise LlmProviderUnavailableError("Provider OpenAI non raggiungibile.") from exc
+
+    def get_final_response(self):
+        try:
+            return self._stream.get_final_response()
+        except OpenAIError as exc:
+            logger.warning("OpenAI provider final stream response failed: %s", exc)
+            raise LlmProviderUnavailableError("Provider OpenAI non raggiungibile.") from exc
 
 
 @dataclass(frozen=True)
@@ -383,7 +401,12 @@ def build_optional_llm_provider() -> LlmProvider | None:
         raise _configuration_error(config)
 
     if config.provider == "openai":
-        return _cached_openai_provider(config.api_key, config.model, config.base_url)
+        return _cached_openai_provider(
+            config.api_key,
+            config.model,
+            config.base_url,
+            config.timeout_seconds,
+        )
     if config.provider == "ollama":
         return _cached_ollama_provider(
             config.model,
@@ -397,7 +420,6 @@ def build_optional_llm_provider() -> LlmProvider | None:
 
 def load_llm_provider_config() -> LlmProviderConfig:
     provider = _env_or_setting("LLM_PROVIDER", "openai").strip().lower()
-    provider = _env_or_setting("AI_LLM_PROVIDER", provider).strip().lower()
     generic_model = _env_or_setting("LLM_MODEL", "").strip()
     generic_base_url = _env_or_setting("LLM_BASE_URL", "").strip()
     timeout_seconds = _coerce_float(_env_or_setting("LLM_TIMEOUT_SECONDS", "60"), default=60.0)
@@ -405,11 +427,9 @@ def load_llm_provider_config() -> LlmProviderConfig:
     if provider == "openai":
         return LlmProviderConfig(
             provider=provider,
-            model=generic_model
-            or _env_or_setting("OPENAI_MODEL", DEFAULT_OPENAI_MODEL).strip()
+            model=_env_or_setting("OPENAI_MODEL", DEFAULT_OPENAI_MODEL).strip()
             or DEFAULT_OPENAI_MODEL,
-            base_url=generic_base_url
-            or _env_or_setting("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).strip()
+            base_url=_env_or_setting("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).strip()
             or DEFAULT_OPENAI_BASE_URL,
             api_key=_env_or_setting("OPENAI_API_KEY", "").strip(),
             timeout_seconds=timeout_seconds,
@@ -435,9 +455,21 @@ def get_llm_provider_status() -> dict[str, Any]:
         error = str(_configuration_error(config))
     return {
         "provider": config.provider,
+        "runtime": "responses_api" if config.provider == "openai" else "ollama_chat",
         "model": config.model,
         "base_url": config.base_url,
         "configured": config.is_configured,
+        "timeout_seconds": config.timeout_seconds,
+        "max_retries": 0 if config.provider == "openai" else None,
+        "parallel_tool_calls": False,
+        "strict_tool_schemas": True,
+        "structured_final_output": True,
+        "response_verbosity": "low",
+        "temperature": None,
+        "seed": None,
+        "transcription_model": _env_or_setting(
+            "OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-transcribe"
+        ).strip() or "gpt-4o-transcribe",
         "think": config.think,
         "error": error,
     }
@@ -447,6 +479,18 @@ def require_llm_provider_configured() -> LlmProviderConfig:
     config = load_llm_provider_config()
     if not config.is_configured:
         raise _configuration_error(config)
+    return config
+
+
+def require_study_openai_configured() -> LlmProviderConfig:
+    """Require the provider used by the ASITA conversational study path."""
+
+    config = require_llm_provider_configured()
+    if config.provider != "openai":
+        raise LlmProviderConfigurationError(
+            "Il runtime conversazionale ASITA richiede LLM_PROVIDER=openai; "
+            "Ollama non fa parte della configurazione sperimentale."
+        )
     return config
 
 
@@ -476,11 +520,13 @@ def _cached_openai_provider(
     api_key: str,
     model: str,
     base_url: str,
+    timeout_seconds: float,
 ) -> OpenAiResponsesLlmProvider:
     return OpenAiResponsesLlmProvider(
         api_key=api_key,
         model=model,
         base_url=base_url,
+        timeout_seconds=timeout_seconds,
     )
 
 

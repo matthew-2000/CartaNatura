@@ -199,7 +199,12 @@ def _serialize_interaction_response(response, *, interaction_id: str) -> dict[st
 
 
 def _llm_status() -> dict[str, object]:
-    return get_llm_provider_status()
+    status = get_llm_provider_status()
+    if status.get("provider") != "openai":
+        status = dict(status)
+        status["configured"] = False
+        status["error"] = "Il runtime ASITA richiede OpenAI."
+    return status
 
 
 def _llm_log_details(response) -> dict[str, object]:
@@ -292,7 +297,12 @@ def _provider_failure_response(
     *, session_id: str, interaction_id: str, interaction_mode: str, started_at: float
 ) -> JsonResponse | None:
     try:
-        require_llm_provider_configured()
+        config = require_llm_provider_configured()
+        configured_provider = getattr(config, "provider", None)
+        if isinstance(configured_provider, str) and configured_provider != "openai":
+            raise LlmProviderUnavailableError(
+                "Il runtime conversazionale ASITA richiede LLM_PROVIDER=openai."
+            )
     except LlmProviderUnavailableError as exc:
         record_raw_event(
             session_id,
@@ -897,6 +907,20 @@ def voice_transcribe(request):
             error_message=str(exc),
         )
         return JsonResponse({"error": str(exc)}, status=503)
+
+    transcript = str(transcript or "").strip()
+    if not transcript:
+        record_raw_event(
+            _ensure_session_id(request),
+            event_type="error",
+            interaction_id=interaction_id,
+            operation="voice_transcription",
+            interaction_mode="voice",
+            duration_ms=duration_ms,
+            error_type="empty_transcript",
+            error_message="OpenAI STT returned an empty transcript",
+        )
+        return JsonResponse({"error": "Audio ricevuto, ma nessun testo riconosciuto."}, status=400)
 
     record_raw_event(
         _ensure_session_id(request),

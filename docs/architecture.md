@@ -125,8 +125,8 @@ flowchart TD
 ## Regole
 
 - Numeri GIS e CO2 arrivano solo da servizi deterministici.
-- LLM interpreta richieste, guida workflow e sintetizza risultati tramite provider configurato (`openai` o `ollama`).
-- Il provider selezionato, il modello e gli identificativi di turno sono isolati nel layer `interaction/llm.py` e nel runtime conversazionale; orchestratore, tool e servizi GIS non dipendono da OpenAI.
+- OpenAI interpreta ogni richiesta testuale o transcript, guida il workflow e sintetizza i risultati; gli endpoint ASITA rifiutano provider diversi.
+- Modello, base URL, timeout e identificativi di turno sono isolati nel layer `interaction/llm.py`; Ollama resta fuori dal percorso sperimentale e non è un fallback.
 - Ogni risultato prodotto dalla conversazione deve restare verificabile su mappa.
 - Le view Django restano sottili.
 - I dataset locali sono caricati con caching.

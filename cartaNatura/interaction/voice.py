@@ -6,6 +6,7 @@ import logging
 import os
 
 from django.core.files.uploadedfile import UploadedFile
+from django.conf import settings
 from openai import OpenAI, OpenAIError
 
 from .llm import LlmProviderUnavailableError
@@ -38,6 +39,8 @@ def transcribe_uploaded_audio(audio_file: UploadedFile) -> str:
         api_key=api_key,
         base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
         or "https://api.openai.com/v1",
+        timeout=_voice_timeout_seconds(),
+        max_retries=0,
     )
 
     try:
@@ -93,3 +96,15 @@ def _extract_transcription_text(transcription) -> str:
             return raw_text.strip()
 
     return ""
+
+
+def _voice_timeout_seconds() -> float:
+    raw_value = os.getenv(
+        "LLM_TIMEOUT_SECONDS",
+        str(getattr(settings, "LLM_TIMEOUT_SECONDS", "60")),
+    )
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return 60.0
+    return value if value > 0 else 60.0

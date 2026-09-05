@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from numbers import Real
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Generator
 
@@ -90,6 +91,7 @@ class RuntimeLoopResult:
     latest_selection_payload: dict[str, Any] | None = None
     derived_intent: InteractionIntent = InteractionIntent.UNKNOWN
     clears_context: bool = False
+    grounding_payloads: tuple[dict[str, Any], ...] = ()
 
 
 class AssistantTextDeltaExtractor:
@@ -214,14 +216,15 @@ class AssistantToolExecutor:
             payload = self._tool_registry.execute(
                 ToolName.CALCULATE_ECONOMIC_VALUE,
                 scenario_key=str(arguments.get("scenario_key") or ""),
+                analysis_id=str(arguments.get("analysis_id") or "") or None,
             )
-            last_analysis = dict(session_context.last_analysis or {})
-            last_analysis.update(
-                {
-                    "analysisId": payload.get("analysisId"),
-                    "economicResult": payload,
-                }
-            )
+            last_analysis = None
+            if (
+                session_context.last_analysis
+                and session_context.last_analysis.get("analysisId") == payload.get("analysisId")
+            ):
+                last_analysis = dict(session_context.last_analysis)
+                last_analysis["economicResult"] = payload
             return ToolExecutionOutcome(
                 payload=payload,
                 economic_result=payload,
@@ -230,7 +233,10 @@ class AssistantToolExecutor:
             )
 
         if tool_name == MODEL_TOOL_COMPARE_ECONOMIC_SCENARIOS:
-            payload = self._tool_registry.execute(ToolName.COMPARE_ECONOMIC_SCENARIOS)
+            payload = self._tool_registry.execute(
+                ToolName.COMPARE_ECONOMIC_SCENARIOS,
+                analysis_id=str(arguments.get("analysis_id") or "") or None,
+            )
             return ToolExecutionOutcome(
                 payload=payload,
                 scenario_comparison=payload,
@@ -313,7 +319,10 @@ class AssistantToolExecutor:
             )
 
         if tool_name == MODEL_TOOL_PREPARE_REPORT:
-            payload = self._tool_registry.execute(ToolName.PREPARE_REPORT)
+            payload = self._tool_registry.execute(
+                ToolName.PREPARE_REPORT,
+                analysis_id=str(arguments.get("analysis_id") or "") or None,
+            )
             return ToolExecutionOutcome(
                 payload=payload,
                 report_context=payload,
@@ -439,6 +448,7 @@ class AssistantRuntime:
                 ),
             ),
             phase="planning",
+            emit_message_deltas=False,
         )
         latest_analysis_result = None
         latest_economic_result = None
@@ -453,6 +463,8 @@ class AssistantRuntime:
         latest_selection_payload = None
         derived_intent = InteractionIntent.UNKNOWN
         clears_context = False
+        grounding_payloads: list[dict[str, Any]] = []
+        failed_tool_calls: dict[str, list[str]] = {}
         tool_rounds = 0
         tool_request, tool_context = request, session_context
 
@@ -478,6 +490,14 @@ class AssistantRuntime:
                     request=tool_request,
                     session_context=tool_context,
                 )
+                recovered = self._update_tool_recovery_lifecycle(
+                    request=request,
+                    tool_call=tool_call,
+                    outcome=outcome,
+                    failed_tool_calls=failed_tool_calls,
+                )
+                if outcome.tool_error is None:
+                    grounding_payloads.append(outcome.payload)
                 tool_request, tool_context = self._advance_tool_context(tool_request, tool_context, outcome)
                 if outcome.clears_context:
                     latest_analysis_result = latest_analysis = latest_selection_payload = None
@@ -490,10 +510,6 @@ class AssistantRuntime:
                     latest_map_filter = latest_last_analysis_details = None
                 if outcome.analysis_result is not None:
                     latest_analysis_result = outcome.analysis_result
-                    yield {
-                        "type": "analysis_result",
-                        "analysisResult": outcome.analysis_result,
-                    }
                 if outcome.economic_result is not None:
                     latest_economic_result = outcome.economic_result
                 if outcome.scenario_comparison is not None:
@@ -520,6 +536,8 @@ class AssistantRuntime:
                     "type": "tool_result",
                     "toolName": tool_call["name"],
                     "toolCallId": tool_call["call_id"],
+                    "ok": outcome.tool_error is None,
+                    "recovered": recovered,
                 }
                 tool_outputs.append(
                     {
@@ -564,6 +582,7 @@ class AssistantRuntime:
                     ),
                 ),
                 phase=response_phase,
+                emit_message_deltas=False,
             )
 
         if self._parse_final_payload(response_body).get("_unstructured"):
@@ -581,6 +600,7 @@ class AssistantRuntime:
                     ),
                 ),
                 phase="final",
+                emit_message_deltas=False,
             )
 
         response = self._build_interaction_response(
@@ -601,8 +621,13 @@ class AssistantRuntime:
                 latest_selection_payload=latest_selection_payload,
                 derived_intent=derived_intent,
                 clears_context=clears_context,
+                grounding_payloads=tuple(grounding_payloads),
             ),
         )
+        yield {
+            "type": "message_delta",
+            "delta": response.messages[0].text,
+        }
         return response
 
     def _build_empty_response(
@@ -674,6 +699,8 @@ class AssistantRuntime:
         latest_selection_payload = None
         derived_intent = InteractionIntent.UNKNOWN
         clears_context = False
+        grounding_payloads: list[dict[str, Any]] = []
+        failed_tool_calls: dict[str, list[str]] = {}
         tool_rounds = 0
         tool_request, tool_context = request, session_context
 
@@ -701,6 +728,14 @@ class AssistantRuntime:
                     request=tool_request,
                     session_context=tool_context,
                 )
+                recovered = self._update_tool_recovery_lifecycle(
+                    request=request,
+                    tool_call=tool_call,
+                    outcome=outcome,
+                    failed_tool_calls=failed_tool_calls,
+                )
+                if outcome.tool_error is None:
+                    grounding_payloads.append(outcome.payload)
                 tool_request, tool_context = self._advance_tool_context(tool_request, tool_context, outcome)
                 if outcome.clears_context:
                     latest_analysis_result = latest_analysis = latest_selection_payload = None
@@ -747,6 +782,9 @@ class AssistantRuntime:
                     {
                         "type": "tool_result",
                         "toolName": tool_call["name"],
+                        "toolCallId": tool_call["call_id"],
+                        "ok": outcome.tool_error is None,
+                        "recovered": recovered,
                     },
                 )
                 tool_outputs.append(
@@ -814,6 +852,7 @@ class AssistantRuntime:
             latest_selection_payload=latest_selection_payload,
             derived_intent=derived_intent,
             clears_context=clears_context,
+            grounding_payloads=tuple(grounding_payloads),
         )
 
     @staticmethod
@@ -873,6 +912,7 @@ class AssistantRuntime:
                     error=str(exc),
                 )
                 raise
+            response_body = self._require_response_payload(response_body)
             log_provider_call(
                 provider=self.provider_name,
                 model=self.provider_model,
@@ -928,16 +968,6 @@ class AssistantRuntime:
                 arguments=tool_call.get("arguments"),
                 **telemetry,
             )
-            log_tool_call(
-                session_id=request.session_id,
-                tool_name=tool_call["name"],
-                duration_ms=elapsed_ms(started_at),
-                status="recovered",
-                error=str(exc),
-                arguments=tool_call.get("arguments"),
-                result={"recovery": "error_returned_to_model"},
-                **telemetry,
-            )
             return ToolExecutionOutcome(
                 payload={"ok": False, "error": str(exc)},
                 tool_error=str(exc),
@@ -976,6 +1006,38 @@ class AssistantRuntime:
         )
         return outcome
 
+    @staticmethod
+    def _update_tool_recovery_lifecycle(
+        *,
+        request: InteractionRequest,
+        tool_call: dict[str, Any],
+        outcome: ToolExecutionOutcome,
+        failed_tool_calls: dict[str, list[str]],
+    ) -> bool:
+        tool_name = tool_call["name"]
+        call_id = str(tool_call.get("call_id") or "")
+        if outcome.tool_error is not None:
+            failed_tool_calls.setdefault(tool_name, []).append(call_id)
+            return False
+
+        recovered_calls = failed_tool_calls.pop(tool_name, [])
+        for failed_call_id in recovered_calls:
+            log_tool_call(
+                session_id=request.session_id,
+                tool_name=tool_name,
+                duration_ms=0,
+                status="recovered",
+                interaction_id=request.input.metadata.get("interactionId"),
+                interaction_mode=request.input.metadata.get("interactionMode"),
+                tool_call_id=failed_call_id,
+                result={
+                    "recovery": "successful_retry",
+                    "recoveredFromCallId": failed_call_id,
+                    "recoveryCallId": call_id,
+                },
+            )
+        return bool(recovered_calls)
+
     def _stream_response_body(
         self,
         *,
@@ -986,42 +1048,56 @@ class AssistantRuntime:
         extractor = AssistantTextDeltaExtractor()
         started_at = start_timer()
         final_payload: dict[str, Any] | None = None
-        with self._llm_provider.stream_response(**payload) as stream:
-            for event in stream:
-                event_type = str(getattr(event, "type", ""))
-                if event_type == "response.created":
-                    response = getattr(event, "response", None)
-                    self._emit_event(
-                        event_callback,
-                        {
-                            "type": "status",
-                            "stage": "model_created",
-                            "responseId": getattr(response, "id", None),
-                        },
-                    )
-                elif event_type == "response.output_item.added":
-                    item = getattr(event, "item", None)
-                    if getattr(item, "type", None) == "function_call":
+        try:
+            with self._llm_provider.stream_response(**payload) as stream:
+                for event in stream:
+                    event_type = str(getattr(event, "type", ""))
+                    if event_type == "response.created":
+                        response = getattr(event, "response", None)
                         self._emit_event(
                             event_callback,
                             {
-                                "type": "tool_pending",
-                                "toolName": getattr(item, "name", ""),
+                                "type": "status",
+                                "stage": "model_created",
+                                "responseId": getattr(response, "id", None),
                             },
                         )
-                elif event_type == "response.output_text.delta":
-                    delta = extractor.push(str(getattr(event, "delta", "")))
-                    if delta:
-                        self._emit_event(
-                            event_callback,
-                            {
-                                "type": "message_delta",
-                                "delta": delta,
-                            },
-                        )
+                    elif event_type == "response.output_item.added":
+                        item = getattr(event, "item", None)
+                        if getattr(item, "type", None) == "function_call":
+                            self._emit_event(
+                                event_callback,
+                                {
+                                    "type": "tool_pending",
+                                    "toolName": getattr(item, "name", ""),
+                                },
+                            )
+                    elif event_type == "response.output_text.delta":
+                        delta = extractor.push(str(getattr(event, "delta", "")))
+                        if delta:
+                            self._emit_event(
+                                event_callback,
+                                {
+                                    "type": "message_delta",
+                                    "delta": delta,
+                                },
+                            )
 
-            final_response = stream.get_final_response()
-            final_payload = final_response.model_dump(mode="python")
+                final_response = stream.get_final_response()
+                final_payload = self._require_stream_response_payload(final_response)
+        except Exception as exc:
+            log_provider_call(
+                provider=self.provider_name,
+                model=self.provider_model,
+                session_id=request.session_id,
+                response_body=None,
+                previous_response_id=payload.get("previous_response_id"),
+                streaming=True,
+                duration_ms=elapsed_ms(started_at),
+                status="error",
+                error=str(exc),
+            )
+            raise
 
         log_provider_call(
             provider=self.provider_name,
@@ -1046,35 +1122,49 @@ class AssistantRuntime:
         extractor = AssistantTextDeltaExtractor()
         started_at = start_timer()
         final_payload: dict[str, Any] | None = None
-        with self._llm_provider.stream_response(**payload) as stream:
-            for event in stream:
-                event_type = str(getattr(event, "type", ""))
-                if event_type == "response.created":
-                    response = getattr(event, "response", None)
-                    yield {
-                        "type": "status",
-                        "stage": "model_created",
-                        "phase": phase,
-                        "message": self._stream_model_created_message(phase),
-                        "responseId": getattr(response, "id", None),
-                    }
-                elif event_type == "response.output_item.added":
-                    item = getattr(event, "item", None)
-                    if getattr(item, "type", None) == "function_call":
+        try:
+            with self._llm_provider.stream_response(**payload) as stream:
+                for event in stream:
+                    event_type = str(getattr(event, "type", ""))
+                    if event_type == "response.created":
+                        response = getattr(event, "response", None)
                         yield {
-                            "type": "tool_pending",
-                            "toolName": getattr(item, "name", ""),
+                            "type": "status",
+                            "stage": "model_created",
+                            "phase": phase,
+                            "message": self._stream_model_created_message(phase),
+                            "responseId": getattr(response, "id", None),
                         }
-                elif event_type == "response.output_text.delta" and emit_message_deltas:
-                    delta = extractor.push(str(getattr(event, "delta", "")))
-                    if delta:
-                        yield {
-                            "type": "message_delta",
-                            "delta": delta,
-                        }
+                    elif event_type == "response.output_item.added":
+                        item = getattr(event, "item", None)
+                        if getattr(item, "type", None) == "function_call":
+                            yield {
+                                "type": "tool_pending",
+                                "toolName": getattr(item, "name", ""),
+                            }
+                    elif event_type == "response.output_text.delta" and emit_message_deltas:
+                        delta = extractor.push(str(getattr(event, "delta", "")))
+                        if delta:
+                            yield {
+                                "type": "message_delta",
+                                "delta": delta,
+                            }
 
-            final_response = stream.get_final_response()
-            final_payload = final_response.model_dump(mode="python")
+                final_response = stream.get_final_response()
+                final_payload = self._require_stream_response_payload(final_response)
+        except Exception as exc:
+            log_provider_call(
+                provider=self.provider_name,
+                model=self.provider_model,
+                session_id=request.session_id,
+                response_body=None,
+                previous_response_id=payload.get("previous_response_id"),
+                streaming=True,
+                duration_ms=elapsed_ms(started_at),
+                status="error",
+                error=str(exc),
+            )
+            raise
 
         log_provider_call(
             provider=self.provider_name,
@@ -1087,6 +1177,24 @@ class AssistantRuntime:
             status="ok",
         )
         return final_payload
+
+    @staticmethod
+    def _require_response_payload(response_body: Any) -> dict[str, Any]:
+        if not isinstance(response_body, dict):
+            raise LlmProviderUnavailableError(
+                "Il provider LLM ha restituito una risposta strutturalmente non valida."
+            )
+        return response_body
+
+    @classmethod
+    def _require_stream_response_payload(cls, final_response: Any) -> dict[str, Any]:
+        try:
+            response_body = final_response.model_dump(mode="python")
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise LlmProviderUnavailableError(
+                "Il provider LLM ha restituito una risposta streaming malformata."
+            ) from exc
+        return cls._require_response_payload(response_body)
 
     @staticmethod
     def _stream_model_created_message(phase: str) -> str:
@@ -1185,6 +1293,11 @@ class AssistantRuntime:
         )
         if not message_text:
             raise LlmProviderUnavailableError("Il modello LLM ha restituito una risposta testuale vuota.")
+        self._validate_quantitative_grounding(
+            message_text=message_text,
+            grounding_payloads=loop_result.grounding_payloads,
+        )
+        self._validate_report_claims(message_text)
         ui_actions = filter_ui_actions(final_payload.get("ui_actions"))
         follow_up_suggestions = final_payload.get("follow_up_suggestions", [])
         final_intent = self._resolve_final_intent(
@@ -1363,16 +1476,109 @@ class AssistantRuntime:
             raw_arguments = item.get("arguments")
             parsed_arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
             if isinstance(raw_arguments, str) and raw_arguments.strip():
-                parsed_arguments = json.loads(raw_arguments)
+                try:
+                    parsed_arguments = json.loads(raw_arguments)
+                except json.JSONDecodeError as exc:
+                    raise LlmProviderUnavailableError(
+                        "Il modello LLM ha restituito argomenti tool non validi."
+                    ) from exc
+
+            call_id = str(item.get("call_id") or item.get("id") or "").strip()
+            tool_name = str(item.get("name") or "").strip()
+            if not call_id or tool_name not in MODEL_TOOL_NAMES:
+                raise LlmProviderUnavailableError(
+                    "Il modello LLM ha restituito una chiamata tool non valida."
+                )
 
             tool_calls.append(
                 {
-                    "call_id": str(item.get("call_id") or item.get("id") or ""),
-                    "name": str(item.get("name") or ""),
+                    "call_id": call_id,
+                    "name": tool_name,
                     "arguments": parsed_arguments if isinstance(parsed_arguments, dict) else {},
                 }
             )
         return tool_calls
+
+    @classmethod
+    def _validate_quantitative_grounding(
+        cls,
+        *,
+        message_text: str,
+        grounding_payloads: tuple[dict[str, Any], ...],
+    ) -> None:
+        claims = cls._numeric_literals(message_text)
+        if not claims:
+            return
+        authoritative: list[float] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, bool) or value is None:
+                return
+            if isinstance(value, Real):
+                authoritative.append(float(value))
+                return
+            if isinstance(value, list):
+                authoritative.append(float(len(value)))
+                for item in value:
+                    collect(item)
+                return
+            if isinstance(value, dict):
+                for item in value.values():
+                    collect(item)
+
+        for payload in grounding_payloads:
+            collect(payload)
+
+        unsupported = [
+            raw
+            for raw, claim in claims
+            if not any(
+                abs(claim - round(value, precision)) <= 1e-9
+                for value in authoritative
+                for precision in (0, 1, 2)
+            )
+        ]
+        if unsupported:
+            raise LlmProviderUnavailableError(
+                "La risposta LLM contiene valori quantitativi non verificabili nei risultati backend: "
+                + ", ".join(unsupported)
+                + "."
+            )
+
+    @staticmethod
+    def _numeric_literals(text: str) -> list[tuple[str, float]]:
+        pattern = re.compile(
+            r"(?<![\w])[-+]?(?:\d{1,3}(?:[.\s]\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)(?![\w])"
+        )
+        parsed: list[tuple[str, float]] = []
+        for match in pattern.finditer(text):
+            raw = match.group(0)
+            normalized = raw.replace(" ", "")
+            if "." in normalized and "," in normalized:
+                normalized = normalized.replace(".", "").replace(",", ".")
+            elif "," in normalized:
+                normalized = normalized.replace(",", ".")
+            elif normalized.count(".") >= 1:
+                groups = normalized.lstrip("+-").split(".")
+                if len(groups) > 1 and all(len(group) == 3 for group in groups[1:]):
+                    normalized = normalized.replace(".", "")
+            try:
+                parsed.append((raw, float(normalized)))
+            except ValueError:
+                continue
+        return parsed
+
+    @staticmethod
+    def _validate_report_claims(message_text: str) -> None:
+        normalized = " ".join(message_text.casefold().split())
+        impossible_claims = (
+            r"\bpdf\b.{0,32}\b(?:generato|creato|salvato|scaricato)\b",
+            r"\b(?:ho|abbiamo)\b.{0,32}\b(?:generato|creato|salvato|scaricato)\b.{0,16}\bpdf\b",
+        )
+        if any(re.search(pattern, normalized) for pattern in impossible_claims):
+            raise LlmProviderUnavailableError(
+                "La risposta LLM attribuisce al report uno stato PDF non avvenuto."
+            )
 
     @staticmethod
     def _parse_final_payload(response_body: dict[str, Any]) -> dict[str, Any]:
@@ -1444,6 +1650,8 @@ class AssistantRuntime:
             "Questo filtro modifica solo la visualizzazione: non dichiarare che ricalcola l'analisi. "
             "Se chiede valore economico con uno scenario usa calculate_economic_value. "
             "Se chiede confronto prezzi o scenari usa compare_economic_scenarios. "
+            "Per questi tool e prepare_report passa displayedAnalysisId quando utente dice 'questa analisi' o indica il report visibile; "
+            "passa null soltanto quando intende esplicitamente l'ultima analisi salvata. "
             "Se chiede report o PDF usa prepare_report. Il tool apre il report esistente: non dichiarare mai PDF generato. "
             "Se chiede elenco storico o analisi recenti usa list_recent_analyses. "
             "Se chiede 'confrontalo con il precedente' o un confronto di risultati recenti usa compare_recent_analyses: "
@@ -1477,6 +1685,7 @@ class AssistantRuntime:
                 "selectionSource": request.context.metadata.get("selectionSource"),
                 "mapExtent": request.context.current_map_extent,
                 "hasDisplayedAnalysis": bool(request.context.displayed_analysis_id),
+                "displayedAnalysisId": request.context.displayed_analysis_id,
                 "displayedAnalysisMatchesLast": bool(
                     request.context.displayed_analysis_id
                     and session_context.last_analysis
@@ -1643,8 +1852,9 @@ class AssistantRuntime:
                             "type": "string",
                             "enum": [str(option["key"]) for option in PRICE_OPTIONS],
                         },
+                        "analysis_id": {"type": ["string", "null"]},
                     },
-                    "required": ["scenario_key"],
+                    "required": ["scenario_key", "analysis_id"],
                     "additionalProperties": False,
                 },
             },
@@ -1655,8 +1865,10 @@ class AssistantRuntime:
                 "strict": True,
                 "parameters": {
                     "type": "object",
-                    "properties": {},
-                    "required": [],
+                    "properties": {
+                        "analysis_id": {"type": ["string", "null"]},
+                    },
+                    "required": ["analysis_id"],
                     "additionalProperties": False,
                 },
             },
@@ -1751,8 +1963,10 @@ class AssistantRuntime:
                 "strict": True,
                 "parameters": {
                     "type": "object",
-                    "properties": {},
-                    "required": [],
+                    "properties": {
+                        "analysis_id": {"type": ["string", "null"]},
+                    },
+                    "required": ["analysis_id"],
                     "additionalProperties": False,
                 },
             },

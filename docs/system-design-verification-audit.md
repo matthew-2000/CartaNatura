@@ -282,16 +282,14 @@ Il percorso GUI invia il `selectionPayload` a `analyze_selection`; il percorso c
 - **Dati già prodotti:** non altera i risultati GIS; può alterare intent/nome comune riconosciuto.
 - **Azione:** descrizione precisa nel paper e pretest acustico; nessun TTS necessario per i task attuali.
 
-### F17 — OpenAI e Ollama hanno comportamento diverso; timeout OpenAI ignorato
+### F17 — OpenAI e Ollama hanno comportamento diverso; configurazione sperimentale congelata
 
-**Classificazione: SHOULD FIX BEFORE EXPERIMENT**
+**Classificazione: FIXED FOR CONVERSATIONAL CORE**
 
-- **Comportamento attuale:** OpenAI usa Responses API e schema strict; Ollama traduce in `/api/chat`, usa `temperature=0`, `num_ctx` configurabile e applica lo schema finale in una fase distinta. Ollama riceve anche la history esplicita oltre al riepilogo incluso nel prompt. Non esiste fallback. `LLM_TIMEOUT_SECONDS` è passato a Ollama ma non al client OpenAI.
-- **Evidenza:** `llm.py:56-112`, `130-202`, `380-428`, `474-501`, `546-570`; `assistant_runtime.py:1097-1120`, `1240-1314`, `1433-1453`.
-- **Impatto scientifico:** tool selection, latenza, determinismo, gestione contesto e failure rate possono cambiare per provider/modello; timeout non uniforme può bloccare una sessione oltre il limite operativo.
-- **Comparabilità:** GUI non dipende dal provider; la condizione conversational sì. Cambiare provider tra partecipanti introduce un confondente.
-- **Dati già prodotti:** sì se sono stati mescolati provider/modelli; i log riportano provider/model sugli eventi backend, quindi la stratificazione è possibile.
-- **Azione:** software per il timeout OpenAI; congelare provider, modello, endpoint e opzioni per tutto lo studio; descriverli nel paper. Non serve rendere i provider equivalenti per questo esperimento.
+- **Comportamento attuale:** il percorso conversazionale ASITA accetta esclusivamente OpenAI Responses API. `LLM_TIMEOUT_SECONDS` è applicato ai client Responses e STT, i retry SDK sono disabilitati e Ollama viene rifiutato prima dell'orchestrazione. Non esiste fallback.
+- **Configurazione congelata:** `LLM_PROVIDER=openai`, `OPENAI_MODEL=gpt-5-mini`, `OPENAI_BASE_URL=https://api.openai.com/v1`, `LLM_TIMEOUT_SECONDS=60`, `OPENAI_TRANSCRIPTION_MODEL=gpt-4o-transcribe`, tool strict, `parallel_tool_calls=false`, output finale JSON Schema strict, verbosity `low`; temperature e seed non sono impostati.
+- **Evidenza:** `interaction/llm.py`; `interaction/voice.py`; `views.py:_provider_failure_response`; regression test `OpenAiRuntimeFreezeTests`.
+- **Comparabilità:** Ollama resta nel repository per uso non sperimentale, ma non è una condizione valida del pilot e non fa parte della validazione della milestone.
 
 ### F18 — 21 geometrie sorgente non valide e nessun gate di qualità dataset
 

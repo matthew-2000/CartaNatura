@@ -8,6 +8,7 @@ from typing import Any
 from cartaNatura.services.analysis_summary import summarize_clipped_features
 from cartaNatura.services.gis_clip import clip_selection
 from cartaNatura.services.municipality_text import build_municipality_selection_payload_dict
+from cartaNatura.services.municipality_text import resolve_municipality_names
 from cartaNatura.services.payloads import parse_selection_payload
 
 from .contracts import require_summary
@@ -36,13 +37,7 @@ def _build_analysis_result(
 
 
 def analyze_municipalities(*, municipality_names: list[str]) -> dict[str, Any]:
-    requested_municipalities = [
-        str(name)
-        for name in municipality_names
-        if str(name).strip()
-    ]
-    if not requested_municipalities:
-        raise ValueError("Nessun comune riconosciuto nel messaggio.")
+    requested_municipalities = resolve_municipality_names(municipality_names)
 
     selection_payload = build_municipality_selection_payload_dict(requested_municipalities)
     return _build_analysis_result(

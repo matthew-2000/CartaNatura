@@ -36,17 +36,18 @@ Regole:
 - documentare intenti in [conversational-interface.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/conversational-interface.md:1)
 - mantenere tool deterministici per numeri GIS
 - non aggiungere azioni UI fuori allowlist server/client
-- testare fast path rule-based e runtime LLM mockato
-- testare selezione provider LLM (`openai`/`ollama`), tool calling e streaming con provider mockato
+- verificare che testo e transcript non raggiungano mai il resolver strutturato
+- testare OpenAI Responses API, tool calling, grounding e streaming con provider mockato
 
 ## Modifica Voce
 
 Il flusso vocale usa `MediaRecorder` lato browser e OpenAI Audio Transcriptions lato Django.
 
-Il flusso conversazionale testuale usa il provider selezionato con `LLM_PROVIDER`:
+Il flusso conversazionale ASITA usa OpenAI con `LLM_PROVIDER=openai`:
 
-- `openai`: richiede `OPENAI_API_KEY`; modello da `LLM_MODEL` o `OPENAI_MODEL`; URL da `LLM_BASE_URL` o `OPENAI_BASE_URL`.
-- `ollama`: richiede `LLM_MODEL` o `OLLAMA_MODEL`; URL da `LLM_BASE_URL` o `OLLAMA_BASE_URL`; `OLLAMA_THINK=false` riduce la latenza dei modelli con reasoning.
+- richiede `OPENAI_API_KEY`; modello da `OPENAI_MODEL`; URL da `OPENAI_BASE_URL`;
+- applica `LLM_TIMEOUT_SECONDS` e zero retry automatici sia al runtime sia a STT;
+- rifiuta Ollama sugli endpoint dello studio. Ollama resta disponibile soltanto fuori dal percorso sperimentale.
 
 Non aggiungere fallback impliciti tra provider. Errori di configurazione o incompatibilità modello devono restare visibili e testabili.
 

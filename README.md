@@ -59,12 +59,11 @@ Variabili principali:
 - `DJANGO_CSRF_TRUSTED_ORIGINS`
 - `DJANGO_DATA_DIR`: directory persistente per SQLite e telemetria raw JSONL
 - `AI_ASSISTANT_ENABLED`
-- `LLM_PROVIDER`: `openai` oppure `ollama`
-- `LLM_MODEL`: override generico del modello selezionato
-- `LLM_BASE_URL`: override generico dell'URL provider
-- `LLM_TIMEOUT_SECONDS`
+- `LLM_PROVIDER`: deve essere `openai` nel runtime conversazionale ASITA 2026
+- `LLM_MODEL`, `LLM_BASE_URL`: compatibilità Ollama fuori dal percorso sperimentale; non sovrascrivono OpenAI
+- `LLM_TIMEOUT_SECONDS`: timeout applicato sia a Responses API sia a STT
 - `OPENAI_API_KEY`
-- `OPENAI_MODEL`: default `gpt-5-mini`, usato se `LLM_PROVIDER=openai` e `LLM_MODEL` è vuoto
+- `OPENAI_MODEL`: modello OpenAI del pilot, default `gpt-5-mini`
 - `OPENAI_TRANSCRIPTION_MODEL`
 - `OPENAI_BASE_URL`
 - `OLLAMA_MODEL`: richiesto se `LLM_PROVIDER=ollama` e `LLM_MODEL` è vuoto
@@ -92,7 +91,7 @@ OLLAMA_MODEL=llama3.1
 OLLAMA_THINK=false
 ```
 
-La scelta del provider è esplicita: se il provider selezionato è incompleto o non disponibile, l'app restituisce un errore controllato e non passa automaticamente all'altro provider.
+Il percorso Web conversazionale usato nello studio accetta esclusivamente OpenAI. Se `LLM_PROVIDER` non è `openai`, se la configurazione è incompleta o se OpenAI non è disponibile, la richiesta fallisce esplicitamente prima di ogni operazione di dominio. Non esiste fallback verso Ollama. Il supporto Ollama rimane nel repository soltanto per uso non sperimentale tramite il layer provider-neutral.
 
 ### Railway
 

@@ -1395,6 +1395,14 @@ function describeAssistantToolProgress(toolName, stage = "running") {
     return `Completato: ${label}.`;
   }
 
+  if (stage === "recovered") {
+    return `Recuperato dopo una correzione: ${label}.`;
+  }
+
+  if (stage === "failed") {
+    return `Non completato: ${label}. L'assistente valuta una correzione...`;
+  }
+
   return `Eseguo ${label}...`;
 }
 
@@ -1516,10 +1524,12 @@ function applyEconomicResult(
   { interactionMode = "text", recordEvent = true } = {}
 ) {
   if (!economicResult || !Number.isFinite(Number(economicResult.totalValueEur))) {
-    return;
+    return false;
+  }
+  if (!state.analysisId || economicResult.analysisId !== state.analysisId) {
+    return false;
   }
 
-  state.analysisId = economicResult.analysisId || state.analysisId;
   state.selectedEconomicPrice = Number(economicResult.priceEurPerTon || 0);
   state.calculatedValue = Number(economicResult.totalValueEur || 0);
   state.economicValueCalculated = true;
@@ -1540,6 +1550,7 @@ function applyEconomicResult(
       },
     });
   }
+  return true;
 }
 
 function updateActionStates(mapController) {
@@ -2321,10 +2332,15 @@ async function runAssistantInteraction(
             );
           },
           onToolResult: (event) => {
-            completedTools.add(event.toolName);
+            if (event.ok !== false) {
+              completedTools.add(event.toolName);
+            }
             setAssistantStreamingProgress(
               streamingMessageIndex,
-              describeAssistantToolProgress(event.toolName, "completed")
+              describeAssistantToolProgress(
+                event.toolName,
+                event.ok === false ? "failed" : (event.recovered ? "recovered" : "completed")
+              )
             );
           },
           onMessageDelta: (event) => {

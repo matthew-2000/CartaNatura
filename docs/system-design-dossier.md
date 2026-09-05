@@ -349,7 +349,7 @@ Riferimenti: `app.js:routeStructuredAssistantResult`, `applyAnalysisResult`, `ap
 
 ### 6.1 OpenAI
 
-**[IMPLEMENTED AND VERIFIED]** `OpenAiResponsesLlmProvider` usa `OpenAI.responses.create/stream`, modello configurabile (default `gpt-5-mini`) e base URL configurabile. Normalizza con `model_dump`. Riferimento: `interaction/llm.py:OpenAiResponsesLlmProvider`.
+**[IMPLEMENTED AND VERIFIED]** `OpenAiResponsesLlmProvider` usa `OpenAI.responses.create/stream`, `OPENAI_MODEL` (default `gpt-5-mini`), `OPENAI_BASE_URL`, timeout applicato al client e zero retry SDK. Normalizza con `model_dump`. Riferimento: `interaction/llm.py:OpenAiResponsesLlmProvider`.
 
 ### 6.2 Ollama
 
@@ -357,7 +357,7 @@ Riferimenti: `app.js:routeStructuredAssistantResult`, `applyAnalysisResult`, `ap
 
 ### 6.3 Selezione e fallback
 
-**[IMPLEMENTED AND VERIFIED]** `LLM_PROVIDER` seleziona esplicitamente `openai` o `ollama`; `LLM_MODEL` e `LLM_BASE_URL` sono override generici. Se il provider selezionato è configurato male o irraggiungibile, la richiesta fallisce; non vi è fallback automatico verso l'altro provider. Riferimenti: `llm.py:load_llm_provider_config`, `build_optional_llm_provider`, `_configuration_error`.
+**[IMPLEMENTED AND VERIFIED]** Gli endpoint conversazionali ASITA richiedono `LLM_PROVIDER=openai`; `OPENAI_MODEL` e `OPENAI_BASE_URL` sono le sole fonti per modello e URL OpenAI. Ollama resta nel layer provider-neutral per uso non sperimentale, ma viene rifiutato dalle view dello studio. Errori e timeout non attivano fallback. Riferimenti: `llm.py:load_llm_provider_config`, `views.py:_provider_failure_response`.
 
 **[IMPLEMENTED AND VERIFIED]** Il runtime non usa un fallback keyword/rule-based per la chat se il modello fallisce o restituisce output vuoto. Il resolver rule-based resta per la selezione WebGIS strutturata. Test: `test_empty_model_response_never_triggers_a_keyword_fallback`.
 
@@ -872,15 +872,12 @@ Visual distinction essential:
 5. Gli 81 comuni esclusi derivano da verifica dataset o da una regola esterna?
 6. Il pilot effettivo usa sei task T1–T6 o due incarichi estesi descritti nella documentazione?
 7. I testi completi delle conversazioni devono essere conservati nello studio? Quali consenso, retention e access policy si applicano?
-8. Quale modello/versione OpenAI e quale modello Ollama saranno usati nell'esperimento finale?
-9. Verranno fissati temperature/seed/versione? OpenAI non imposta temperatura/seed nel codice; Ollama imposta temperatura 0.
-10. Il provider Ollama è locale alla macchina dello studio o remoto/self-hosted?
+8. Il pin `gpt-5-mini` deve essere sostituito con uno snapshot datato, se OpenAI ne rende disponibile uno compatibile con Responses e con i tool richiesti?
+9. È accettabile l'assenza di temperature/seed configurabili per il modello OpenAI scelto, documentando modello e data delle sessioni?
 11. Il PDF è un deliverable sperimentale obbligatorio in modalità conversazionale? Se sì, come deve completarsi quando manca una valutazione economica persistita?
 12. La valutazione economica GUI deve essere salvata nello storico per parità tra condizioni?
-13. È accettabile che nomi comunali parzialmente invalidi siano ignorati quando altri sono validi?
-14. Quali metriche derivate saranno usate nell'analisi statistica e come verranno deduplicati eventi frontend/backend della stessa azione?
-15. Sono previsti test di accuratezza del testo LLM rispetto ai payload tool?
-16. Quali requisiti di deployment concorrente/backup/retention valgono per SQLite e log locali?
+13. Quali metriche derivate saranno usate nell'analisi statistica e come verranno deduplicati eventi frontend/backend della stessa azione?
+14. Quali requisiti di deployment concorrente/backup/retention valgono per SQLite e log locali?
 
 ## I. Candidate Material for the Paper
 

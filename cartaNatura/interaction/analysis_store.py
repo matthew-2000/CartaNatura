@@ -237,6 +237,44 @@ class InMemoryAnalysisStore:
         self._items.clear()
 
 
+class TransactionalAnalysisStore:
+    """Stage conversational mutations until the complete LLM turn succeeds."""
+
+    def __init__(self, delegate: AnalysisStore):
+        self._delegate = delegate
+        self._staged = InMemoryAnalysisStore()
+        for item in reversed(delegate.list_recent(limit=10_000)):
+            self._staged.save(item)
+        self._committed = False
+
+    def save(self, analysis: StoredAnalysis) -> StoredAnalysis:
+        return self._staged.save(analysis)
+
+    def get_last(self) -> StoredAnalysis | None:
+        return self._staged.get_last()
+
+    def get(self, analysis_id: str) -> StoredAnalysis | None:
+        return self._staged.get(analysis_id)
+
+    def list_recent(self, limit: int = 10) -> list[StoredAnalysis]:
+        return self._staged.list_recent(limit)
+
+    def clear(self) -> None:
+        self._staged.clear()
+
+    def commit(self) -> None:
+        if self._committed:
+            return
+        items = list(reversed(self._staged.list_recent(limit=10_000)))
+        self._delegate.clear()
+        for item in items:
+            self._delegate.save(item)
+        self._committed = True
+
+    def rollback(self) -> None:
+        self._committed = False
+
+
 class DjangoSessionAnalysisStore:
     def __init__(
         self,

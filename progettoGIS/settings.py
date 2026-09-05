@@ -183,7 +183,7 @@ CSRF_COOKIE_SECURE = not DEBUG
 SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS", "0"))
 
 AI_ASSISTANT_ENABLED = os.getenv("AI_ASSISTANT_ENABLED", "true").lower() == "true"
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", os.getenv("AI_LLM_PROVIDER", "openai")).strip().lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").strip()
 LLM_TIMEOUT_SECONDS = os.getenv("LLM_TIMEOUT_SECONDS", "60").strip()
