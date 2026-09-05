@@ -11,19 +11,5 @@ urlpatterns = [
     path('interact', views.interact, name='interact'),
     path('interact/stream', views.interact_stream, name='interact_stream'),
     path('voice/transcribe', views.voice_transcribe, name='voice_transcribe'),
-    path('experiment/log', views.experiment_log, name='experiment_log'),
-    path('experiment/study/session', views.study_session, name='study_session'),
-    path('study-admin/login/', views.study_admin_login, name='study_admin_login'),
-    path('study-admin/logout/', views.study_admin_logout, name='study_admin_logout'),
-    path('study-admin/', views.study_admin, name='study_admin'),
-    path(
-        'study-admin/<str:participant_id>/<str:study_session_id>/download/<str:export_format>/',
-        views.study_admin_download,
-        name='study_admin_download',
-    ),
-    path(
-        'study-admin/<str:participant_id>/<str:study_session_id>/delete/',
-        views.study_admin_delete,
-        name='study_admin_delete',
-    ),
+    path('telemetry/events', views.telemetry_event, name='telemetry_event'),
 ]

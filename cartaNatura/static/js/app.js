@@ -10,10 +10,7 @@ let renameAnalysisHistoryItem;
 let deleteAnalysisHistoryItem;
 let clearAnalysisHistory;
 let compareAnalysisHistory;
-let sendExperimentEvent;
-let startStudySession;
-let clearStudySession;
-let fetchStudyExport;
+let sendTelemetryEvent;
 let transcribeVoiceMessage;
 let sendInteractionMessage;
 let sendInteractionMessageStream;
@@ -33,7 +30,7 @@ let renderAnalysisHistoryList;
 let renderAnalysisComparison;
 let createWorkspaceUi;
 let workspaceUi;
-let experimentLogQueue = Promise.resolve();
+let telemetryQueue = Promise.resolve();
 
 const MediaRecorderApi = window.MediaRecorder || null;
 const ALLOWED_ASSISTANT_UI_ACTIONS = new Set([
@@ -102,10 +99,7 @@ async function loadModules() {
     deleteAnalysisHistoryItem,
     clearAnalysisHistory,
     compareAnalysisHistory,
-    sendExperimentEvent,
-    startStudySession,
-    clearStudySession,
-    fetchStudyExport,
+    sendTelemetryEvent,
     transcribeVoiceMessage,
     sendInteractionMessage,
     sendInteractionMessageStream,
@@ -120,6 +114,7 @@ async function loadModules() {
 }
 
 const state = {
+  interactionId: null,
   analysisId: null,
   analysisCreatedAt: null,
   summary: null,
@@ -150,11 +145,6 @@ const state = {
     pendingDeleteId: null,
     confirmClear: false,
     busy: false,
-  },
-  study: {
-    panel: null,
-    session: null,
-    activeTask: null,
   },
 };
 
@@ -326,9 +316,9 @@ function openPopup(mapController, { source = "ui" } = {}) {
   elements.popup.setAttribute("aria-hidden", "false");
   elements.infoButton?.setAttribute("aria-expanded", "true");
   syncSidePanelLayout(mapController);
-  if (state.analysisId) {
-    recordExperiment({
-      eventType: "report_opened",
+  if (state.analysisId && source !== "assistant") {
+    recordTelemetry({
+      eventType: "report_prepared",
       channel: source === "assistant" ? "web_chat" : "web_map",
       operation: "report_opened",
       interactionMode: source === "assistant" ? "text" : "map",
@@ -379,7 +369,7 @@ function openAssistantPanel(mapController = null) {
 }
 
 function closeAssistantPanel(mapController = null, { force = false } = {}) {
-  if (!force && getActiveStudyCondition() === "conversational") return;
+  if (!force && getRuntimeMode() === "conversational_only") return;
   elements.assistantPanel.classList.remove("is-open");
   elements.assistantPanel.setAttribute("aria-hidden", "true");
   document.body.classList.remove("assistant-panel-open");
@@ -396,13 +386,6 @@ function openHistoryPanel(mapController = null) {
   elements.analysisHistoryPanel.setAttribute("aria-hidden", "false");
   elements.openHistoryButton?.setAttribute("aria-expanded", "true");
   syncSidePanelLayout(mapController);
-  recordExperiment({
-    eventType: "interaction_started",
-    channel: "web_map",
-    operation: "analysis_history_opened",
-    interactionMode: "map",
-    stepCount: 1,
-  });
   loadAnalysisHistory().catch((error) => {
     setHistoryStatus(error.message || "Storico non caricato.", "error");
   });
@@ -505,32 +488,36 @@ function showNotice(message, tone = "info") {
   }, 3400);
 }
 
-function recordExperiment(event) {
-  if (!appConfig?.experimentLogUrl || !sendExperimentEvent) {
+function recordTelemetry(event) {
+  if (!appConfig?.telemetryUrl || !sendTelemetryEvent) {
     return Promise.resolve(null);
   }
+  const eventType = event.eventType;
+  const details = event.data || event.details || {};
+  const payload = {
+    eventType,
+    interactionMode: event.interactionMode === "voice" ? "voice" : "gui",
+    interactionId:
+      event.interactionId ||
+      (["economic_evaluation", "report_prepared", "pdf_generated"].includes(eventType)
+        ? state.interactionId
+        : undefined),
+    operation: event.operation,
+    durationMs: event.durationMs,
+    analysisId: event.analysisId || details.analysisId,
+    errorType: event.errorType || (event.error ? "frontend_error" : undefined),
+    errorMessage: event.errorMessage || event.error,
+    data: details,
+  };
 
-  const payload = { ...event };
-  const activeStudySession = state.study.session || appConfig.study?.currentSession || null;
-  if (activeStudySession?.taskId && !payload.taskId) {
-    payload.taskId = activeStudySession.taskId;
-  }
-  if (activeStudySession?.condition && !payload.condition) {
-    payload.condition = activeStudySession.condition;
-  }
-  if (state.study.activeTask) {
-    payload.taskId = state.study.activeTask.taskId;
-    payload.taskRunId = payload.taskRunId || state.study.activeTask.taskRunId;
-  }
-
-  experimentLogQueue = experimentLogQueue
+  telemetryQueue = telemetryQueue
     .catch(() => null)
-    .then(() => sendExperimentEvent(appConfig.experimentLogUrl, payload))
+    .then(() => sendTelemetryEvent(appConfig.telemetryUrl, payload))
     .catch((error) => {
-      console.debug("Experiment event not recorded", error);
+      console.debug("Telemetry event not recorded", error);
       return null;
     });
-  return experimentLogQueue;
+  return telemetryQueue;
 }
 
 function initializeUiActionLogging() {
@@ -538,12 +525,11 @@ function initializeUiActionLogging() {
     "click",
     (event) => {
       const control = event.target.closest("button, a, input[type='checkbox'], input[type='radio']");
-      if (!control || control.closest("#studyConsole") || control.disabled) {
+      if (!control || control.disabled) {
         return;
       }
       const controlId =
         control.id ||
-        control.dataset.studyAction ||
         control.getAttribute("aria-label") ||
         control.getAttribute("name") ||
         control.tagName.toLowerCase();
@@ -552,13 +538,11 @@ function initializeUiActionLogging() {
         control.textContent?.trim() ||
         control.getAttribute("title") ||
         controlId;
-      recordExperiment({
-        eventType: "ui_action",
-        channel: "web_map",
+      recordTelemetry({
+        eventType: "gui_action",
         operation: String(controlId).slice(0, 80),
-        interactionMode: "map",
-        stepCount: 1,
-        details: {
+        interactionMode: "gui",
+        data: {
           controlId: String(controlId).slice(0, 80),
           controlLabel: String(controlLabel || "").slice(0, 80),
           eventSource: "frontend",
@@ -651,14 +635,6 @@ async function saveHistoryRename(analysisId) {
 
   try {
     await renameAnalysisHistoryItem(appConfig.analysisHistoryUrl, analysisId, cleanLabel);
-    recordExperiment({
-      eventType: "interaction_completed",
-      channel: "web_map",
-      operation: "analysis_history_rename",
-      interactionMode: "map",
-      stepCount: 1,
-      details: { analysisId },
-    });
     showNotice("Analisi rinominata.", "success");
     state.analysisHistory.renamingId = null;
     await loadAnalysisHistory();
@@ -692,14 +668,6 @@ async function confirmDeleteHistoryItem(analysisId) {
     state.analysisHistory.selectedIds.delete(analysisId);
     state.analysisHistory.comparison = null;
     state.analysisHistory.pendingDeleteId = null;
-    recordExperiment({
-      eventType: "interaction_completed",
-      channel: "web_map",
-      operation: "analysis_history_delete",
-      interactionMode: "map",
-      stepCount: 1,
-      details: { analysisId },
-    });
     showNotice("Analisi eliminata.", "success");
     await loadAnalysisHistory();
   } catch (error) {
@@ -734,8 +702,8 @@ async function clearHistory() {
     state.analysisHistory.selectedIds.clear();
     state.analysisHistory.comparison = null;
     state.analysisHistory.confirmClear = false;
-    recordExperiment({
-      eventType: "reset_completed",
+    recordTelemetry({
+      eventType: "gui_action",
       channel: "web_map",
       operation: "analysis_history_clear",
       interactionMode: "map",
@@ -759,29 +727,15 @@ async function compareSelectedHistory() {
   state.analysisHistory.busy = true;
   setHistoryStatus("Confronto in corso...");
   renderHistoryPanel();
-  recordExperiment({
-    eventType: "interaction_started",
-    channel: "web_map",
-    operation: "analysis_history_compare",
-    interactionMode: "map",
-    stepCount: ids.length,
-  });
   try {
     state.analysisHistory.comparison = await compareAnalysisHistory(
       appConfig.analysisHistoryUrl,
       ids
     );
-    recordExperiment({
-      eventType: "interaction_completed",
-      channel: "web_map",
-      operation: "analysis_history_compare",
-      interactionMode: "map",
-      stepCount: ids.length,
-    });
     setHistoryStatus(`Confrontate ${ids.length} analisi`);
     showNotice("Confronto completato.", "success");
   } catch (error) {
-    recordExperiment({
+    recordTelemetry({
       eventType: "error",
       channel: "web_map",
       operation: "analysis_history_compare",
@@ -796,467 +750,74 @@ async function compareSelectedHistory() {
   }
 }
 
-function isStudyConsoleEnabled() {
-  return Boolean(appConfig?.study?.enabled && appConfig.study.sessionUrl);
+function getRuntimeMode() {
+  return appConfig?.runtimeMode || "full";
 }
 
-function getStudySession() {
-  return state.study.session || appConfig.study?.currentSession || null;
-}
+function applyRuntimeModePolicy() {
+  const guiOnly = getRuntimeMode() === "gui_only";
+  const conversationalOnly = getRuntimeMode() === "conversational_only";
 
-function setStudySession(session) {
-  state.study.session = session || null;
-  state.study.activeTask = session?.activeTask || null;
-  if (appConfig.study) {
-    appConfig.study.currentSession = session || null;
-  }
-  renderStudyStatus();
-}
-
-function getActiveStudyCondition() {
-  return state.study.activeTask ? getStudySession()?.condition || null : null;
-}
-
-function updateStudyConditionIndicator() {
-  const toggle = state.study.panel?.querySelector(".study-console-toggle");
-  if (!toggle) {
-    return;
-  }
-  const condition = getActiveStudyCondition();
-  const label = toggle.querySelector(".study-console-toggle-label");
-  const badge = toggle.querySelector(".study-console-toggle-badge");
-  if (label) {
-    label.textContent = "Studio";
-  }
-  if (badge) {
-    badge.textContent = condition ? condition.toUpperCase() : "";
-    badge.hidden = !condition;
-  }
-  toggle.title = condition
-    ? `Controllo sperimentale · ${condition}`
-    : "Apri controllo sperimentale";
-}
-
-function applyConditionPolicy() {
-  const condition = getActiveStudyCondition();
-  const webgisActive = condition === "webgis";
-  const conversationalActive = condition === "conversational";
-
-  elements.openAssistantButton.disabled = webgisActive || !assistantConfig.enabled;
-  elements.assistantInput.disabled = webgisActive || state.assistantBusy;
-  elements.assistantSendButton.disabled = webgisActive || state.assistantBusy;
+  elements.openAssistantButton.disabled = guiOnly || !assistantConfig.enabled;
+  elements.assistantInput.disabled = guiOnly || state.assistantBusy;
+  elements.assistantSendButton.disabled = guiOnly || state.assistantBusy;
   if (elements.assistantVoiceButton) {
-    elements.assistantVoiceButton.disabled =
-      webgisActive || (state.assistantBusy && !state.voiceListening);
+    elements.assistantVoiceButton.disabled = guiOnly || (state.assistantBusy && !state.voiceListening);
   }
-  elements.assistantPanel
-    ?.querySelectorAll("[data-prompt]")
-    .forEach((control) => {
-      control.disabled = webgisActive;
-    });
-  if (webgisActive) {
-    closeAssistantPanel(state.mapController, { force: true });
-  }
+  if (guiOnly) closeAssistantPanel(state.mapController, { force: true });
 
-  elements.selectMunicipalityButton.disabled = conversationalActive;
-  elements.openHistoryButton.disabled = conversationalActive;
-  if (conversationalActive) {
+  elements.selectMunicipalityButton.disabled = conversationalOnly;
+  elements.openHistoryButton.disabled = conversationalOnly;
+  if (conversationalOnly) {
     closeMunicipalityPanel(state.mapController);
     closeHistoryPanel(state.mapController);
     openAssistantPanel(state.mapController);
   }
-
-  const hasInputs =
-    state.mapController?.hasSelectedMunicipalities() || state.mapController?.hasDrawnAreas();
-  elements.runAnalysisButton.disabled = conversationalActive || !hasInputs;
-
-  const economicControls = elements.infoContainer?.querySelectorAll(
-    "#testoValore, #butcalcolavalore, .analysis-filter-control"
-  );
-  economicControls?.forEach((control) => {
-    control.disabled = conversationalActive;
-    control.title = conversationalActive
-      ? "Controllo disponibile tramite assistente nella condizione conversazionale."
-      : "";
-  });
-
-  document.body.classList.toggle("study-condition-webgis", webgisActive);
-  document.body.classList.toggle("study-condition-conversational", conversationalActive);
-  updateStudyConditionIndicator();
+  const hasInputs = state.mapController?.hasSelectedMunicipalities() || state.mapController?.hasDrawnAreas();
+  elements.runAnalysisButton.disabled = conversationalOnly || !hasInputs;
+  elements.infoContainer?.querySelectorAll("#testoValore, #butcalcolavalore, .analysis-filter-control")
+    .forEach((control) => {
+      control.disabled = conversationalOnly;
+      control.title = conversationalOnly ? "Controllo disponibile tramite assistente." : "";
+    });
+  document.body.classList.toggle("runtime-mode-gui-only", guiOnly);
+  document.body.classList.toggle("runtime-mode-conversational-only", conversationalOnly);
 }
 
-function blockedProtocolAction(control) {
-  const condition = getActiveStudyCondition();
-  if (!condition || !control) {
-    return null;
-  }
-  if (
-    condition === "webgis" &&
-    (control.closest("#openAssistantPanel") || control.closest("#assistantPanel"))
-  ) {
+function blockedRuntimeModeAction(control) {
+  if (!control) return null;
+  if (getRuntimeMode() === "gui_only" &&
+      (control.closest("#openAssistantPanel") || control.closest("#assistantPanel"))) {
     return "conversational_control";
   }
-  if (
-    condition === "conversational" &&
-    (control.closest("#butSelezionaComune") ||
-      control.closest("#eseguiClipBut") ||
-      control.closest("#navListaComuni") ||
-      control.closest(".leaflet-draw-toolbar") ||
-      control.closest("#openHistoryPanel") ||
-      control.closest("#analysisHistoryPanel") ||
-      control.closest("#testoValore") ||
-      control.closest("#butcalcolavalore") ||
-      control.closest(".analysis-filter-control"))
-  ) {
+  if (getRuntimeMode() === "conversational_only" &&
+      (control.closest("#butSelezionaComune") || control.closest("#eseguiClipBut") ||
+       control.closest("#navListaComuni") || control.closest(".leaflet-draw-toolbar") ||
+       control.closest("#openHistoryPanel") || control.closest("#analysisHistoryPanel") ||
+       control.closest("#testoValore") || control.closest("#butcalcolavalore") ||
+       control.closest(".analysis-filter-control"))) {
     return "graphical_completion_control";
   }
   return null;
 }
 
-function initializeConditionControl() {
-  document.addEventListener(
-    "click",
-    (event) => {
-      const control = event.target.closest("button, a, input, select");
-      const blockedAction = blockedProtocolAction(control);
-      if (!blockedAction) {
-        return;
-      }
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      recordExperiment({
-        eventType: "protocol_violation",
-        channel: "system",
-        operation: blockedAction,
-        interactionMode: "system",
-        status: "blocked",
-        details: {
-          attemptedAction: control.id || control.getAttribute("aria-label") || control.tagName,
-          blockedByCondition: getActiveStudyCondition(),
-          eventSource: "frontend",
-        },
-      });
-      showNotice("Azione non consentita nella condizione sperimentale attiva.", "warning");
-    },
-    { capture: true }
-  );
-}
-
-function buildStudyTaskOptions() {
-  return (appConfig.study?.tasks || [])
-    .map((task) => `<option value="${escapeHtml(task.id)}">${escapeHtml(task.label)}</option>`)
-    .join("");
-}
-
-function buildStudyConsole() {
-  if (!isStudyConsoleEnabled()) {
-    return;
-  }
-
-  const panel = document.createElement("section");
-  panel.id = "studyConsole";
-  panel.className = "study-console is-collapsed";
-  panel.innerHTML = `
-    <button type="button" class="utility-action study-console-toggle" aria-expanded="false" aria-haspopup="dialog" aria-controls="studyConsoleBody" title="Apri controllo sperimentale">
-      <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 5h6M9 3h6a1 1 0 0 1 1 1v2H8V4a1 1 0 0 1 1-1Z"/><path d="M7 5H5.75A1.75 1.75 0 0 0 4 6.75v12.5C4 20.22 4.78 21 5.75 21h12.5c.97 0 1.75-.78 1.75-1.75V6.75C20 5.78 19.22 5 18.25 5H17"/><path d="M8 11h8M8 15h5"/></svg>
-      <span class="study-console-toggle-label">Studio</span>
-      <span class="study-console-toggle-badge" hidden></span>
-    </button>
-    <div id="studyConsoleBody" class="study-console-body" role="dialog" aria-label="Console operatore" aria-hidden="true">
-      <div class="study-console-header">
-        <div>
-          <div class="study-console-kicker">Riservato</div>
-          <div class="study-console-title">Console operatore</div>
-        </div>
-        <div id="studyConsoleStatus" class="study-console-status">Non avviata</div>
-      </div>
-      <div class="study-console-grid">
-        <label>
-          <span>Codice</span>
-          <input id="studyParticipantId" type="text" value="participant_001" autocomplete="off" spellcheck="false">
-        </label>
-        <label>
-          <span>Percorso</span>
-          <select id="studyCondition">
-            <option value="webgis">webgis</option>
-            <option value="conversational">conversational</option>
-          </select>
-        </label>
-        <label class="study-console-wide">
-          <span>Attività</span>
-          <select id="studyTaskId">${buildStudyTaskOptions()}</select>
-        </label>
-      </div>
-      <div class="study-console-actions">
-        <button type="button" class="study-action is-primary" data-study-action="start-session">Avvia sessione</button>
-        <button type="button" class="study-action" data-study-action="start-task">Inizia attività</button>
-        <button type="button" class="study-action" data-study-action="complete-task">Completa</button>
-        <button type="button" class="study-action" data-study-action="mark-error">Errore</button>
-        <button type="button" class="study-action" data-study-action="mark-unknown">Non compresa</button>
-        <button type="button" class="study-action" data-study-action="export-json">Esporta JSON</button>
-        <button type="button" class="study-action" data-study-action="export-jsonl">Esporta JSONL</button>
-        <a class="study-action study-admin-link" href="${escapeHtml(appConfig.study.adminUrl)}">Archivio sessioni</a>
-        <button type="button" class="study-action is-danger" data-study-action="reset-session">Chiudi sessione</button>
-      </div>
-    </div>
-  `;
-  const headerTarget = elements.navbar?.querySelector(".utility-nav") || elements.navbar;
-  (headerTarget || document.body).appendChild(panel);
-  state.study.panel = panel;
-
-  panel.querySelector(".study-console-toggle").addEventListener("click", () => {
-    const collapsed = !panel.classList.contains("is-collapsed");
-    panel.classList.toggle("is-collapsed", collapsed);
-    panel.querySelector(".study-console-toggle").setAttribute("aria-expanded", String(!collapsed));
-    panel.querySelector(".study-console-body").setAttribute("aria-hidden", String(collapsed));
-  });
-
-  panel.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const action = event.target.closest("[data-study-action]")?.dataset.studyAction;
-    if (!action) {
-      return;
-    }
-    handleStudyAction(action);
-  });
-
+function initializeRuntimeModeControl() {
   document.addEventListener("click", (event) => {
-    if (!panel.classList.contains("is-collapsed") && !panel.contains(event.target)) {
-      panel.classList.add("is-collapsed");
-      panel.querySelector(".study-console-toggle").setAttribute("aria-expanded", "false");
-      panel.querySelector(".study-console-body").setAttribute("aria-hidden", "true");
-    }
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !panel.classList.contains("is-collapsed")) {
-      panel.classList.add("is-collapsed");
-      panel.querySelector(".study-console-toggle").setAttribute("aria-expanded", "false");
-      panel.querySelector(".study-console-body").setAttribute("aria-hidden", "true");
-      panel.querySelector(".study-console-toggle").focus();
-    }
-  });
-
-  const currentSession = getStudySession();
-  if (currentSession) {
-    panel.querySelector("#studyParticipantId").value = currentSession.participantId || "";
-    panel.querySelector("#studyCondition").value = currentSession.condition || "webgis";
-    panel.querySelector("#studyTaskId").value = currentSession.taskId || "";
-  }
-  renderStudyStatus();
-}
-
-function renderStudyStatus(message = null) {
-  const status = state.study.panel?.querySelector("#studyConsoleStatus");
-  if (!status) {
-    return;
-  }
-  const session = getStudySession();
-  if (!session) {
-    status.textContent = message || "Non avviata";
-    status.classList.remove("is-active");
-    syncStudyControls();
-    updateStudyConditionIndicator();
-    return;
-  }
-  status.textContent = message || (state.study.activeTask
-    ? `${state.study.activeTask.taskId} · ${session.condition}`
-    : `${session.participantId} · pronta`);
-  status.classList.add("is-active");
-  syncStudyControls();
-  updateStudyConditionIndicator();
-}
-
-function syncStudyControls() {
-  const panel = state.study.panel;
-  if (!panel) {
-    return;
-  }
-  const hasSession = Boolean(getStudySession());
-  const hasActiveTask = Boolean(state.study.activeTask);
-  panel.querySelector('[data-study-action="start-session"]').disabled = hasSession;
-  panel.querySelector('[data-study-action="start-task"]').disabled = !hasSession || hasActiveTask;
-  panel.querySelector('[data-study-action="complete-task"]').disabled = !hasActiveTask;
-  panel.querySelector('[data-study-action="mark-error"]').disabled = !hasActiveTask;
-  panel.querySelector('[data-study-action="mark-unknown"]').disabled = !hasActiveTask;
-  panel.querySelector('[data-study-action="export-json"]').disabled = !hasSession;
-  panel.querySelector('[data-study-action="export-jsonl"]').disabled = !hasSession;
-  panel.querySelector('[data-study-action="reset-session"]').disabled = !hasSession;
-  panel.querySelector("#studyParticipantId").disabled = hasSession;
-  panel.querySelector("#studyCondition").disabled = hasSession;
-  panel.querySelector("#studyTaskId").disabled = hasActiveTask;
-}
-
-async function handleStudyAction(action) {
-  try {
-    if (action === "start-session") {
-      await startCurrentStudySession();
-    } else if (action === "start-task") {
-      await startStudyTask();
-    } else if (action === "complete-task") {
-      await finishStudyTask("task_completed", "completed");
-    } else if (action === "mark-error") {
-      await finishStudyTask("task_failed", "failed", { error: "manual_task_failure" });
-    } else if (action === "mark-unknown") {
-      await markUnknownStudyTask();
-    } else if (action === "export-json") {
-      await downloadStudyExport("json");
-    } else if (action === "export-jsonl") {
-      await downloadStudyExport("jsonl");
-    } else if (action === "reset-session") {
-      await resetCurrentStudySession();
-    }
-  } catch (error) {
-    renderStudyStatus(error.message || "Errore");
-    showNotice(error.message || "Operazione non completata.", "error");
-  }
-}
-
-async function startCurrentStudySession() {
-  const participantId = state.study.panel.querySelector("#studyParticipantId").value.trim();
-  const condition = state.study.panel.querySelector("#studyCondition").value;
-  const taskId = state.study.panel.querySelector("#studyTaskId").value;
-  const result = await startStudySession(appConfig.study.sessionUrl, {
-    participantId,
-    condition,
-    taskId,
-  });
-  setStudySession(result.session);
-  if (state.mapController) {
-    resetAnalysis(state.mapController, { operation: "condition_transition_reset" });
-  }
-  state.assistantMessages = [{ role: "assistant", text: "Assistente pronto." }];
-  renderAssistantMessages();
-  applyConditionPolicy();
-  showNotice("Sessione riservata avviata.", "success");
-}
-
-async function startStudyTask() {
-  const session = getStudySession();
-  if (!session) {
-    throw new Error("Avvia prima la sessione riservata.");
-  }
-  const taskId = state.study.panel.querySelector("#studyTaskId").value;
-  const result = await recordExperiment({
-    eventType: "task_started",
-    channel: "system",
-    operation: "study_task",
-    interactionMode: "system",
-    taskId,
-    condition: session.condition,
-    status: "started",
-  });
-  const event = result?.event;
-  if (!event?.taskRunId) {
-    throw new Error("Avvio attività non registrato.");
-  }
-  state.study.activeTask = {
-    taskId: event.taskId || taskId,
-    taskRunId: event.taskRunId,
-  };
-  applyConditionPolicy();
-  renderStudyStatus(
-    `In corso: ${state.study.activeTask.taskId} / ${session.condition}`
-  );
-}
-
-async function finishStudyTask(eventType, status, extra = {}) {
-  if (!state.study.activeTask) {
-    throw new Error("Nessuna attività in corso.");
-  }
-  const result = await recordExperiment({
-    eventType,
-    channel: "system",
-    operation: "study_task",
-    interactionMode: "system",
-    taskId: state.study.activeTask.taskId,
-    taskRunId: state.study.activeTask.taskRunId,
-    status,
-    ...extra,
-  });
-  if (!result?.event) {
-    throw new Error("Chiusura attività non registrata.");
-  }
-  state.study.activeTask = null;
-  applyConditionPolicy();
-  renderStudyStatus(
-    status === "completed"
-      ? "Attività completata"
-      : extra.error === "manual_unknown_request"
-        ? "Attività non compresa"
-        : "Attività terminata con errore"
-  );
-}
-
-async function markUnknownStudyTask() {
-  if (!state.study.activeTask) {
-    throw new Error("Nessuna attività in corso.");
-  }
-  await recordExperiment({
-    eventType: "unknown_request",
-    channel: "system",
-    operation: "manual_mark",
-    interactionMode: "system",
-    taskId: state.study.activeTask.taskId,
-    taskRunId: state.study.activeTask.taskRunId,
-    status: "marked",
-    error: "manual_unknown_request",
-    stepCount: 1,
-  });
-  await finishStudyTask("task_failed", "failed", { error: "manual_unknown_request" });
-}
-
-async function markStudyEvent(eventType, operation, status, extra = {}) {
-  if (!getStudySession()) {
-    throw new Error("Avvia prima la sessione riservata.");
-  }
-  await recordExperiment({
-    eventType,
-    channel: "system",
-    operation,
-    interactionMode: "system",
-    status,
-    stepCount: 1,
-    ...extra,
-  });
-  renderStudyStatus(status === "completed" ? "Completata" : "Evento registrato");
-}
-
-async function downloadStudyExport(format) {
-  if (!getStudySession()) {
-    throw new Error("Nessuna sessione attiva da esportare.");
-  }
-  const session = getStudySession();
-  const payload = await fetchStudyExport(appConfig.study.sessionUrl, format);
-  const text =
-    format === "jsonl" ? payload : JSON.stringify(payload.export || payload, null, 2);
-  const blob = new Blob([text], {
-    type: format === "jsonl" ? "application/jsonl" : "application/json",
-  });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = `${session.participantId}_${session.studySessionId}.${format}`;
-  link.addEventListener("click", (event) => event.stopPropagation());
-  document.body.appendChild(link);
-  link.click();
-  URL.revokeObjectURL(link.href);
-  link.remove();
-  renderStudyStatus("Esportata");
-}
-
-async function resetCurrentStudySession() {
-  if (state.study.activeTask) {
-    await finishStudyTask("task_interrupted", "interrupted", {
-      error: "study_session_reset",
+    const control = event.target.closest("button, a, input, select");
+    const blockedAction = blockedRuntimeModeAction(control);
+    if (!blockedAction) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    recordTelemetry({
+      eventType: "error",
+      operation: blockedAction,
+      interactionMode: "gui",
+      errorType: "runtime_mode_blocked",
+      errorMessage: `Action blocked by ${getRuntimeMode()}`,
+      data: { action: control.id || control.getAttribute("aria-label") || control.tagName },
     });
-  }
-  await clearStudySession(appConfig.study.sessionUrl);
-  setStudySession(null);
-  if (state.mapController) {
-    resetAnalysis(state.mapController, { operation: "condition_transition_reset" });
-  }
-  applyConditionPolicy();
-  renderStudyStatus("Reset completato");
-  showNotice("Sessione riservata azzerata.", "success");
+    showNotice("Azione non disponibile nella modalità operativa attiva.", "warning");
+  }, { capture: true });
 }
 
 function elapsedSince(startedAt) {
@@ -1302,7 +863,7 @@ function setAssistantBusy(busy) {
     elements.assistantVoiceButton.classList.toggle("is-unavailable", !isVoiceRecordingSupported());
   }
   elements.assistantSendButton.setAttribute("aria-busy", String(busy));
-  applyConditionPolicy();
+  applyRuntimeModePolicy();
 }
 
 function setVoiceButtonState({ listening = state.voiceListening, unavailable = false } = {}) {
@@ -1471,7 +1032,7 @@ function initializeVoiceInput(mapController) {
     setVoiceButtonState({ unavailable: true });
     elements.assistantVoiceButton.addEventListener("click", () => {
       setVoiceStatus("Registrazione vocale non supportata da questo browser.", "warning");
-      recordExperiment({
+      recordTelemetry({
         eventType: "error",
         channel: "voice",
         operation: "voice_input",
@@ -1537,7 +1098,7 @@ function initializeVoiceInput(mapController) {
       setVoiceListening(false);
       stopVoiceTimer();
       setVoiceStatus(voiceRecordingErrorMessage(error), "warning");
-      recordExperiment({
+      recordTelemetry({
         eventType: "error",
         channel: "voice",
         operation: "voice_input",
@@ -1593,13 +1154,6 @@ function initializeVoiceInput(mapController) {
     stopVoiceTimer();
     renderRecordingStatus();
     state.voiceTimer = window.setInterval(renderRecordingStatus, 1000);
-    recordExperiment({
-      eventType: "voice_started",
-      channel: "voice",
-      operation: "voice_input",
-      interactionMode: "voice",
-      stepCount: 1,
-    });
     recorder.start();
   }
 
@@ -1610,6 +1164,7 @@ function initializeVoiceInput(mapController) {
     mimeType,
     { sendAfterTranscription = false } = {}
   ) {
+    const interactionId = crypto.randomUUID();
     setAssistantBusy(true);
     try {
       setVoiceStatus(
@@ -1622,6 +1177,7 @@ function initializeVoiceInput(mapController) {
         {
           durationMs,
           filename: audioFilenameForMimeType(mimeType),
+          interactionId,
         }
       );
       const transcript = String(result.transcript || "").trim();
@@ -1633,13 +1189,17 @@ function initializeVoiceInput(mapController) {
       if (sendAfterTranscription) {
         setVoiceStatus("Trascrizione completata. Invio...", "success");
         setAssistantBusy(false);
-        await runAssistantInteraction(mapControllerRef, transcript, { interactionMode: "voice" });
+        await runAssistantInteraction(mapControllerRef, transcript, {
+          interactionMode: "voice",
+          interactionId,
+          transcriptLogged: true,
+        });
         setVoiceStatus("");
       } else {
         setVoiceStatus("Trascrizione pronta. Modifica o invia.", "success");
       }
     } catch (error) {
-      recordExperiment({
+      recordTelemetry({
         eventType: "error",
         channel: "voice",
         operation: "voice_transcription",
@@ -1884,6 +1444,7 @@ function buildInteractionContext(mapController) {
 }
 
 function applyAnalysisResult(mapController, analysisResult, analysisContext = null) {
+  state.interactionId = analysisResult.interactionId || null;
   state.analysisId = analysisResult.analysisId || null;
   state.analysisCreatedAt = analysisResult.createdAt || new Date().toISOString();
   state.clipped = analysisResult.clipped;
@@ -1964,8 +1525,8 @@ function applyEconomicResult(
   state.economicValueCalculated = true;
   renderInfoSummary();
   if (recordEvent) {
-    recordExperiment({
-      eventType: "valuation_completed",
+    recordTelemetry({
+      eventType: "economic_evaluation",
       channel: interactionMode === "voice" ? "voice" : "web_chat",
       operation: "economic_valuation",
       interactionMode,
@@ -1985,9 +1546,9 @@ function updateActionStates(mapController) {
   const hasInputs = mapController.hasSelectedMunicipalities() || mapController.hasDrawnAreas();
   const hasSummary = Boolean(state.summary);
   elements.runAnalysisButton.disabled =
-    getActiveStudyCondition() === "conversational" || !hasInputs;
+    getRuntimeMode() === "conversational_only" || !hasInputs;
   elements.infoButton.disabled = !hasSummary;
-  applyConditionPolicy();
+  applyRuntimeModePolicy();
 }
 
 function renderLegend() {
@@ -2180,7 +1741,7 @@ function renderAnalysisScopeState() {
   }
   const filterLabels = (state.mapFilter.categories || []).map((item) => item.label).filter(Boolean);
   const filterText = filterLabels.length ? filterLabels.join(", ") : "Categorie selezionate";
-  const disabled = getActiveStudyCondition() === "conversational" ? "disabled" : "";
+  const disabled = getRuntimeMode() === "conversational_only" ? "disabled" : "";
   return `
     <div class="analysis-scope-strip is-filtered">
       <span><small>Dati del report</small><strong>Analisi completa</strong></span>
@@ -2338,7 +1899,7 @@ function renderInfoSummary() {
     state.mapController?.syncLayout();
   });
   restoreMapButton?.addEventListener("click", () => {
-    if (getActiveStudyCondition() === "conversational" || !state.clipped) {
+    if (getRuntimeMode() === "conversational_only" || !state.clipped) {
       return;
     }
     state.mapController.renderNature(state.clipped);
@@ -2348,21 +1909,20 @@ function renderInfoSummary() {
     showNotice("Mappa ripristinata con tutte le categorie.", "success");
   });
   priceSelect.addEventListener("change", () => {
-    if (getActiveStudyCondition() === "conversational") {
-      applyConditionPolicy();
+    if (getRuntimeMode() === "conversational_only") {
+      applyRuntimeModePolicy();
       return;
     }
     const selectedValue = Number(priceSelect.value || 0);
     state.selectedEconomicPrice = selectedValue;
     updateScenarioComparison(selectedValue);
     updateEconomicOverview(selectedValue);
-    recordExperiment({
-      eventType: "interaction_completed",
-      channel: "web_map",
-      operation: "scenario_comparison_viewed",
-      interactionMode: "map",
-      stepCount: 1,
-      details: {
+    recordTelemetry({
+      eventType: "gui_action",
+      operation: "economic_scenario_selected",
+      interactionMode: "gui",
+      interactionId: state.interactionId,
+      data: {
         analysisId: state.analysisId,
         scenarioKey: priceOptions.find((option) => Number(option.value) === selectedValue)?.key,
         priceEurPerTon: selectedValue,
@@ -2435,8 +1995,8 @@ function renderInfoSummary() {
           );
           printButton.closest(".analysis-value-actions")?.setAttribute("hidden", "");
         }
-        recordExperiment({
-          eventType: "report_generated",
+        recordTelemetry({
+          eventType: "pdf_generated",
           channel: "web_map",
           operation: "report_generation",
           interactionMode: "map",
@@ -2457,7 +2017,7 @@ function renderInfoSummary() {
           error?.name === "AbortError" || /timeout/i.test(error?.message || "")
             ? "timeout"
             : "failed";
-        recordExperiment({
+        recordTelemetry({
           eventType: "error",
           channel: "web_map",
           operation: "report_generation",
@@ -2492,7 +2052,7 @@ function renderInfoSummary() {
   }
 
   calculateButton.addEventListener("click", () => {
-    if (getActiveStudyCondition() === "conversational") {
+    if (getRuntimeMode() === "conversational_only") {
       return;
     }
     const valuationStartedAt = performance.now();
@@ -2501,8 +2061,8 @@ function renderInfoSummary() {
     state.calculatedValue = selectedValue * state.summary.totalCo2;
     state.economicValueCalculated = true;
     updateScenarioComparison(selectedValue);
-    recordExperiment({
-      eventType: "valuation_completed",
+    recordTelemetry({
+      eventType: "economic_evaluation",
       channel: "web_map",
       operation: "economic_valuation",
       interactionMode: "map",
@@ -2522,7 +2082,7 @@ function renderInfoSummary() {
   if (state.economicValueCalculated) {
     renderSelectedScenarioValue(state.selectedEconomicPrice, calculateButton);
   }
-  applyConditionPolicy();
+  applyRuntimeModePolicy();
 }
 
 function buildAnalysisPayload(mapController) {
@@ -2546,6 +2106,7 @@ function buildAnalysisPayload(mapController) {
 }
 
 function resetAnalysis(mapController, { operation = "reset_analysis_workspace" } = {}) {
+  state.interactionId = null;
   state.analysisId = null;
   state.analysisCreatedAt = null;
   state.summary = null;
@@ -2570,8 +2131,8 @@ function resetAnalysis(mapController, { operation = "reset_analysis_workspace" }
   closeAppInfo(mapController);
   closeHistoryPanel(mapController);
   updateActionStates(mapController);
-  recordExperiment({
-    eventType: "reset_completed",
+  recordTelemetry({
+    eventType: "gui_action",
     channel: "web_map",
     operation,
     interactionMode: "map",
@@ -2581,20 +2142,20 @@ function resetAnalysis(mapController, { operation = "reset_analysis_workspace" }
 
 async function runAnalysis(mapController) {
   const analysisStartedAt = performance.now();
-  if (getActiveStudyCondition() === "conversational") {
-    recordExperiment({
-      eventType: "protocol_violation",
+  if (getRuntimeMode() === "conversational_only") {
+    recordTelemetry({
+      eventType: "error",
       channel: "web_map",
       operation: "spatial_analysis_ui",
       interactionMode: "map",
       status: "blocked",
       details: {
         attemptedAction: "spatial_analysis_ui",
-        blockedByCondition: "conversational",
+        action: "spatial_analysis_ui",
         eventSource: "frontend",
       },
     });
-    showNotice("Analisi disponibile tramite assistente in questa condizione.", "warning");
+    showNotice("Analisi disponibile tramite assistente in modalità conversational-only.", "warning");
     return;
   }
   closePopup(mapController);
@@ -2608,7 +2169,7 @@ async function runAnalysis(mapController) {
   };
   if (!payload.areas.length) {
     showNotice("Seleziona almeno un comune o disegna un'area prima di avviare l'analisi.", "warning");
-    recordExperiment({
+    recordTelemetry({
       eventType: "error",
       channel: "web_map",
       operation: "spatial_analysis",
@@ -2631,6 +2192,7 @@ async function runAnalysis(mapController) {
       mapController,
       {
         analysisId: response.analysisId,
+        interactionId: response.interactionId,
         clipped: response.clipped,
         intersectedMunicipalities: response.intersectedMunicipalities,
         summary: response.summary,
@@ -2647,7 +2209,7 @@ async function runAnalysis(mapController) {
   } catch (error) {
     const failureStatus =
       error?.name === "AbortError" || /timeout/i.test(error?.message || "") ? "timeout" : "failed";
-    recordExperiment({
+    recordTelemetry({
       eventType: "error",
       channel: "web_map",
       operation: "spatial_analysis",
@@ -2667,22 +2229,27 @@ async function runAnalysis(mapController) {
   }
 }
 
-async function runAssistantInteraction(mapController, message, { interactionMode = "text" } = {}) {
+async function runAssistantInteraction(
+  mapController,
+  message,
+  { interactionMode = "text", interactionId = crypto.randomUUID(), transcriptLogged = false } = {}
+) {
   const interactionStartedAt = performance.now();
-  if (getActiveStudyCondition() === "webgis") {
-    recordExperiment({
-      eventType: "protocol_violation",
+  if (getRuntimeMode() === "gui_only") {
+    recordTelemetry({
+      eventType: "error",
+      interactionId,
       channel: interactionMode === "voice" ? "voice" : "web_chat",
       operation: "conversational_request",
       interactionMode,
       status: "blocked",
       details: {
         attemptedAction: "conversational_request",
-        blockedByCondition: "webgis",
+        action: "conversational_request",
         eventSource: "frontend",
       },
     });
-    showNotice("Assistente non consentito nella condizione WebGIS.", "warning");
+    showNotice("Assistente non disponibile in modalità GUI-only.", "warning");
     return;
   }
   if (!assistantConfig.enabled) {
@@ -2706,7 +2273,6 @@ async function runAssistantInteraction(mapController, message, { interactionMode
   setAssistantBusy(true);
   let response;
   let analysisApplied = false;
-  const activeToolCalls = new Map();
   const completedTools = new Set();
 
   try {
@@ -2715,23 +2281,10 @@ async function runAssistantInteraction(mapController, message, { interactionMode
       context: buildInteractionContext(mapController),
       metadata: {
         interactionMode,
-        studySessionId: getStudySession()?.studySessionId || null,
+        interactionId,
+        transcriptLogged,
       },
     };
-    recordExperiment({
-      eventType: "chat_message",
-      channel: interactionMode === "voice" ? "voice" : "web_chat",
-      operation: "conversational_request",
-      interactionMode,
-      stepCount: 1,
-      details: {
-        messageLength: trimmedMessage.length,
-        eventSource: "frontend",
-      },
-      userText: trimmedMessage,
-      userTranscript: interactionMode === "voice" ? trimmedMessage : "",
-    });
-
     if (appConfig.interactionStreamUrl) {
       const streamingMessageIndex = startAssistantStreamingMessage();
 
@@ -2766,46 +2319,23 @@ async function runAssistantInteraction(mapController, message, { interactionMode
               streamingMessageIndex,
               describeAssistantToolProgress(event.toolName, "running")
             );
-            activeToolCalls.set(event.toolCallId || event.toolName, event.toolName);
-            recordExperiment({
-              eventType: "tool_started",
-              channel: interactionMode === "voice" ? "voice" : "web_chat",
-              operation: event.toolName || "assistant_tool",
-              interactionMode,
-              status: "started",
-              details: {
-                toolName: event.toolName || "",
-                toolCallId: event.toolCallId || "",
-                eventSource: "assistant_runtime",
-              },
-            });
           },
           onToolResult: (event) => {
-            activeToolCalls.delete(event.toolCallId || event.toolName);
             completedTools.add(event.toolName);
             setAssistantStreamingProgress(
               streamingMessageIndex,
               describeAssistantToolProgress(event.toolName, "completed")
             );
-            recordExperiment({
-              eventType: "tool_completed",
-              channel: interactionMode === "voice" ? "voice" : "web_chat",
-              operation: event.toolName || "assistant_tool",
-              interactionMode,
-              status: "completed",
-              details: {
-                toolName: event.toolName || "",
-                toolCallId: event.toolCallId || "",
-                eventSource: "assistant_runtime",
-              },
-            });
           },
           onMessageDelta: (event) => {
             appendAssistantStreamingDelta(streamingMessageIndex, event.delta || "");
           },
           onAnalysisResult: (event) => {
             if (event.analysisResult?.clipped) {
-              applyAnalysisResult(mapController, event.analysisResult);
+              applyAnalysisResult(mapController, {
+                ...event.analysisResult,
+                interactionId,
+              });
               analysisApplied = true;
               renderInfoSummary();
               openPopup(mapController, { source: "assistant" });
@@ -2848,12 +2378,15 @@ async function runAssistantInteraction(mapController, message, { interactionMode
     // Apply the area before its valuation or filter, including non-streamed
     // compound requests. Reapplying it afterwards would erase those results.
     if (!analysisApplied && response.analysisResult?.clipped) {
-      applyAnalysisResult(mapController, response.analysisResult);
+      applyAnalysisResult(mapController, {
+        ...response.analysisResult,
+        interactionId: response.interactionId || interactionId,
+      });
       analysisApplied = true;
     }
     setAssistantStatus(response.uiHints?.providerMode || null, assistantConfig.providerConfigured);
     if (response.economicResult) {
-      applyEconomicResult(response.economicResult, { interactionMode });
+      applyEconomicResult(response.economicResult, { interactionMode, recordEvent: false });
     } else if (response.reportContext?.economicResult) {
       applyEconomicResult(response.reportContext.economicResult, {
         interactionMode,
@@ -2868,72 +2401,17 @@ async function runAssistantInteraction(mapController, message, { interactionMode
     } else if (response.uiHints?.needsClarification) {
       showNotice("Serve un chiarimento per continuare.", "warning");
     }
-    const responseAnalysisId =
-      response.analysisResult?.analysisId ||
-      response.economicResult?.analysisId ||
-      response.reportContext?.analysisId ||
-      state.analysisId;
-    recordExperiment({
-      eventType: "chat_response",
-      channel: interactionMode === "voice" ? "voice" : "web_chat",
-      operation: response.uiHints?.mode || "conversational_request",
-      interactionMode,
-      durationMs: elapsedSince(interactionStartedAt),
-      stepCount: response.analysisResult?.clipped ? 3 : 2,
-      intent: response.uiHints?.mode || "",
-      userText: trimmedMessage,
-      userTranscript: interactionMode === "voice" ? trimmedMessage : "",
-      assistantResponse: extractAssistantResponseText(response),
-      details: {
-        analysisId: responseAnalysisId,
-        scenarioKey: response.economicResult?.scenarioKey,
-        priceEurPerTon: response.economicResult?.priceEurPerTon,
-        totalValueEur: response.economicResult?.totalValueEur,
-        messageLength: trimmedMessage.length,
-        providerMode: response.uiHints?.providerMode,
-        needsClarification: Boolean(response.uiHints?.needsClarification),
-        eventSource: "frontend",
-      },
-    });
-    if (response.uiHints?.needsClarification || response.uiHints?.mode === "unknown") {
-      recordExperiment({
-        eventType: "unknown_request",
-        channel: interactionMode === "voice" ? "voice" : "web_chat",
-        operation: "conversational_request",
-        interactionMode,
-        status: "needs_clarification",
-        intent: response.uiHints?.mode || "unknown",
-        userText: trimmedMessage,
-        userTranscript: interactionMode === "voice" ? trimmedMessage : "",
-        assistantResponse: extractAssistantResponseText(response),
-      });
-    }
   } catch (error) {
     const failureStatus =
       error?.name === "AbortError" || /timeout/i.test(error?.message || "") ? "timeout" : "failed";
-    for (const [toolCallId, toolName] of activeToolCalls) {
-      recordExperiment({
-        eventType: "tool_failed",
-        channel: interactionMode === "voice" ? "voice" : "web_chat",
-        operation: toolName || "assistant_tool",
-        interactionMode,
-        status: failureStatus,
-        error: error.message || "assistant_tool_failed",
-        details: {
-          toolName: toolName || "",
-          toolCallId: toolCallId || "",
-          eventSource: "assistant_runtime",
-          taskOutcome: failureStatus,
-        },
-      });
-    }
     appendAssistantMessage(
       "assistant",
       error.message || "Errore durante la richiesta all'assistente.",
       { error: true }
     );
-    recordExperiment({
+    recordTelemetry({
       eventType: "error",
+      interactionId,
       channel: interactionMode === "voice" ? "voice" : "web_chat",
       operation: "conversational_request",
       interactionMode,
@@ -2961,7 +2439,6 @@ async function bootstrap() {
   syncChromeOffset();
   restoreAssistantPanelWidth();
   workspaceUi.restoreWorkspacePanelWidth();
-  setStudySession(appConfig.study?.currentSession || null);
 
   if (elements.appInfoModal?.parentElement !== document.body) {
     document.body.appendChild(elements.appInfoModal);
@@ -2992,8 +2469,8 @@ async function bootstrap() {
       openSelectionPanel(mapControllerRef || mapController);
     }
     updateActionStates(mapControllerRef || mapController);
-    recordExperiment({
-      eventType: "selection_changed",
+    recordTelemetry({
+      eventType: "gui_action",
       channel: "web_map",
       operation: "area_selection",
       interactionMode: "map",
@@ -3023,20 +2500,12 @@ async function bootstrap() {
   updateActionStates(mapController);
   initializeAssistantResize(mapController);
   initializeVoiceInput(mapController);
-  buildStudyConsole();
-  initializeConditionControl();
+  initializeRuntimeModeControl();
   initializeUiActionLogging();
-  applyConditionPolicy();
-  if (assistantConfig.enabled && getActiveStudyCondition() !== "webgis") {
+  applyRuntimeModePolicy();
+  if (assistantConfig.enabled && getRuntimeMode() !== "gui_only") {
     openAssistantPanel(mapController);
   }
-  recordExperiment({
-    eventType: "session_started",
-    channel: "system",
-    operation: "application_session",
-    interactionMode: "system",
-  });
-
   if (!assistantConfig.enabled) {
     elements.openAssistantButton.hidden = true;
     elements.assistantPanel.hidden = true;

@@ -172,12 +172,12 @@ export async function compareAnalysisHistory(analysisHistoryUrl, ids) {
   return handleJsonResponse(response);
 }
 
-export async function sendExperimentEvent(experimentLogUrl, payload) {
-  if (!experimentLogUrl) {
+export async function sendTelemetryEvent(telemetryUrl, payload) {
+  if (!telemetryUrl) {
     return null;
   }
 
-  const response = await fetch(experimentLogUrl, {
+  const response = await fetch(telemetryUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -185,49 +185,6 @@ export async function sendExperimentEvent(experimentLogUrl, payload) {
     },
     body: JSON.stringify(payload),
   });
-
-  return handleJsonResponse(response);
-}
-
-export async function startStudySession(studySessionUrl, payload) {
-  const response = await fetch(studySessionUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRFToken": getCsrfToken(),
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return handleJsonResponse(response);
-}
-
-export async function clearStudySession(studySessionUrl) {
-  const response = await fetch(studySessionUrl, {
-    method: "DELETE",
-    headers: {
-      "X-CSRFToken": getCsrfToken(),
-    },
-  });
-
-  return handleJsonResponse(response);
-}
-
-export async function fetchStudyExport(studySessionUrl, format = "json") {
-  const url = `${studySessionUrl}${studySessionUrl.includes("?") ? "&" : "?"}format=${encodeURIComponent(format)}`;
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: format === "jsonl" ? "application/jsonl" : "application/json",
-    },
-  });
-
-  if (format === "jsonl") {
-    if (!response.ok) {
-      throw new Error(`Esportazione non completata (${response.status}).`);
-    }
-    return response.text();
-  }
 
   return handleJsonResponse(response);
 }
@@ -237,6 +194,9 @@ export async function transcribeVoiceMessage(voiceTranscriptionUrl, audioBlob, m
   formData.append("audio", audioBlob, metadata.filename || "voice-message.webm");
   if (Number.isFinite(metadata.durationMs)) {
     formData.append("durationMs", String(Math.max(0, Math.round(metadata.durationMs))));
+  }
+  if (metadata.interactionId) {
+    formData.append("interactionId", metadata.interactionId);
   }
 
   const response = await fetch(voiceTranscriptionUrl, {

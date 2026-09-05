@@ -1,5 +1,10 @@
 # Protocollo pilot ASITA 2026
 
+> **ARCHIVIO STORICO — NON ESEGUIRE COME PROCEDURA SOFTWARE.** La console studio,
+> participant/task lifecycle, taskRunId ed export descritti qui sono stati rimossi.
+> Il protocollo corrente è gestito manualmente dall'operatore; Carta Natura espone
+> solo `?mode=gui-only` e `?mode=conversational-only` e salva telemetria raw.
+
 > **Proposta precedente v0.2.** Le consegne correnti sono nella [task sheet v0.5](asita-2026-task-sheet.md): due incarichi estesi, distinti per obiettivo e percorso, che sostituiscono la proposta a quattro task. Le batterie A/B, la relativa corrispondenza con gli ID e le tabelle di assegnazione riportate sotto appartengono alla proposta precedente e non definiscono l'uso delle nuove consegne. L'assegnazione delle modalità resta a cura del ricercatore.
 
 Versione: **ASITA-2026-PILOT-v0.2**

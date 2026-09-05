@@ -1,5 +1,9 @@
 # Fattibilità dei task estesi — verifica online
 
+> **EVIDENZA STORICA.** I riferimenti alla modalità studio, taskRunId ed export
+> descrivono infrastruttura rimossa. L'esperimento corrente è gestito esternamente
+> all'app e non usa summary o metriche calcolate dal runtime.
+
 > **VALORI NUMERICI OBSOLETI — 4 settembre 2026.** Le verifiche contenute in questo documento sono state eseguite con la pipeline precedente, che riutilizzava `ettari` del poligono sorgente dopo il clipping e non riconosceva quattro codici vegetazionali. Non usare superfici, CO2, categorie, prevalenti o valori economici riportati qui come reference answer. La baseline ufficiale post-correzione è in [`asita-2026-gis-baseline.md`](asita-2026-gis-baseline.md). Le osservazioni di fattibilità restano memoria storica e devono essere ripetute prima dell'esperimento.
 
 Data: **2 settembre 2026**. Protocollo: **ASITA-2026-PILOT-v0.2**.

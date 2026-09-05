@@ -898,6 +898,19 @@ class AssistantRuntime:
         session_context: SessionContext,
     ) -> ToolExecutionOutcome:
         started_at = start_timer()
+        telemetry = {
+            "interaction_id": request.input.metadata.get("interactionId"),
+            "interaction_mode": request.input.metadata.get("interactionMode"),
+            "tool_call_id": tool_call.get("call_id"),
+        }
+        log_tool_call(
+            session_id=request.session_id,
+            tool_name=tool_call["name"],
+            duration_ms=0,
+            status="started",
+            arguments=tool_call.get("arguments"),
+            **telemetry,
+        )
         try:
             outcome = self._tool_executor.execute(
                 tool_name=tool_call["name"],
@@ -912,6 +925,18 @@ class AssistantRuntime:
                 duration_ms=elapsed_ms(started_at),
                 status="error",
                 error=str(exc),
+                arguments=tool_call.get("arguments"),
+                **telemetry,
+            )
+            log_tool_call(
+                session_id=request.session_id,
+                tool_name=tool_call["name"],
+                duration_ms=elapsed_ms(started_at),
+                status="recovered",
+                error=str(exc),
+                arguments=tool_call.get("arguments"),
+                result={"recovery": "error_returned_to_model"},
+                **telemetry,
             )
             return ToolExecutionOutcome(
                 payload={"ok": False, "error": str(exc)},
@@ -924,6 +949,8 @@ class AssistantRuntime:
                 duration_ms=elapsed_ms(started_at),
                 status="error",
                 error=str(exc),
+                arguments=tool_call.get("arguments"),
+                **telemetry,
             )
             raise
 
@@ -933,6 +960,19 @@ class AssistantRuntime:
             duration_ms=elapsed_ms(started_at),
             status="ok",
             has_analysis=outcome.analysis_result is not None,
+            arguments=tool_call.get("arguments"),
+            result={
+                "ok": True,
+                "hasAnalysis": outcome.analysis_result is not None,
+                "analysisId": (outcome.analysis_result or {}).get("analysisId"),
+            },
+            domain_results={
+                "analysis": outcome.analysis_result,
+                "economic": outcome.economic_result,
+                "comparison": outcome.scenario_comparison,
+                "report": outcome.report_context,
+            },
+            **telemetry,
         )
         return outcome
 

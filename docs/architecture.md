@@ -2,7 +2,7 @@
 
 ## Scopo
 
-`CartaNatura` è un sistema WebGIS per supportare analisi e valutazione economica del servizio ecosistemico di sequestro forestale della CO2. Il progetto è organizzato come applicazione unica, senza linee parallele o moduli storici: interfaccia mappa, conversazione, voce, report e logging sperimentale condividono gli stessi servizi analitici.
+`CartaNatura` è un sistema WebGIS per supportare analisi e valutazione economica del servizio ecosistemico di sequestro forestale della CO2. Interfaccia mappa, conversazione, voce e report condividono gli stessi servizi analitici; una telemetria raw separata osserva il runtime senza gestire lo studio.
 
 ## Moduli
 
@@ -12,14 +12,14 @@ Browser
   -> conversational panel
   -> voice input
   -> report/PDF
-  -> experimental event client
+  -> raw telemetry client (solo eventi browser-authoritative)
 
 Django
   -> views.py
   -> domain/
   -> services/
   -> interaction/
-  -> experiments/
+  -> telemetry.py
 
 Dataset locali
   -> shapeCN/CNPulita.shp
@@ -57,7 +57,7 @@ Dataset locali
 
 - scenari prezzo configurati in [views.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/views.py:47)
 - calcolo lato client: prezzo EUR/t moltiplicato per CO2 annua stimata
-- evento sperimentale `valuation_completed`
+- evento raw `economic_evaluation`
 
 ### Interfaccia Conversazionale
 
@@ -77,21 +77,23 @@ Dataset locali
 - Django invia audio a OpenAI Audio Transcriptions
 - il transcript torna al frontend e viene inviato allo stesso endpoint conversazionale
 - channel `voice`, metadata `interactionMode=voice`
-- log senza salvare transcript
+- transcript nel log backend correlato; audio raw non persistito
 
 ### Report
 
 - [static/js/modules/pdf-export.js](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/static/js/modules/pdf-export.js:1)
 - report HTML nel pannello laterale
 - PDF con mappa, CO2, superficie, categoria prevalente, scenario prezzo, valore stimato, comuni interessati
-- evento `report_generated`
+- evento `pdf_generated`
 
-### Logging Sperimentale
+### Telemetria Raw
 
-- [experiments/logging.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/experiments/logging.py:1)
-- log session-scoped
-- export JSON
-- niente testo libero utente, transcript, IP o identificativi personali
+- [telemetry.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/telemetry.py:1)
+- JSONL append-only per sessione anonima, con lock concorrente
+- nessun participant/task lifecycle, export o summary derivato
+- backend autorevole per testo, transcript, risposta, tool e risultati strutturati
+- frontend autorevole soltanto per azioni GUI e risultati client-side
+- niente audio raw, IP, user-agent o identificativi personali
 
 ## Flusso WebGIS
 

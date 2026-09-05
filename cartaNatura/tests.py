@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
@@ -24,6 +24,8 @@ from cartaNatura.interaction import (
     InteractionInput,
     InteractionIntent,
     InteractionRequest,
+    InteractionResponse,
+    InteractionMessage,
     SessionContext,
 )
 from cartaNatura.interaction.analysis_store import StoredAnalysis, create_stored_analysis
@@ -71,15 +73,7 @@ from cartaNatura.services.municipality_text import (
 )
 from cartaNatura.services.analysis_compare import compare_saved_analyses
 from cartaNatura.services.payloads import parse_selection_payload
-from cartaNatura.experiments import (
-    STUDY_CONTEXT_SESSION_KEY,
-    create_study_session,
-    export_experiment_log,
-    export_study_events_jsonl,
-    export_study_session,
-    record_experiment_event,
-    record_study_event,
-)
+from cartaNatura.telemetry import load_raw_events, record_raw_event
 
 
 def model_tool(name, arguments=None):
@@ -875,11 +869,14 @@ class GeographicCorrectnessRegressionTests(SimpleTestCase):
             ]
         }
 
-        gui_response = Client().post(
-            "/progettoGIS/cartaNatura/gis",
-            data=json.dumps(selection_payload),
-            content_type="application/json",
-        )
+        with TemporaryDirectory() as temp_dir, override_settings(
+            RAW_EVENT_LOG_ROOT=Path(temp_dir)
+        ):
+            gui_response = Client().post(
+                "/progettoGIS/cartaNatura/gis",
+                data=json.dumps(selection_payload),
+                content_type="application/json",
+            )
         conversational = analyze_municipalities(municipality_names=["Comune A"])
 
         self.assertEqual(gui_response.status_code, 200)
@@ -1102,6 +1099,17 @@ class AnalysisCompareServiceTests(SimpleTestCase):
 
 @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies")
 class ViewSmokeTests(SimpleTestCase):
+    def setUp(self):
+        self._raw_log_dir = TemporaryDirectory()
+        self._raw_log_override = override_settings(
+            RAW_EVENT_LOG_ROOT=Path(self._raw_log_dir.name)
+        )
+        self._raw_log_override.enable()
+
+    def tearDown(self):
+        self._raw_log_override.disable()
+        self._raw_log_dir.cleanup()
+
     @staticmethod
     def _history_analysis_payload():
         return {
@@ -1202,6 +1210,16 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertEqual(items[0]["selectionKind"], "drawn")
         self.assertTrue(items[0]["hasDrawnGeometry"])
         self.assertEqual(items[0]["summary"]["totalCo2"], analysis_response.json()["summary"]["totalCo2"])
+        events = load_raw_events(client.session["anonymous_session_id"])
+        self.assertEqual(
+            [event["eventType"] for event in events],
+            ["interaction_started", "analysis_completed", "interaction_completed"],
+        )
+        self.assertEqual(events[1]["data"]["summary"], analysis_response.json()["summary"])
+        self.assertEqual(
+            {event.get("interactionId") for event in events},
+            {analysis_response.json()["interactionId"]},
+        )
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -1255,46 +1273,6 @@ class ViewSmokeTests(SimpleTestCase):
         self.assertEqual(ids, [third_id, second_id])
         self.assertNotIn(first_id, ids)
 
-    @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
-    @patch("cartaNatura.services.gis_clip.load_nature_shapes")
-    def test_analysis_history_does_not_store_user_text_or_personal_data(
-        self,
-        load_nature_shapes,
-        load_campania_boundaries,
-    ):
-        load_nature_shapes.return_value = GisClipServiceTests._nature_shapes()
-        load_campania_boundaries.return_value = GisClipServiceTests._campania_boundaries()
-        client = Client()
-        client.post(
-            "/progettoGIS/cartaNatura/experiment/log",
-            data=json.dumps(
-                {
-                    "eventType": "interaction_completed",
-                    "channel": "web_chat",
-                    "operation": "conversational_request",
-                    "interactionMode": "text",
-                    "userText": "testo libero da non salvare",
-                    "userTranscript": "transcript da non salvare",
-                    "assistantResponse": "risposta da non salvare",
-                    "details": {
-                        "ip": "127.0.0.1",
-                        "userAgent": "Browser",
-                    },
-                }
-            ),
-            content_type="application/json",
-        )
-        analysis_id = self._post_history_analysis(client).json()["analysisId"]
-
-        detail_response = client.get(f"/progettoGIS/cartaNatura/analysis/history/{analysis_id}")
-        serialized = json.dumps(detail_response.json())
-
-        self.assertEqual(detail_response.status_code, 200)
-        self.assertNotIn("testo libero da non salvare", serialized)
-        self.assertNotIn("transcript da non salvare", serialized)
-        self.assertNotIn("risposta da non salvare", serialized)
-        self.assertNotIn("127.0.0.1", serialized)
-        self.assertNotIn("Browser", serialized)
 
     @patch("cartaNatura.services.gis_clip.load_campania_boundaries")
     @patch("cartaNatura.services.gis_clip.load_nature_shapes")
@@ -1399,10 +1377,17 @@ class ViewSmokeTests(SimpleTestCase):
             geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
             crs="EPSG:4326",
         )
+        client = Client()
         with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"}):
-            response = Client().post(
+            response = client.post(
                 "/progettoGIS/cartaNatura/interact",
-                data='{"message": "Analizza Avellino e Benevento"}',
+                data=json.dumps({
+                    "message": "Analizza Avellino e Benevento",
+                    "metadata": {
+                        "interactionMode": "text",
+                        "interactionId": "interaction-full-flow",
+                    },
+                }),
                 content_type="application/json",
             )
 
@@ -1412,6 +1397,20 @@ class ViewSmokeTests(SimpleTestCase):
             ["Avellino", "Benevento"],
         )
         self.assertEqual(response.json()["uiHints"]["providerMode"], "openai")
+        events = load_raw_events(client.session["anonymous_session_id"])
+        self.assertEqual(
+            [event["eventType"] for event in events],
+            [
+                "interaction_started",
+                "tool_started",
+                "tool_completed",
+                "analysis_completed",
+                "interaction_completed",
+            ],
+        )
+        self.assertTrue(
+            all(event.get("interactionId") == "interaction-full-flow" for event in events)
+        )
 
     @override_settings(AI_ASSISTANT_ENABLED=False)
     def test_interact_returns_404_when_assistant_disabled(self):
@@ -1433,212 +1432,12 @@ class ViewSmokeTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 503)
 
-    def test_experiment_log_endpoint_records_and_exports_events(self):
-        client = Client()
-        post_response = client.post(
-            "/progettoGIS/cartaNatura/experiment/log",
-            data=(
-                '{"eventType":"task_completed","channel":"web_map",'
-                '"operation":"spatial_analysis","interactionMode":"map",'
-                '"durationMs":321,"stepCount":2}'
-            ),
-            content_type="application/json",
-        )
-        get_response = client.get("/progettoGIS/cartaNatura/experiment/log")
 
-        self.assertEqual(post_response.status_code, 200)
-        self.assertEqual(get_response.status_code, 200)
-        self.assertEqual(get_response.json()["eventCount"], 1)
-        self.assertEqual(get_response.json()["summary"]["taskCompletionDurationMs"], [321])
 
-    def test_index_exposes_study_config_only_with_query_flag(self):
-        client = Client()
 
-        normal_response = client.get("/progettoGIS/cartaNatura/")
-        study_response = client.get("/progettoGIS/cartaNatura/?study=1")
 
-        self.assertContains(normal_response, '"study": {"enabled": false')
-        self.assertContains(study_response, '"study": {"enabled": true')
-        self.assertContains(study_response, '"sessionUrl": "/progettoGIS/cartaNatura/experiment/study/session"')
 
-    def test_index_exposes_asita_pilot_task_ids(self):
-        response = Client().get("/progettoGIS/cartaNatura/?study=1")
 
-        for task_id in (
-            "asita_t1_area_analysis",
-            "asita_t2_forest_co2",
-            "asita_t3_economic_value",
-            "asita_t4_scenario_compare",
-            "asita_t5_report_pdf",
-            "asita_t6_map_verify",
-        ):
-            self.assertContains(response, f'"id": "{task_id}"')
-
-    def test_study_session_endpoint_persists_following_experiment_events(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            client = Client()
-            start_response = client.post(
-                "/progettoGIS/cartaNatura/experiment/study/session",
-                data=(
-                    '{"participantId":"participant_010","condition":"conversational",'
-                    '"taskId":"municipalities_report"}'
-                ),
-                content_type="application/json",
-            )
-            event_response = client.post(
-                "/progettoGIS/cartaNatura/experiment/log",
-                data=(
-                    '{"eventType":"task_completed","channel":"web_chat",'
-                    '"operation":"conversational_request","interactionMode":"text",'
-                    '"intent":"analyze_municipalities",'
-                    '"userText":"analizza Avellino",'
-                    '"assistantResponse":"Ho analizzato Avellino."}'
-                ),
-                content_type="application/json",
-            )
-            export_response = client.get("/progettoGIS/cartaNatura/experiment/study/session")
-            jsonl_response = client.get(
-                "/progettoGIS/cartaNatura/experiment/study/session?format=jsonl"
-            )
-
-        self.assertEqual(start_response.status_code, 200)
-        self.assertEqual(start_response.json()["session"]["participantId"], "participant_010")
-        self.assertEqual(event_response.status_code, 200)
-        self.assertEqual(export_response.status_code, 200)
-        exported_events = export_response.json()["export"]["events"]
-        self.assertEqual(export_response.json()["export"]["condition"], "conversational")
-        self.assertEqual(export_response.json()["export"]["eventCount"], 2)
-        self.assertEqual(exported_events[1]["userText"], "analizza Avellino")
-        self.assertEqual(exported_events[1]["assistantResponse"], "Ho analizzato Avellino.")
-        self.assertContains(jsonl_response, '"userText": "analizza Avellino"')
-
-    def test_experiment_endpoint_correlates_task_run_and_restores_active_task(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            client = Client()
-            client.post(
-                "/progettoGIS/cartaNatura/experiment/study/session",
-                data='{"participantId":"participant_011","condition":"webgis"}',
-                content_type="application/json",
-            )
-            started_response = client.post(
-                "/progettoGIS/cartaNatura/experiment/log",
-                data='{"eventType":"task_started","taskId":"task_area","condition":"webgis"}',
-                content_type="application/json",
-            )
-            task_run_id = started_response.json()["event"]["taskRunId"]
-            page_response = client.get("/progettoGIS/cartaNatura/?study=1")
-            action_response = client.post(
-                "/progettoGIS/cartaNatura/experiment/log",
-                data=(
-                    '{"eventType":"ui_action","channel":"web_map","interactionMode":"map",'
-                    '"operation":"eseguiClipBut","details":{"controlId":"eseguiClipBut"}}'
-                ),
-                content_type="application/json",
-            )
-            completed_response = client.post(
-                "/progettoGIS/cartaNatura/experiment/log",
-                data=json.dumps(
-                    {
-                        "eventType": "task_completed",
-                        "taskId": "task_area",
-                        "taskRunId": task_run_id,
-                        "durationMs": 999999,
-                    }
-                ),
-                content_type="application/json",
-            )
-            exported = client.get(
-                "/progettoGIS/cartaNatura/experiment/study/session"
-            ).json()["export"]
-
-        self.assertContains(page_response, f'"taskRunId": "{task_run_id}"')
-        self.assertEqual(action_response.json()["event"]["taskRunId"], task_run_id)
-        self.assertEqual(action_response.json()["event"]["condition"], "webgis")
-        self.assertNotEqual(completed_response.json()["event"]["durationMs"], 999999)
-        self.assertEqual(exported["summary"]["tasks"][0]["status"], "completed")
-
-    def test_webgis_task_blocks_chat_and_preserves_previous_operational_state(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            client = Client()
-            client.post(
-                "/progettoGIS/cartaNatura/experiment/study/session",
-                data='{"participantId":"participant_webgis","condition":"webgis"}',
-                content_type="application/json",
-            )
-            session = client.session
-            session["interaction_context"] = {"last_intent": "generate_report"}
-            session["interaction_analyses"] = [{"analysis_id": "analysis_previous"}]
-            session.save()
-            client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
-            started = client.post(
-                "/progettoGIS/cartaNatura/experiment/log",
-                data='{"eventType":"task_started","taskId":"area_co2","condition":"webgis"}',
-                content_type="application/json",
-            ).json()["event"]
-
-            with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"}):
-                blocked = client.post(
-                    "/progettoGIS/cartaNatura/interact",
-                    data='{"message":"analizza Avellino"}',
-                    content_type="application/json",
-                )
-            exported = client.get(
-                "/progettoGIS/cartaNatura/experiment/study/session"
-            ).json()["export"]
-
-        self.assertEqual(blocked.status_code, 403)
-        self.assertEqual(client.session["interaction_context"]["last_intent"], "generate_report")
-        self.assertEqual(
-            client.session["interaction_analyses"][0]["analysis_id"],
-            "analysis_previous",
-        )
-        violation = exported["events"][-1]
-        self.assertEqual(violation["eventType"], "protocol_violation")
-        self.assertEqual(violation["condition"], "webgis")
-        self.assertEqual(violation["taskRunId"], started["taskRunId"])
-        self.assertEqual(exported["summary"]["protocolViolationCount"], 1)
-
-    def test_conversational_task_blocks_traditional_gis_endpoint_only(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            client = Client()
-            client.post(
-                "/progettoGIS/cartaNatura/experiment/study/session",
-                data='{"participantId":"participant_chat","condition":"conversational"}',
-                content_type="application/json",
-            )
-            started = client.post(
-                "/progettoGIS/cartaNatura/experiment/log",
-                data=(
-                    '{"eventType":"task_started","taskId":"area_co2",'
-                    '"condition":"conversational"}'
-                ),
-                content_type="application/json",
-            ).json()["event"]
-            blocked = client.post(
-                "/progettoGIS/cartaNatura/gis",
-                data='{"areas":[]}',
-                content_type="application/json",
-            )
-            with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": ""}):
-                allowed_channel = client.post(
-                    "/progettoGIS/cartaNatura/interact",
-                    data='{"message":"analizza Avellino"}',
-                    content_type="application/json",
-                )
-            exported = client.get(
-                "/progettoGIS/cartaNatura/experiment/study/session"
-            ).json()["export"]
-
-        self.assertEqual(blocked.status_code, 403)
-        self.assertEqual(allowed_channel.status_code, 503)
-        violation = next(
-            event
-            for event in exported["events"]
-            if event.get("eventType") == "protocol_violation"
-        )
-        self.assertEqual(violation["condition"], "conversational")
-        self.assertEqual(violation["taskRunId"], started["taskRunId"])
-        self.assertEqual(violation["details"]["attemptedAction"], "spatial_analysis_ui")
 
     @patch("cartaNatura.views.transcribe_uploaded_audio")
     def test_voice_transcribe_returns_transcript(self, transcribe_uploaded_audio):
@@ -3554,580 +3353,240 @@ class ObservabilityTests(SimpleTestCase):
         )
 
 
-class ExperimentLoggingTests(SimpleTestCase):
-    def test_record_experiment_event_sanitizes_details(self):
-        session = {}
-
-        event = record_experiment_event(
-            session,
-            event_type="task_completed",
-            channel="voice",
-            operation="conversational_request",
-            interaction_mode="voice",
-            duration_ms=1200,
-            step_count=3,
-            details={
-                "messageText": "non salvare",
-                "transcriptText": "non salvare",
-                "messageLength": 42,
-                "totalCo2": 12.5,
-            },
-        )
-
-        self.assertEqual(event["eventType"], "task_completed")
-        self.assertEqual(event["details"], {"messageLength": 42, "totalCo2": 12.5})
-        self.assertNotIn("messageText", event["details"])
-        self.assertNotIn("transcriptText", event["details"])
-
-    def test_export_experiment_log_returns_summary_metrics(self):
-        session = {}
-        record_experiment_event(
-            session,
-            event_type="interaction_started",
-            channel="web_chat",
-            operation="conversational_request",
-            interaction_mode="text",
-        )
-        record_experiment_event(
-            session,
-            event_type="task_completed",
-            channel="web_chat",
-            operation="analyze_municipalities",
-            interaction_mode="text",
-            duration_ms=900,
-            step_count=2,
-        )
-        record_experiment_event(
-            session,
-            event_type="report_generated",
-            channel="web_map",
-            operation="report_generation",
-            interaction_mode="map",
-        )
-
-        payload = export_experiment_log(session)
-
-        self.assertEqual(payload["eventCount"], 3)
-        self.assertEqual(payload["summary"]["taskCompletionCount"], 1)
-        self.assertEqual(payload["summary"]["textInteractionCount"], 2)
-        self.assertEqual(payload["summary"]["reportGeneratedCount"], 1)
-
-    def test_task_runs_are_isolated_and_duration_is_server_derived(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            context = create_study_session(
-                participant_id="participant_lifecycle",
-                condition="webgis",
-                task_id="task_initial",
-                log_root=Path(temp_dir),
-            )
-            session = {
-                STUDY_CONTEXT_SESSION_KEY: {
-                    "participantId": context.participantId,
-                    "studySessionId": context.studySessionId,
-                    "condition": context.condition,
-                    "taskId": context.taskId,
-                }
-            }
-
-            first_start = record_experiment_event(
-                session,
-                event_type="task_started",
-                task_id="task_area",
-                condition="webgis",
-            )
-            record_experiment_event(
-                session,
-                event_type="ui_action",
-                channel="web_map",
-                interaction_mode="map",
-                details={"controlId": "eseguiClipBut"},
-            )
-            first_complete = record_experiment_event(
-                session,
-                event_type="task_completed",
-                task_run_id=first_start["taskRunId"],
-                duration_ms=999999,
-                details={"analysisId": "analysis_ui"},
-            )
-            duplicate_complete = record_experiment_event(
-                session,
-                event_type="task_completed",
-                task_run_id=first_start["taskRunId"],
-            )
-
-            second_start = record_experiment_event(
-                session,
-                event_type="task_started",
-                task_id="task_economic",
-                condition="webgis",
-            )
-            record_experiment_event(
-                session,
-                event_type="valuation_completed",
-                channel="web_map",
-                interaction_mode="map",
-                details={
-                    "analysisId": "analysis_economic",
-                    "scenarioKey": "social_cost",
-                    "priceEurPerTon": 138,
-                    "totalValueEur": 1380,
-                },
-            )
-            record_experiment_event(
-                session,
-                event_type="task_completed",
-                task_run_id=second_start["taskRunId"],
-            )
-            exported = export_experiment_log(session)
-            persisted = export_study_session(context, log_root=Path(temp_dir))
-
-        self.assertNotEqual(first_start["taskRunId"], second_start["taskRunId"])
-        self.assertNotEqual(first_complete["durationMs"], 999999)
-        self.assertEqual(first_complete["eventId"], duplicate_complete["eventId"])
-        self.assertEqual(exported["summary"]["taskCompletionCount"], 2)
-        self.assertEqual(len(exported["summary"]["tasks"]), 2)
-        self.assertEqual(
-            {task["taskId"] for task in exported["summary"]["tasks"]},
-            {"task_area", "task_economic"},
-        )
-        self.assertEqual(
-            exported["summary"]["tasks"][1]["analysisIds"],
-            ["analysis_economic"],
-        )
-        self.assertEqual(persisted["events"][0]["eventId"], first_start["eventId"])
-        self.assertEqual(persisted["events"][0]["taskId"], "task_area")
-        self.assertEqual(persisted["events"][0]["taskRunId"], first_start["taskRunId"])
-
-    def test_new_task_interrupts_active_task_and_conversation_events_stay_separate(self):
-        session = {}
-        first_start = record_experiment_event(
-            session,
-            event_type="task_started",
-            task_id="task_one",
-            condition="conversational",
-        )
-        second_start = record_experiment_event(
-            session,
-            event_type="task_started",
-            task_id="task_two",
-            condition="conversational",
-        )
-        record_experiment_event(
-            session,
-            event_type="chat_message",
-            channel="web_chat",
-            interaction_mode="text",
-        )
-        record_experiment_event(
-            session,
-            event_type="tool_started",
-            channel="web_chat",
-            operation="calculate_economic_value",
-            interaction_mode="text",
-            details={"toolCallId": "call_1", "toolName": "calculate_economic_value"},
-        )
-        record_experiment_event(
-            session,
-            event_type="tool_completed",
-            channel="web_chat",
-            operation="calculate_economic_value",
-            interaction_mode="text",
-            details={
-                "analysisId": "analysis_chat",
-                "toolCallId": "call_1",
-                "toolName": "calculate_economic_value",
-            },
-        )
-        record_experiment_event(
-            session,
-            event_type="task_failed",
-            task_run_id=second_start["taskRunId"],
-            error="timeout",
-        )
-        exported = export_experiment_log(session)
-
-        first_task = exported["summary"]["tasks"][0]
-        second_task = exported["summary"]["tasks"][1]
-        self.assertEqual(first_task["taskRunId"], first_start["taskRunId"])
-        self.assertEqual(first_task["status"], "interrupted")
-        self.assertEqual(second_task["status"], "failed")
-        self.assertEqual(exported["summary"]["chatMessageCount"], 1)
-        self.assertEqual(exported["summary"]["toolCallCount"], 1)
-        self.assertEqual(exported["summary"]["failedTaskCount"], 1)
-        self.assertEqual(exported["summary"]["interruptedTaskCount"], 1)
-
-    def test_controlled_task_count_does_not_mix_legacy_completions(self):
-        session = {}
-        record_experiment_event(session, event_type="task_completed", duration_ms=12)
-        started = record_experiment_event(
-            session,
-            event_type="task_started",
-            task_id="controlled_task",
-            condition="webgis",
-        )
-        record_experiment_event(
-            session,
-            event_type="task_completed",
-            task_run_id=started["taskRunId"],
-        )
-
-        summary = export_experiment_log(session)["summary"]
-
-        self.assertEqual(summary["taskCompletionCount"], 1)
-        self.assertEqual(summary["legacyTaskCompletionCount"], 1)
-
-
-class StudyLoggingTests(SimpleTestCase):
-    def test_create_study_session_writes_summary_in_expected_directory(self):
+class RawTelemetryTests(SimpleTestCase):
+    def test_raw_event_schema_is_jsonl_and_contains_no_study_fields(self):
         with TemporaryDirectory() as temp_dir:
-            context = create_study_session(
-                participant_id="participant_001",
-                condition="webgis",
-                task_id="task_area_co2",
-                now=datetime(2026, 6, 13, 10, 15, tzinfo=UTC),
-                log_root=Path(temp_dir),
-            )
-
-            session_dir = Path(temp_dir) / "participant_001" / "session_20260613_101500_webgis"
-            summary = json.loads((session_dir / "summary.json").read_text(encoding="utf-8"))
-            self.assertTrue(session_dir.exists())
-
-            self.assertEqual(context.participantId, "participant_001")
-            self.assertEqual(context.condition, "webgis")
-            self.assertEqual(summary["participantId"], "participant_001")
-            self.assertEqual(summary["condition"], "webgis")
-            self.assertEqual(summary["eventCount"], 0)
-
-    def test_record_study_event_persists_jsonl_and_summary_with_conversation_text(self):
-        with TemporaryDirectory() as temp_dir:
-            context = create_study_session(
-                participant_id="participant_002",
-                condition="conversational",
-                task_id="task_report",
-                now=datetime(2026, 6, 13, 10, 42, tzinfo=UTC),
-                log_root=Path(temp_dir),
-            )
-
-            event = record_study_event(
-                context,
-                event_type="interaction_completed",
-                channel="voice",
-                operation="analyze_municipalities",
-                interaction_mode="voice",
-                duration_ms=1200,
-                step_count=2,
-                status="completed",
-                intent="analyze_municipalities",
+            event = record_raw_event(
+                "anonymous-session",
+                event_type="interaction_started",
+                interaction_mode="text",
+                interaction_id="interaction-1",
                 user_text="analizza Avellino",
-                user_transcript="analizza Avellino",
-                assistant_response="Ho analizzato Avellino.",
-                details={
-                    "toolCalls": ["analyze_municipalities"],
-                    "email": "person@example.com",
-                    "ip": "127.0.0.1",
-                    "userAgent": "Browser",
-                },
+                data={"providerMode": "openai", "participantId": "must-not-survive"},
                 log_root=Path(temp_dir),
             )
-            exported = export_study_session(context, log_root=Path(temp_dir))
-            jsonl = export_study_events_jsonl(context, log_root=Path(temp_dir))
-            summary_path = (
-                Path(temp_dir)
-                / "participant_002"
-                / "session_20260613_104200_conversational"
-                / "summary.json"
-            )
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            loaded = load_raw_events("anonymous-session", log_root=Path(temp_dir))
 
-        self.assertEqual(event["participantId"], "participant_002")
-        self.assertEqual(event["condition"], "conversational")
-        self.assertEqual(event["taskId"], "task_report")
+        self.assertEqual(loaded, [event])
+        self.assertEqual(event["schemaVersion"], 1)
+        self.assertEqual(event["anonymousSessionId"], "anonymous-session")
+        self.assertEqual(event["interactionId"], "interaction-1")
         self.assertEqual(event["userText"], "analizza Avellino")
-        self.assertEqual(event["userTranscript"], "analizza Avellino")
-        self.assertEqual(event["assistantResponse"], "Ho analizzato Avellino.")
-        self.assertEqual(event["details"], {"toolCalls": ["analyze_municipalities"]})
-        self.assertEqual(exported["eventCount"], 1)
-        self.assertIn('"userText": "analizza Avellino"', jsonl)
-        self.assertEqual(summary["eventCount"], 1)
-        self.assertEqual(summary["voiceInteractionCount"], 1)
+        serialized = json.dumps(event)
+        self.assertNotIn("participant", serialized.lower())
+        self.assertNotIn("taskRunId", serialized)
 
-    def test_study_logging_sanitizes_ids_and_invalid_values(self):
+    def test_concurrent_appends_do_not_lose_or_corrupt_events(self):
         with TemporaryDirectory() as temp_dir:
-            context = create_study_session(
-                participant_id="../participant 003@example.com",
-                condition="invalid-condition",
-                task_id="../task/one",
-                now=datetime(2026, 6, 13, 11, 0, tzinfo=UTC),
-                log_root=Path(temp_dir),
-            )
-            event = record_study_event(
-                context,
-                event_type="not_allowed",
-                channel="browser",
-                interaction_mode="browser",
-                duration_ms=-5,
-                step_count="bad",
-                log_root=Path(temp_dir),
-            )
+            root = Path(temp_dir)
 
-        self.assertEqual(context.participantId, "participant_003_example_com")
-        self.assertEqual(context.condition, "webgis")
-        self.assertEqual(context.taskId, "task_one")
-        self.assertEqual(event["eventType"], "error")
-        self.assertEqual(event["channel"], "system")
-        self.assertNotIn("durationMs", event)
-        self.assertNotIn("stepCount", event)
+            def write(index):
+                return record_raw_event(
+                    "shared-session",
+                    event_type="gui_action",
+                    interaction_mode="gui",
+                    operation=f"action-{index}",
+                    log_root=root,
+                )
 
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                list(pool.map(write, range(120)))
+            events = load_raw_events("shared-session", log_root=root)
 
-@override_settings(
-    STUDY_ADMIN_PASSWORD="test-study-admin-password",
-    SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
-)
-class StudyAdminTests(SimpleTestCase):
-    @staticmethod
-    def _login(client: Client, password: str = "test-study-admin-password"):
-        return client.post(
-            "/progettoGIS/cartaNatura/study-admin/login/",
-            {"password": password},
-        )
+        self.assertEqual(len(events), 120)
+        self.assertEqual(len({event["eventId"] for event in events}), 120)
 
-    def test_admin_lists_session_events_and_downloads_clean_exports(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            context = create_study_session(
-                participant_id="participant_admin_001",
-                condition="conversational",
-                task_id="asita_t1_area_analysis",
-                now=datetime(2026, 9, 1, 10, 30, tzinfo=UTC),
-                log_root=Path(temp_dir),
-            )
-            record_study_event(
-                context,
-                event_type="task_completed",
-                status="completed",
-                task_run_id="taskrun_admin_001",
-                duration_ms=1200,
-                log_root=Path(temp_dir),
-            )
-            client = Client()
-            self._login(client)
+    def test_tool_failure_and_recovery_are_distinct_and_correlated(self):
+        from cartaNatura.interaction.observability import log_tool_call
 
-            page = client.get("/progettoGIS/cartaNatura/study-admin/")
-            json_export = client.get(
-                f"/progettoGIS/cartaNatura/study-admin/{context.participantId}/"
-                f"{context.studySessionId}/download/json/"
-            )
-            jsonl_export = client.get(
-                f"/progettoGIS/cartaNatura/study-admin/{context.participantId}/"
-                f"{context.studySessionId}/download/jsonl/"
-            )
-
-        self.assertEqual(page.status_code, 200)
-        self.assertContains(page, "Esperimenti salvati")
-        self.assertContains(page, context.participantId)
-        self.assertContains(page, "task_completed")
-        self.assertEqual(json_export.status_code, 200)
-        self.assertEqual(jsonl_export.status_code, 200)
-        for protected_response in (page, json_export, jsonl_export):
-            self.assertIn("no-store", protected_response["Cache-Control"])
-        exported_payload = json.loads(json_export.content)
-        self.assertEqual(exported_payload["events"][0]["eventType"], "task_completed")
-        self.assertNotIn("prettyJson", exported_payload["events"][0])
-        self.assertIn('attachment; filename="participant_admin_001_', json_export["Content-Disposition"])
-        self.assertIn('"eventType": "task_completed"', jsonl_export.content.decode("utf-8"))
-
-    def test_admin_deletes_closed_session(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            context = create_study_session(
-                participant_id="participant_delete_001",
-                condition="webgis",
-                now=datetime(2026, 9, 1, 11, 0, tzinfo=UTC),
-                log_root=Path(temp_dir),
-            )
-            session_path = Path(temp_dir) / context.participantId / context.studySessionId
-            client = Client()
-            self._login(client)
-            response = client.post(
-                f"/progettoGIS/cartaNatura/study-admin/{context.participantId}/"
-                f"{context.studySessionId}/delete/"
-            )
-
-            self.assertEqual(response.status_code, 302)
-            self.assertFalse(session_path.exists())
-
-    def test_admin_does_not_delete_active_session(self):
         with TemporaryDirectory() as temp_dir, override_settings(
-            STUDY_LOG_ROOT=Path(temp_dir),
-            SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
+            RAW_EVENT_LOG_ROOT=Path(temp_dir)
         ):
-            client = Client()
-            started = client.post(
-                "/progettoGIS/cartaNatura/experiment/study/session",
-                data=json.dumps(
-                    {
-                        "participantId": "participant_active_001",
-                        "condition": "webgis",
-                        "taskId": "asita_t1_area_analysis",
-                    }
-                ),
-                content_type="application/json",
-            ).json()["session"]
-            self._login(client)
-            session_path = Path(temp_dir) / started["participantId"] / started["studySessionId"]
+            common = {
+                "session_id": "session-tools",
+                "tool_name": "compare_recent_analyses",
+                "duration_ms": 4,
+                "interaction_id": "interaction-tools",
+                "interaction_mode": "voice",
+                "tool_call_id": "call-1",
+            }
+            log_tool_call(status="error", error="not enough analyses", **common)
+            log_tool_call(status="recovered", error="not enough analyses", **common)
+            events = load_raw_events("session-tools")
+
+        self.assertEqual([event["eventType"] for event in events], ["tool_failed", "tool_recovered"])
+        self.assertTrue(all(event["interactionId"] == "interaction-tools" for event in events))
+        self.assertTrue(all(event["interactionMode"] == "voice" for event in events))
+
+
+@override_settings(SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies")
+class TelemetryViewTests(SimpleTestCase):
+    def setUp(self):
+        self._temp = TemporaryDirectory()
+        self._override = override_settings(RAW_EVENT_LOG_ROOT=Path(self._temp.name))
+        self._override.enable()
+
+    def tearDown(self):
+        self._override.disable()
+        self._temp.cleanup()
+
+    def test_removed_study_and_experiment_routes_return_404(self):
+        client = Client()
+        for prefix in ("", "/progettoGIS/cartaNatura"):
+            for suffix in ("/experiment/log", "/experiment/study/session", "/study-admin/"):
+                self.assertEqual(client.get(f"{prefix}{suffix}").status_code, 404)
+
+    def test_frontend_endpoint_logs_gui_action_and_rejects_conversation_text(self):
+        client = Client()
+        accepted = client.post(
+            "/progettoGIS/cartaNatura/telemetry/events",
+            data=json.dumps({
+                "eventType": "gui_action",
+                "interactionMode": "gui",
+                "operation": "open_report",
+                "analysisId": "analysis-1",
+                "data": {"controlId": "mostraInfoBut"},
+            }),
+            content_type="application/json",
+        )
+        rejected = client.post(
+            "/progettoGIS/cartaNatura/telemetry/events",
+            data=json.dumps({
+                "eventType": "gui_action",
+                "interactionMode": "gui",
+                "userText": "duplicate",
+            }),
+            content_type="application/json",
+        )
+        session_id = client.session["anonymous_session_id"]
+        events = load_raw_events(session_id)
+
+        self.assertEqual(accepted.status_code, 201)
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["eventType"], "gui_action")
+
+    def test_frontend_authoritative_event_inventory_is_persisted(self):
+        client = Client()
+        for event_type in (
+            "gui_action",
+            "economic_evaluation",
+            "report_prepared",
+            "pdf_generated",
+            "error",
+        ):
             response = client.post(
-                f"/progettoGIS/cartaNatura/study-admin/{started['participantId']}/"
-                f"{started['studySessionId']}/delete/"
-            )
-
-            self.assertEqual(response.status_code, 302)
-            self.assertIn("error=active", response.url)
-            self.assertTrue(session_path.exists())
-
-    def test_anonymous_archive_exports_and_delete_are_blocked_for_both_route_aliases(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            context = create_study_session(
-                participant_id="participant_private_001",
-                condition="webgis",
-                now=datetime(2026, 9, 1, 12, 0, tzinfo=UTC),
-                log_root=Path(temp_dir),
-            )
-            session_path = Path(temp_dir) / context.participantId / context.studySessionId
-            client = Client()
-
-            for prefix in ("", "/progettoGIS/cartaNatura"):
-                page = client.get(f"{prefix}/study-admin/")
-                download = client.get(
-                    f"{prefix}/study-admin/{context.participantId}/"
-                    f"{context.studySessionId}/download/json/"
-                )
-                delete = client.post(
-                    f"{prefix}/study-admin/{context.participantId}/"
-                    f"{context.studySessionId}/delete/"
-                )
-
-                self.assertEqual(page.status_code, 302)
-                self.assertIn("/study-admin/login/", page.url)
-                self.assertNotIn(context.participantId, page.content.decode("utf-8"))
-                self.assertEqual(download.status_code, 302)
-                self.assertIn("/study-admin/login/", download.url)
-                self.assertEqual(delete.status_code, 302)
-                self.assertIn("/study-admin/login/", delete.url)
-                self.assertTrue(session_path.exists())
-
-    def test_login_rejects_wrong_password_and_allows_correct_password(self):
-        client = Client()
-
-        wrong = self._login(client, "wrong-password")
-        still_blocked = client.get("/progettoGIS/cartaNatura/study-admin/")
-        correct = self._login(client)
-        allowed = client.get("/progettoGIS/cartaNatura/study-admin/")
-
-        self.assertEqual(wrong.status_code, 401)
-        self.assertContains(wrong, "Password non corretta", status_code=401)
-        self.assertEqual(still_blocked.status_code, 302)
-        self.assertEqual(correct.status_code, 302)
-        self.assertEqual(allowed.status_code, 200)
-        self.assertContains(allowed, "Esperimenti salvati")
-
-    def test_login_rejects_external_next_redirect(self):
-        response = Client().post(
-            "/progettoGIS/cartaNatura/study-admin/login/",
-            {"password": "test-study-admin-password", "next": "https://attacker.example/"},
-        )
-
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, "/progettoGIS/cartaNatura/study-admin/")
-        self.assertNotIn("attacker.example", response.url)
-
-    @override_settings(STUDY_ADMIN_PASSWORD="")
-    def test_unconfigured_password_fails_closed(self):
-        client = Client()
-
-        archive = client.get("/progettoGIS/cartaNatura/study-admin/")
-        login = client.get("/progettoGIS/cartaNatura/study-admin/login/")
-
-        self.assertEqual(archive.status_code, 302)
-        self.assertEqual(login.status_code, 503)
-        self.assertContains(login, "Password amministrativa non configurata", status_code=503)
-
-    def test_password_rotation_invalidates_existing_admin_session(self):
-        client = Client()
-        self._login(client)
-
-        before_rotation = client.get("/progettoGIS/cartaNatura/study-admin/")
-        with override_settings(STUDY_ADMIN_PASSWORD="rotated-study-password"):
-            after_rotation = client.get("/progettoGIS/cartaNatura/study-admin/")
-
-        self.assertEqual(before_rotation.status_code, 200)
-        self.assertEqual(after_rotation.status_code, 302)
-        self.assertIn("/study-admin/login/", after_rotation.url)
-
-    def test_logout_preserves_active_study_context(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            client = Client()
-            started = client.post(
-                "/progettoGIS/cartaNatura/experiment/study/session",
-                data='{"participantId":"participant_logout","condition":"webgis"}',
+                "/progettoGIS/cartaNatura/telemetry/events",
+                data=json.dumps({
+                    "eventType": event_type,
+                    "interactionMode": "gui",
+                    "interactionId": "gui-interaction",
+                    "analysisId": "analysis-1",
+                    "operation": event_type,
+                    "errorMessage": "client failure" if event_type == "error" else None,
+                }),
                 content_type="application/json",
-            ).json()["session"]
-            self._login(client)
-
-            logout = client.post("/progettoGIS/cartaNatura/study-admin/logout/")
-            archive = client.get("/progettoGIS/cartaNatura/study-admin/")
-
-            self.assertEqual(logout.status_code, 302)
-            self.assertEqual(archive.status_code, 302)
-            self.assertEqual(client.session[STUDY_CONTEXT_SESSION_KEY]["studySessionId"], started["studySessionId"])
-
-    def test_admin_mutations_keep_csrf_protection(self):
-        client = Client(enforce_csrf_checks=True)
-        login_page = client.get("/progettoGIS/cartaNatura/study-admin/login/")
-        csrf_token = login_page.cookies["csrftoken"].value
-
-        rejected_login = client.post(
-            "/progettoGIS/cartaNatura/study-admin/login/",
-            {"password": "test-study-admin-password"},
-        )
-        accepted_login = client.post(
-            "/progettoGIS/cartaNatura/study-admin/login/",
-            {"password": "test-study-admin-password", "csrfmiddlewaretoken": csrf_token},
-            HTTP_X_CSRFTOKEN=csrf_token,
-        )
-        rejected_logout = client.post("/progettoGIS/cartaNatura/study-admin/logout/")
-        rejected_delete = client.post("/study-admin/participant_001/session_001/delete/")
-
-        self.assertEqual(rejected_login.status_code, 403)
-        self.assertEqual(accepted_login.status_code, 302)
-        self.assertEqual(rejected_logout.status_code, 403)
-        self.assertEqual(rejected_delete.status_code, 403)
-
-
-@override_settings(
-    STUDY_ADMIN_PASSWORD="test-study-admin-password",
-    SESSION_ENGINE="django.contrib.sessions.backends.db",
-)
-class StudyAdminDatabaseSessionTests(TestCase):
-    def test_login_rotates_session_and_logout_preserves_study_context(self):
-        with TemporaryDirectory() as temp_dir, override_settings(STUDY_LOG_ROOT=Path(temp_dir)):
-            client = Client()
-            started = client.post(
-                "/experiment/study/session",
-                data='{"participantId":"participant_db_auth","condition":"webgis"}',
-                content_type="application/json",
-            ).json()["session"]
-            previous_session_key = client.session.session_key
-
-            login = StudyAdminTests._login(client)
-            self.assertEqual(login.status_code, 302)
-            self.assertNotEqual(client.session.session_key, previous_session_key)
-            self.assertEqual(client.get("/study-admin/").status_code, 200)
-            self.assertNotIn("test-study-admin-password", json.dumps(dict(client.session)))
-
-            client.post("/study-admin/logout/")
-            self.assertEqual(client.get("/study-admin/").status_code, 302)
-            self.assertEqual(
-                client.session[STUDY_CONTEXT_SESSION_KEY]["studySessionId"],
-                started["studySessionId"],
             )
+            self.assertEqual(response.status_code, 201)
+        events = load_raw_events(client.session["anonymous_session_id"])
+        self.assertEqual([event["eventType"] for event in events], [
+            "gui_action",
+            "economic_evaluation",
+            "report_prepared",
+            "pdf_generated",
+            "error",
+        ])
+
+    def test_runtime_modes_are_session_scoped_and_enforced_without_study_lifecycle(self):
+        gui_client = Client()
+        gui_page = gui_client.get("/progettoGIS/cartaNatura/?mode=gui-only")
+        blocked_chat = gui_client.post(
+            "/progettoGIS/cartaNatura/interact",
+            data='{"message":"ciao"}',
+            content_type="application/json",
+        )
+        conversational_client = Client()
+        conversational_page = conversational_client.get(
+            "/progettoGIS/cartaNatura/?mode=conversational-only"
+        )
+        blocked_gis = conversational_client.post(
+            "/progettoGIS/cartaNatura/gis",
+            data='{"areas":[]}',
+            content_type="application/json",
+        )
+
+        self.assertContains(gui_page, '"runtimeMode": "gui_only"')
+        self.assertNotContains(gui_page, '"study"')
+        self.assertNotContains(gui_page, "participantId")
+        self.assertEqual(blocked_chat.status_code, 403)
+        self.assertContains(conversational_page, '"runtimeMode": "conversational_only"')
+        self.assertEqual(blocked_gis.status_code, 403)
+
+    @patch("cartaNatura.views._build_request_orchestrator")
+    @patch("cartaNatura.views.require_llm_provider_configured")
+    def test_backend_is_authoritative_for_user_and_assistant_text(self, _require, build_orchestrator):
+        response = InteractionResponse(
+            messages=(InteractionMessage(role="assistant", text="Risposta unica"),),
+            ui_hints={"mode": "answer", "providerMode": "openai"},
+        )
+        build_orchestrator.return_value.handle.return_value = response
+        client = Client()
+        result = client.post(
+            "/progettoGIS/cartaNatura/interact",
+            data=json.dumps({
+                "message": "Domanda unica",
+                "metadata": {"interactionMode": "text", "interactionId": "interaction-stable"},
+            }),
+            content_type="application/json",
+        )
+        events = load_raw_events(client.session["anonymous_session_id"])
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["interactionId"], "interaction-stable")
+        self.assertEqual({event.get("interactionId") for event in events}, {"interaction-stable"})
+        self.assertEqual(sum(event.get("userText") == "Domanda unica" for event in events), 1)
+        self.assertEqual(sum(event.get("assistantResponse") == "Risposta unica" for event in events), 1)
+        self.assertEqual([event["eventType"] for event in events], ["interaction_started", "interaction_completed"])
+
+    @patch("cartaNatura.views._build_request_orchestrator")
+    @patch("cartaNatura.views.require_llm_provider_configured")
+    def test_failed_interaction_is_terminal_and_correlated(self, _require, build_orchestrator):
+        build_orchestrator.return_value.handle.side_effect = ValueError("richiesta non valida")
+        client = Client()
+        response = client.post(
+            "/progettoGIS/cartaNatura/interact",
+            data=json.dumps({
+                "message": "domanda",
+                "metadata": {"interactionMode": "text", "interactionId": "failed-interaction"},
+            }),
+            content_type="application/json",
+        )
+        events = load_raw_events(client.session["anonymous_session_id"])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            [event["eventType"] for event in events],
+            ["interaction_started", "interaction_failed"],
+        )
+        self.assertTrue(all(event["interactionId"] == "failed-interaction" for event in events))
+
+    @patch("cartaNatura.views.transcribe_uploaded_audio", return_value="Analizza Montella")
+    def test_voice_transcript_has_stable_interaction_id_and_audio_is_not_persisted(self, _transcribe):
+        client = Client()
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            result = client.post(
+                "/progettoGIS/cartaNatura/voice/transcribe",
+                data={
+                    "audio": SimpleUploadedFile("voice.webm", b"raw-audio", content_type="audio/webm"),
+                    "interactionId": "voice-interaction",
+                },
+            )
+        events = load_raw_events(client.session["anonymous_session_id"])
+
+        self.assertEqual(result.json()["interactionId"], "voice-interaction")
+        self.assertEqual(events[0]["eventType"], "voice_transcribed")
+        self.assertEqual(events[0]["transcript"], "Analizza Montella")
+        self.assertNotIn("raw-audio", json.dumps(events))
 
 
 class VoiceTranscriptionTests(SimpleTestCase):

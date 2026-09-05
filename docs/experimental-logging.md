@@ -1,140 +1,82 @@
-# Logging Sperimentale
+# Telemetria Raw
 
-## Obiettivo
+Carta Natura non gestisce partecipanti, task o sessioni di studio. L'operatore
+gestisce il protocollo ASITA 2026 esternamente all'applicazione.
 
-Il logging prepara il sistema per un confronto controlled within-subject tra interfaccia WebGIS tradizionale e interfaccia conversazionale testuale/vocale.
+## Persistenza
 
-## Endpoint
-
-- `GET /progettoGIS/cartaNatura/experiment/log`
-- `POST /progettoGIS/cartaNatura/experiment/log`
-- `DELETE /progettoGIS/cartaNatura/experiment/log`
-- `GET /progettoGIS/cartaNatura/experiment/study/session`
-- `GET /progettoGIS/cartaNatura/experiment/study/session?format=jsonl`
-- `POST /progettoGIS/cartaNatura/experiment/study/session`
-- `DELETE /progettoGIS/cartaNatura/experiment/study/session`
-
-Il log operativo ordinario vive nella sessione Django e può essere esportato come JSON.
-La modalità studio persistente usa file locali esclusi da git in `var/study-logs/`.
-
-## Archivio Locale
-
-La pagina `/progettoGIS/cartaNatura/study-admin/` elenca tutte le sessioni
-persistenti, mostra riepiloghi ed eventi e permette di scaricare JSON/JSONL o
-eliminare una sessione chiusa. Pagina, download ed eliminazione richiedono la
-password condivisa configurata in `STUDY_ADMIN_PASSWORD`. Se la variabile non è
-configurata, l'archivio resta chiuso. La password non viene salvata nella sessione:
-la sessione conserva soltanto un token HMAC, che viene invalidato quando la
-password cambia. Una sessione attiva nella sessione Django corrente deve essere
-chiusa dalla console Studio prima di poterla eliminare.
-
-## Attivazione Riservata
-
-La console operatore viene generata solo aprendo l'app con:
+Il log primario è un file JSONL append-only per sessione anonima:
 
 ```text
-/progettoGIS/cartaNatura/?study=1
+<DJANGO_DATA_DIR>/raw-events/session_<uuid>.jsonl
 ```
 
-Senza `study=1` non vengono renderizzati controlli riservati. Se una sessione persistente è già attiva nella sessione Django, gli eventi ordinari continuano a essere salvati su file anche quando la UI riservata non è visibile.
+Ogni evento è serializzato in una singola scrittura protetta da lock di file e
+`fsync`, così processi e thread concorrenti non sovrascrivono eventi. Non vengono
+creati summary o metriche aggregate. L'analisi avviene offline sul JSONL.
 
-`POST /experiment/study/session` crea la sessione persistente con `participantId`, `condition` (`webgis` o `conversational`) e `taskId`. Il partecipante deve essere identificato solo tramite codice anonimo, per esempio `participant_001`.
+Il solo endpoint di scrittura dal browser è:
+
+- `POST /progettoGIS/cartaNatura/telemetry/events`
+
+Accetta esclusivamente eventi client-side: `gui_action`,
+`economic_evaluation`, `report_prepared`, `pdf_generated` ed `error`.
+Rifiuta testo utente, transcript e risposta assistente: questi contenuti sono
+autorevoli solo sul backend.
+
+## Schema evento
+
+Campi sempre presenti:
+
+- `schemaVersion`: attualmente `1`;
+- `eventId`: UUID univoco;
+- `timestamp`: UTC ISO 8601;
+- `anonymousSessionId`: UUID casuale conservato nella sessione Django;
+- `interactionMode`: `gui`, `text` o `voice`;
+- `eventType`.
+
+Campi opzionali, solo quando pertinenti:
+
+- `interactionId`, `operation`, `durationMs`, `analysisId`;
+- `userText`, `transcript`, `assistantResponse`;
+- `tool: {name, callId}`;
+- `error: {type, message}`;
+- `data`: argomenti/risultati essenziali, summary GIS, scenari e metadati tecnici allow-listed.
 
 ## Eventi
 
-Eventi ammessi:
+- `interaction_started`, `interaction_completed`, `interaction_failed`;
+- `voice_transcribed`;
+- `tool_started`, `tool_completed`, `tool_failed`, `tool_recovered`;
+- `gui_action`;
+- `analysis_completed`, `economic_evaluation`, `comparison_completed`;
+- `report_prepared`, `pdf_generated`;
+- `error`.
 
-- `session_started`
-- `task_started`
-- `task_completed`
-- `task_failed`
-- `task_interrupted`
-- `ui_action`
-- `chat_message`
-- `chat_response`
-- `tool_started`
-- `tool_completed`
-- `tool_failed`
-- `protocol_violation`
-- `selection_changed`
-- `analysis_started`
-- `analysis_completed`
-- `valuation_completed`
-- `report_generated`
-- `report_opened`
-- `interaction_started`
-- `interaction_completed`
-- `voice_started`
-- `voice_transcribed`
-- `reset_completed`
-- `error`
-- `unknown_request`
+## Autorità e deduplicazione
 
-## Metriche Derivate
+- Backend: testo inviato, transcript vocale, risposta assistente, tool, risultati
+  strutturati, errori backend e durata dell'interazione.
+- Frontend: azioni GUI, calcolo economico eseguito nel browser, apertura report,
+  PDF ed errori esclusivamente client-side.
 
-`summary` nell'export include:
+Il transcript viene scritto al termine della trascrizione e riutilizza lo stesso
+`interactionId` dell'eventuale richiesta vocale successiva. L'audio raw non viene
+persistito. Il frontend non può inviare contenuti conversazionali al logger.
 
-- `taskCompletionCount`
-- `taskCompletionDurationMs`
-- `interactionCount`
-- `operationalStepCount`
-- `errorCount`
-- `unknownRequestCount`
-- `textInteractionCount`
-- `voiceInteractionCount`
-- `completedOperations`
-- `reportGeneratedCount`
-- `uiActionCount`
-- `chatMessageCount`
-- `toolCallCount`
-- `failedTaskCount`
-- `interruptedTaskCount`
-- `protocolViolationCount`
-- `tasks`
+## Modalità operative
 
-## Minimizzazione Dati
+L'operatore imposta una modalità senza participant/task lifecycle:
 
-Nel log ordinario non vengono salvati:
+- `?mode=gui-only` — disabilita e blocca gli endpoint conversazionali;
+- `?mode=conversational-only` — disabilita e blocca l'avvio dell'analisi GUI;
+- `?mode=full` — ripristina entrambe le interfacce.
 
-- testo libero richieste utente
-- transcript voce
-- IP
-- user agent
-- nomi personali
-- identificativi account
+La scelta viene conservata nella sessione Django e applicata sia nella UI sia
+nelle view server per le operazioni principali.
 
-In modalità studio persistente vengono salvati anche testo utente, transcript vocale e risposta assistente, perché parte dell'analisi sperimentale. Restano esclusi identificativi personali non necessari come nome, cognome, email, IP e user-agent.
+## Dati legacy
 
-## Persistenza Studio
-
-Struttura file:
-
-```text
-var/study-logs/
-  participant_001/
-    session_20260613_101500_webgis/
-      events.jsonl
-      summary.json
-```
-
-Ogni evento persistente include contesto sessione (`participantId`, `studySessionId`, `condition`, `taskId`) più metadati operativi e, solo in modalità studio, campi conversazionali (`userText`, `userTranscript`, `assistantResponse`, `intent`).
-
-Nel log ordinario sono ammessi solo metadati operativi: conteggi, durate, stato, canale, operazione, numero categorie, CO2 totale, scenario prezzo.
-
-## Protocollo Pilot ASITA 2026
-
-Il protocollo operativo versionato è in [asita-2026-pilot-protocol.md](asita-2026-pilot-protocol.md).
-Il foglio operativo per l'operatore è in [asita-2026-task-sheet.md](asita-2026-task-sheet.md).
-
-## Workflow Studio
-
-Per ogni partecipante:
-
-1. assegnare ordine condizioni dal protocollo
-2. avviare sessione persistente in `?study=1`
-3. avviare ogni task con `Inizia attività`
-4. chiudere ogni task con `Completa`, `Errore` o `Non compresa`
-5. esportare JSON e JSONL a fine condizione
-6. fare reset prima della condizione successiva
-
-Ordine delle condizioni da controbilanciare tra partecipanti.
+Eventuali directory `var/study-logs/` create da versioni precedenti non vengono
+migrate, lette o cancellate automaticamente. Non appartengono al nuovo schema e
+devono essere archiviate come dati legacy separati.

@@ -3,40 +3,29 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-from functools import wraps
 from pathlib import Path
-from urllib.parse import urlencode
+from time import perf_counter
 
 from django.conf import settings
-from django.http import HttpResponse
 from django.http import HttpResponseNotFound
 from django.http import JsonResponse
 from django.http import StreamingHttpResponse
-from django.shortcuts import redirect, render
+from django.shortcuts import render
 from django.middleware.csrf import get_token
 from django.templatetags.static import static
 from django.urls import reverse
-from django.utils.crypto import constant_time_compare, salted_hmac
-from django.utils.http import url_has_allowed_host_and_scheme
-from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.http import require_POST
 
 from cartaNatura.domain.economics import PRICE_OPTIONS
 from cartaNatura.domain.vegetation import serialize_categories
-from cartaNatura.experiments import (
-    EXPERIMENT_ACTIVE_TASK_SESSION_KEY,
-    STUDY_CONTEXT_SESSION_KEY,
-    clear_experiment_log,
-    create_study_session,
-    export_experiment_log,
-    export_study_events_jsonl,
-    export_study_session,
-    record_experiment_event,
+from cartaNatura.telemetry import (
+    FRONTEND_EVENT_TYPES,
+    new_anonymous_session_id,
+    new_interaction_id,
+    record_raw_event,
 )
-from cartaNatura.experiments.study_logging import get_study_log_root, sanitize_identifier
 from cartaNatura.interaction import (
     DjangoSessionAnalysisStore,
     InteractionChannel,
@@ -73,70 +62,18 @@ def _build_asset_version() -> str:
     return str(int(max(path.stat().st_mtime for path in tracked_paths if path.exists())))
 
 
-STUDY_TASKS = (
-    {"id": "asita_t1_area_analysis", "label": "T1 - Analisi comuni/area"},
-    {"id": "asita_t2_forest_co2", "label": "T2 - Categorie forestali e CO2"},
-    {"id": "asita_t3_economic_value", "label": "T3 - Valore economico"},
-    {"id": "asita_t4_scenario_compare", "label": "T4 - Confronto scenari"},
-    {"id": "asita_t5_report_pdf", "label": "T5 - Report e PDF"},
-    {"id": "asita_t6_map_verify", "label": "T6 - Verifica in mappa"},
-)
-
-STUDY_ADMIN_AUTH_SESSION_KEY = "study_admin_auth"
-
-
-def _study_admin_password() -> str:
-    return str(getattr(settings, "STUDY_ADMIN_PASSWORD", "") or "")
-
-
-def _study_admin_auth_token() -> str | None:
-    password = _study_admin_password()
-    if not password:
-        return None
-    return salted_hmac(
-        "cartaNatura.study_admin",
-        password,
-        secret=settings.SECRET_KEY,
-    ).hexdigest()
-
-
-def _study_admin_is_authenticated(request) -> bool:
-    expected = _study_admin_auth_token()
-    actual = request.session.get(STUDY_ADMIN_AUTH_SESSION_KEY)
-    return bool(
-        expected
-        and isinstance(actual, str)
-        and constant_time_compare(actual, expected)
-    )
-
-
-def _study_admin_redirect_target(request) -> str:
-    candidate = str(request.POST.get("next") or request.GET.get("next") or "")
-    if candidate and url_has_allowed_host_and_scheme(
-        candidate,
-        allowed_hosts={request.get_host()},
-        require_https=request.is_secure(),
-    ):
-        return candidate
-    return reverse("study_admin")
-
-
-def study_admin_required(view_func):
-    @wraps(view_func)
-    def wrapped(request, *args, **kwargs):
-        if _study_admin_is_authenticated(request):
-            return view_func(request, *args, **kwargs)
-        login_url = reverse("study_admin_login")
-        query = urlencode({"next": request.get_full_path()})
-        return redirect(f"{login_url}?{query}")
-
-    return wrapped
+RUNTIME_MODE_SESSION_KEY = "runtime_mode"
+ANONYMOUS_SESSION_ID_KEY = "anonymous_session_id"
+RUNTIME_MODES = {"full", "gui_only", "conversational_only"}
 
 
 def _ensure_session_id(request) -> str:
-    if not request.session.session_key:
-        request.session.create()
-    return request.session.session_key or "web-session"
+    session_id = request.session.get(ANONYMOUS_SESSION_ID_KEY)
+    if not isinstance(session_id, str) or not session_id:
+        session_id = new_anonymous_session_id()
+        request.session[ANONYMOUS_SESSION_ID_KEY] = session_id
+        request.session.modified = True
+    return session_id
 
 
 def _build_request_orchestrator(request):
@@ -213,7 +150,15 @@ def _read_json_body(request) -> dict[str, object]:
     return payload
 
 
-def _build_text_interaction_request(request, payload: dict[str, object]) -> InteractionRequest:
+def _interaction_id_from_payload(payload: dict[str, object]) -> str:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    requested = str(metadata.get("interactionId") or "").strip()
+    return requested[:160] if requested else new_interaction_id()
+
+
+def _build_text_interaction_request(
+    request, payload: dict[str, object], *, interaction_id: str
+) -> InteractionRequest:
     message = str(payload.get("message") or "").strip()
     context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     metadata_payload = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
@@ -226,14 +171,17 @@ def _build_text_interaction_request(request, payload: dict[str, object]) -> Inte
             metadata={
                 "source": "web_assistant",
                 "interactionMode": interaction_mode or "text",
+                "interactionId": interaction_id,
+                "transcriptLogged": bool(metadata_payload.get("transcriptLogged")),
             },
         ),
         context=build_interaction_context(context_payload),
     )
 
 
-def _serialize_interaction_response(response) -> dict[str, object]:
+def _serialize_interaction_response(response, *, interaction_id: str) -> dict[str, object]:
     return {
+        "interactionId": interaction_id,
         "messages": [
             {
                 "role": message_item.role,
@@ -262,30 +210,13 @@ def _llm_log_details(response) -> dict[str, object]:
     }
 
 
-def _study_enabled(request) -> bool:
-    return request.GET.get("study") == "1"
-
-
-def _study_context_payload(request) -> dict[str, object] | None:
-    context = request.session.get(STUDY_CONTEXT_SESSION_KEY)
-    if not isinstance(context, dict):
-        return None
-    payload = dict(context)
-    active_task = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
-    payload["activeTask"] = active_task if isinstance(active_task, dict) else None
-    return payload
-
-
-def _store_study_context(request, context) -> dict[str, object]:
-    payload = {
-        "participantId": context.participantId,
-        "studySessionId": context.studySessionId,
-        "condition": context.condition,
-        "taskId": context.taskId,
-    }
-    request.session[STUDY_CONTEXT_SESSION_KEY] = payload
-    request.session.modified = True
-    return payload
+def _runtime_mode(request) -> str:
+    requested = str(request.GET.get("mode") or "").strip().lower().replace("-", "_")
+    if requested in RUNTIME_MODES:
+        request.session[RUNTIME_MODE_SESSION_KEY] = requested
+        request.session.modified = True
+    stored = str(request.session.get(RUNTIME_MODE_SESSION_KEY) or "full")
+    return stored if stored in RUNTIME_MODES else "full"
 
 
 def _assistant_response_text(response) -> str:
@@ -313,54 +244,35 @@ def _interaction_analysis_id(response) -> str | None:
     return None
 
 
-def _active_task_condition(request) -> str | None:
-    active_task = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
-    context = request.session.get(STUDY_CONTEXT_SESSION_KEY)
-    if not isinstance(active_task, dict) or not isinstance(context, dict):
-        return None
-    condition = str(active_task.get("condition") or context.get("condition") or "")
-    return condition if condition in {"webgis", "conversational"} else None
-
-
-def _condition_violation_response(
+def _mode_violation_response(
     request,
     *,
-    blocked_condition: str,
+    blocked_mode: str,
     attempted_action: str,
-    channel: str,
     interaction_mode: str,
+    interaction_id: str | None = None,
 ) -> JsonResponse | None:
-    active_condition = _active_task_condition(request)
-    if active_condition != blocked_condition:
+    active_mode = _runtime_mode(request)
+    if active_mode != blocked_mode:
         return None
-    record_experiment_event(
-        request.session,
-        event_type="protocol_violation",
-        channel=channel,
+    record_raw_event(
+        _ensure_session_id(request),
+        event_type="error",
+        interaction_id=interaction_id,
         operation=attempted_action,
         interaction_mode=interaction_mode,
-        status="blocked",
-        error="condition_action_blocked",
-        details={
-            "attemptedAction": attempted_action,
-            "blockedByCondition": active_condition,
-            "eventSource": "backend",
-        },
+        error_type="runtime_mode_blocked",
+        error_message=f"Action blocked by runtime mode {active_mode}",
+        data={"action": attempted_action},
     )
     return JsonResponse(
         {
-            "error": "Azione non consentita nella condizione sperimentale attiva.",
-            "condition": active_condition,
-            "violation": "condition_action_blocked",
+            "error": "Azione non disponibile nella modalità operativa attiva.",
+            "runtimeMode": active_mode,
+            "violation": "runtime_mode_blocked",
         },
         status=403,
     )
-
-
-def _clear_operational_state_for_task(request) -> None:
-    request.session.pop("interaction_context", None)
-    request.session.pop("interaction_analyses", None)
-    request.session.modified = True
 
 
 def _encode_sse(event_type: str, payload: dict[str, object]) -> bytes:
@@ -376,6 +288,26 @@ def _save_stream_session_if_needed(request) -> None:
         save()
 
 
+def _provider_failure_response(
+    *, session_id: str, interaction_id: str, interaction_mode: str, started_at: float
+) -> JsonResponse | None:
+    try:
+        require_llm_provider_configured()
+    except LlmProviderUnavailableError as exc:
+        record_raw_event(
+            session_id,
+            event_type="interaction_failed",
+            interaction_mode=interaction_mode,
+            interaction_id=interaction_id,
+            operation="conversational_request",
+            duration_ms=(perf_counter() - started_at) * 1000,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return JsonResponse({"error": str(exc)}, status=503)
+    return None
+
+
 @ensure_csrf_cookie
 def index(request):
     asset_version = _build_asset_version()
@@ -386,7 +318,8 @@ def index(request):
         "interactionStreamUrl": reverse("interact_stream"),
         "analysisHistoryUrl": reverse("analysis_history"),
         "voiceTranscriptionUrl": reverse("voice_transcribe"),
-        "experimentLogUrl": reverse("experiment_log"),
+        "telemetryUrl": reverse("telemetry_event"),
+        "runtimeMode": _runtime_mode(request),
         "csrfToken": get_token(request),
         "priceOptions": PRICE_OPTIONS,
         "categories": serialize_categories(),
@@ -403,13 +336,6 @@ def index(request):
             "examples": [
                 "Reset sessione",
             ],
-        },
-        "study": {
-            "enabled": _study_enabled(request),
-            "sessionUrl": reverse("study_session"),
-            "adminUrl": reverse("study_admin"),
-            "currentSession": _study_context_payload(request),
-            "tasks": STUDY_TASKS,
         },
         "datasets": {
             "municipalitiesUrl": f"{static('data/campania-municipalities-32633.geojson')}?v={asset_version}",
@@ -428,80 +354,101 @@ def index(request):
 
 @require_POST
 def gis(request):
+    started_at = perf_counter()
+    session_id = _ensure_session_id(request)
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
         return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
+    interaction_id = new_interaction_id()
 
-    violation_response = _condition_violation_response(
+    violation_response = _mode_violation_response(
         request,
-        blocked_condition="conversational",
+        blocked_mode="conversational_only",
         attempted_action="spatial_analysis_ui",
-        channel=InteractionChannel.WEB_MAP.value,
-        interaction_mode="map",
+        interaction_mode="gui",
     )
     if violation_response is not None:
         return violation_response
 
-    record_experiment_event(
-        request.session,
-        event_type="analysis_started",
-        channel=InteractionChannel.WEB_MAP.value,
+    record_raw_event(
+        session_id,
+        event_type="interaction_started",
+        interaction_id=interaction_id,
         operation="spatial_analysis",
-        interaction_mode="map",
-        step_count=len(payload.get("areas", [])) if isinstance(payload.get("areas"), list) else None,
+        interaction_mode="gui",
+        data={
+            "selectedMunicipalityCount": sum(
+                1 for area in payload.get("areas", [])
+                if isinstance(area, dict) and area.get("kind") == "municipality"
+            ),
+            "drawnFeatureCount": sum(
+                1 for area in payload.get("areas", [])
+                if isinstance(area, dict) and area.get("kind") == "drawn"
+            ),
+        },
     )
 
     try:
         response = _build_request_orchestrator(request).handle(
             InteractionRequest(
                 channel=InteractionChannel.WEB_MAP,
-                session_id=_ensure_session_id(request),
+                session_id=session_id,
                 input=InteractionInput(geo_selection=payload),
             )
         )
     except ValueError as exc:
-        record_experiment_event(
-            request.session,
-            event_type="error",
-            channel=InteractionChannel.WEB_MAP.value,
+        record_raw_event(
+            session_id,
+            event_type="interaction_failed",
+            interaction_id=interaction_id,
             operation="spatial_analysis",
-            interaction_mode="map",
-            error=str(exc),
+            interaction_mode="gui",
+            duration_ms=(perf_counter() - started_at) * 1000,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
         )
         return JsonResponse({"error": str(exc)}, status=400)
 
     if response.analysis_result is None:
-        record_experiment_event(
-            request.session,
-            event_type="error",
-            channel=InteractionChannel.WEB_MAP.value,
+        record_raw_event(
+            session_id,
+            event_type="interaction_failed",
+            interaction_id=interaction_id,
             operation="spatial_analysis",
-            interaction_mode="map",
-            error="missing_analysis_result",
+            interaction_mode="gui",
+            duration_ms=(perf_counter() - started_at) * 1000,
+            error_type="missing_analysis_result",
+            error_message="Analysis result missing",
         )
         return JsonResponse({"error": "Analisi non completata: risultato mancante."}, status=500)
 
     summary = response.analysis_result.get("summary", {})
-    record_experiment_event(
-        request.session,
+    record_raw_event(
+        session_id,
         event_type="analysis_completed",
-        channel=InteractionChannel.WEB_MAP.value,
+        interaction_id=interaction_id,
         operation="spatial_analysis",
-        interaction_mode="map",
-        details={
-            "analysisId": response.analysis_result.get("analysisId"),
-            "intersectedMunicipalityCount": len(
-                response.analysis_result.get("intersectedMunicipalities", [])
-            ),
-            "categoryCount": len(summary.get("items", [])) if isinstance(summary, dict) else 0,
-            "hasSupportedVegetation": bool(
-                summary.get("hasSupportedVegetation") if isinstance(summary, dict) else False
-            ),
-            "totalCo2": summary.get("totalCo2") if isinstance(summary, dict) else None,
+        interaction_mode="gui",
+        analysis_id=response.analysis_result.get("analysisId"),
+        duration_ms=(perf_counter() - started_at) * 1000,
+        data={
+            "summary": summary,
+            "intersectedMunicipalities": response.analysis_result.get("intersectedMunicipalities", []),
         },
     )
-    return JsonResponse(response.analysis_result)
+    record_raw_event(
+        session_id,
+        event_type="interaction_completed",
+        interaction_id=interaction_id,
+        operation="spatial_analysis",
+        interaction_mode="gui",
+        duration_ms=(perf_counter() - started_at) * 1000,
+        analysis_id=response.analysis_result.get("analysisId"),
+    )
+    payload_out = dict(response.analysis_result)
+    payload_out["interactionId"] = interaction_id
+    return JsonResponse(payload_out)
 
 
 @require_http_methods(["GET", "DELETE"])
@@ -521,6 +468,7 @@ def analysis_history(request):
 
 @require_POST
 def analysis_history_compare(request):
+    started_at = perf_counter()
     try:
         payload = _read_json_body(request)
     except ValueError as exc:
@@ -548,7 +496,16 @@ def analysis_history_compare(request):
         records.append(analysis)
 
     try:
-        return JsonResponse(compare_saved_analyses(records, price_options=PRICE_OPTIONS))
+        comparison = compare_saved_analyses(records, price_options=PRICE_OPTIONS)
+        record_raw_event(
+            _ensure_session_id(request),
+            event_type="comparison_completed",
+            interaction_mode="gui",
+            operation="analysis_history_compare",
+            duration_ms=(perf_counter() - started_at) * 1000,
+            data={"analysisIds": analysis_ids},
+        )
+        return JsonResponse(comparison)
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
 
@@ -580,50 +537,56 @@ def analysis_history_detail(request, analysis_id: str):
 
 @require_POST
 def interact(request):
+    started_at = perf_counter()
     if not settings.AI_ASSISTANT_ENABLED:
         return HttpResponseNotFound()
-
-    violation_response = _condition_violation_response(
-        request,
-        blocked_condition="webgis",
-        attempted_action="conversational_request",
-        channel=InteractionChannel.WEB_CHAT.value,
-        interaction_mode="text",
-    )
-    if violation_response is not None:
-        return violation_response
-
-    try:
-        require_llm_provider_configured()
-    except LlmProviderUnavailableError as exc:
-        return JsonResponse(
-            {"error": str(exc)},
-            status=503,
-        )
 
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
         return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
+    interaction_id = _interaction_id_from_payload(payload)
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    requested_mode = "voice" if metadata.get("interactionMode") == "voice" else "text"
 
-    interaction_request = _build_text_interaction_request(request, payload)
+    violation_response = _mode_violation_response(
+        request,
+        blocked_mode="gui_only",
+        attempted_action="conversational_request",
+        interaction_mode=requested_mode,
+        interaction_id=interaction_id,
+    )
+    if violation_response is not None:
+        return violation_response
+
+    interaction_request = _build_text_interaction_request(request, payload, interaction_id=interaction_id)
     session_id = interaction_request.session_id
     interaction_mode = interaction_request.input.metadata.get("interactionMode", "text")
-    record_experiment_event(
-        request.session,
+    record_raw_event(
+        session_id,
         event_type="interaction_started",
-        channel=interaction_request.channel.value,
+        interaction_id=interaction_id,
         operation="conversational_request",
         interaction_mode=str(interaction_mode),
-        user_text=interaction_request.input.primary_text(),
-        user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
-        details={
-            "messageLength": len(interaction_request.input.primary_text()),
-            "eventSource": "backend",
+        user_text=interaction_request.input.primary_text() if interaction_mode != "voice" else None,
+        transcript=(
+            interaction_request.input.primary_text()
+            if interaction_mode == "voice" and not interaction_request.input.metadata.get("transcriptLogged")
+            else None
+        ),
+        data={
             "providerMode": _llm_status()["provider"],
             "providerModel": _llm_status()["model"],
         },
     )
+    provider_failure = _provider_failure_response(
+        session_id=session_id,
+        interaction_id=interaction_id,
+        interaction_mode=str(interaction_mode),
+        started_at=started_at,
+    )
+    if provider_failure is not None:
+        return provider_failure
     logger.info(
         "Assistant interaction started session=%s chars=%s selected=%s",
         session_id,
@@ -637,13 +600,15 @@ def interact(request):
     try:
         response = _build_request_orchestrator(request).handle(interaction_request)
     except ValueError as exc:
-        record_experiment_event(
-            request.session,
-            event_type="unknown_request",
-            channel=interaction_request.channel.value,
+        record_raw_event(
+            session_id,
+            event_type="interaction_failed",
+            interaction_id=interaction_id,
             operation="conversational_request",
             interaction_mode=str(interaction_mode),
-            error=str(exc),
+            duration_ms=(perf_counter() - started_at) * 1000,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
         )
         logger.warning(
             "Assistant interaction rejected session=%s error=%s",
@@ -652,13 +617,15 @@ def interact(request):
         )
         return JsonResponse({"error": str(exc)}, status=400)
     except LlmProviderUnavailableError as exc:
-        record_experiment_event(
-            request.session,
-            event_type="error",
-            channel=interaction_request.channel.value,
+        record_raw_event(
+            session_id,
+            event_type="interaction_failed",
+            interaction_id=interaction_id,
             operation="conversational_request",
             interaction_mode=str(interaction_mode),
-            error=str(exc),
+            duration_ms=(perf_counter() - started_at) * 1000,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
         )
         logger.warning(
             "Assistant interaction provider failure session=%s error=%s",
@@ -674,75 +641,77 @@ def interact(request):
         response.ui_hints.get("providerMode", "local"),
         bool(response.analysis_result),
     )
-    record_experiment_event(
-        request.session,
+    record_raw_event(
+        session_id,
         event_type="interaction_completed",
-        channel=interaction_request.channel.value,
+        interaction_id=interaction_id,
         operation=str(response.ui_hints.get("mode") or "conversational_request"),
         interaction_mode=str(interaction_mode),
-        intent=_assistant_intent(response),
-        user_text=interaction_request.input.primary_text(),
-        user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
+        duration_ms=(perf_counter() - started_at) * 1000,
         assistant_response=_assistant_response_text(response),
-        details={
-            "analysisId": _interaction_analysis_id(response),
+        analysis_id=_interaction_analysis_id(response),
+        data={
             "scenarioKey": (response.economic_result or {}).get("scenarioKey"),
             "priceEurPerTon": (response.economic_result or {}).get("priceEurPerTon"),
             "totalValueEur": (response.economic_result or {}).get("totalValueEur"),
             **_llm_log_details(response),
-            "eventSource": "backend",
         },
     )
-
-    return JsonResponse(_serialize_interaction_response(response))
+    return JsonResponse(_serialize_interaction_response(response, interaction_id=interaction_id))
 
 
 @require_POST
 def interact_stream(request):
+    started_at = perf_counter()
     if not settings.AI_ASSISTANT_ENABLED:
         return HttpResponseNotFound()
-
-    violation_response = _condition_violation_response(
-        request,
-        blocked_condition="webgis",
-        attempted_action="conversational_request",
-        channel=InteractionChannel.WEB_CHAT.value,
-        interaction_mode="text",
-    )
-    if violation_response is not None:
-        return violation_response
-
-    try:
-        require_llm_provider_configured()
-    except LlmProviderUnavailableError as exc:
-        return JsonResponse(
-            {"error": str(exc)},
-            status=503,
-        )
 
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
         return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
+    interaction_id = _interaction_id_from_payload(payload)
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    requested_mode = "voice" if metadata.get("interactionMode") == "voice" else "text"
 
-    interaction_request = _build_text_interaction_request(request, payload)
+    violation_response = _mode_violation_response(
+        request,
+        blocked_mode="gui_only",
+        attempted_action="conversational_request",
+        interaction_mode=requested_mode,
+        interaction_id=interaction_id,
+    )
+    if violation_response is not None:
+        return violation_response
+
+    interaction_request = _build_text_interaction_request(request, payload, interaction_id=interaction_id)
     session_id = interaction_request.session_id
     interaction_mode = interaction_request.input.metadata.get("interactionMode", "text")
-    record_experiment_event(
-        request.session,
+    record_raw_event(
+        session_id,
         event_type="interaction_started",
-        channel=interaction_request.channel.value,
+        interaction_id=interaction_id,
         operation="conversational_request",
         interaction_mode=str(interaction_mode),
-        user_text=interaction_request.input.primary_text(),
-        user_transcript=interaction_request.input.primary_text() if interaction_mode == "voice" else None,
-        details={
-            "messageLength": len(interaction_request.input.primary_text()),
-            "eventSource": "backend",
+        user_text=interaction_request.input.primary_text() if interaction_mode != "voice" else None,
+        transcript=(
+            interaction_request.input.primary_text()
+            if interaction_mode == "voice" and not interaction_request.input.metadata.get("transcriptLogged")
+            else None
+        ),
+        data={
             "providerMode": _llm_status()["provider"],
             "providerModel": _llm_status()["model"],
         },
     )
+    provider_failure = _provider_failure_response(
+        session_id=session_id,
+        interaction_id=interaction_id,
+        interaction_mode=str(interaction_mode),
+        started_at=started_at,
+    )
+    if provider_failure is not None:
+        return provider_failure
     logger.info(
         "Assistant stream started session=%s chars=%s",
         session_id,
@@ -768,13 +737,15 @@ def interact_stream(request):
                     _save_stream_session_if_needed(request)
                 yield _encode_sse(event_type, event)
         except ValueError as exc:
-            record_experiment_event(
-                request.session,
-                event_type="unknown_request",
-                channel=interaction_request.channel.value,
+            record_raw_event(
+                session_id,
+                event_type="interaction_failed",
+                interaction_id=interaction_id,
                 operation="conversational_request",
                 interaction_mode=str(interaction_mode),
-                error=str(exc),
+                duration_ms=(perf_counter() - started_at) * 1000,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
             )
             logger.warning(
                 "Assistant stream rejected session=%s error=%s",
@@ -783,13 +754,15 @@ def interact_stream(request):
             )
             yield _encode_sse("error", {"type": "error", "message": str(exc)})
         except LlmProviderUnavailableError as exc:
-            record_experiment_event(
-                request.session,
-                event_type="error",
-                channel=interaction_request.channel.value,
+            record_raw_event(
+                session_id,
+                event_type="interaction_failed",
+                interaction_id=interaction_id,
                 operation="conversational_request",
                 interaction_mode=str(interaction_mode),
-                error=str(exc),
+                duration_ms=(perf_counter() - started_at) * 1000,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
             )
             logger.warning(
                 "Assistant stream provider failure session=%s error=%s",
@@ -798,33 +771,30 @@ def interact_stream(request):
             )
             yield _encode_sse("error", {"type": "error", "message": str(exc)})
         except Exception as exc:
-            record_experiment_event(
-                request.session,
-                event_type="error",
-                channel=interaction_request.channel.value,
+            record_raw_event(
+                session_id,
+                event_type="interaction_failed",
+                interaction_id=interaction_id,
                 operation="conversational_request",
                 interaction_mode=str(interaction_mode),
-                error=str(exc),
-                details={"eventSource": "backend"},
+                duration_ms=(perf_counter() - started_at) * 1000,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
             )
             logger.exception("Assistant stream failed session=%s", session_id)
             yield _encode_sse("error", {"type": "error", "message": str(exc)})
         finally:
             if final_response is not None:
-                record_experiment_event(
-                    request.session,
+                record_raw_event(
+                    session_id,
                     event_type="interaction_completed",
-                    channel=interaction_request.channel.value,
+                    interaction_id=interaction_id,
                     operation=str(final_response.ui_hints.get("mode") or "conversational_request"),
                     interaction_mode=str(interaction_mode),
-                    intent=_assistant_intent(final_response),
-                    user_text=interaction_request.input.primary_text(),
-                    user_transcript=(
-                        interaction_request.input.primary_text() if interaction_mode == "voice" else None
-                    ),
+                    duration_ms=(perf_counter() - started_at) * 1000,
                     assistant_response=_assistant_response_text(final_response),
-                    details={
-                        "analysisId": _interaction_analysis_id(final_response),
+                    analysis_id=_interaction_analysis_id(final_response),
+                    data={
                         "scenarioKey": (final_response.economic_result or {}).get("scenarioKey"),
                         "priceEurPerTon": (final_response.economic_result or {}).get(
                             "priceEurPerTon"
@@ -833,7 +803,6 @@ def interact_stream(request):
                             "totalValueEur"
                         ),
                         **_llm_log_details(final_response),
-                        "eventSource": "backend",
                     },
                 )
                 logger.info(
@@ -848,6 +817,7 @@ def interact_stream(request):
     response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
+    response["X-Interaction-Id"] = interaction_id
     return response
 
 
@@ -856,17 +826,26 @@ def voice_transcribe(request):
     if not settings.AI_ASSISTANT_ENABLED:
         return HttpResponseNotFound()
 
-    violation_response = _condition_violation_response(
+    violation_response = _mode_violation_response(
         request,
-        blocked_condition="webgis",
+        blocked_mode="gui_only",
         attempted_action="voice_input",
-        channel=InteractionChannel.VOICE.value,
         interaction_mode="voice",
     )
     if violation_response is not None:
         return violation_response
 
+    interaction_id = str(request.POST.get("interactionId") or "").strip() or new_interaction_id()
     if not os.getenv("OPENAI_API_KEY", "").strip():
+        record_raw_event(
+            _ensure_session_id(request),
+            event_type="error",
+            interaction_id=interaction_id,
+            operation="voice_transcription",
+            interaction_mode="voice",
+            error_type="voice_not_configured",
+            error_message="OPENAI_API_KEY is not configured",
+        )
         return JsonResponse(
             {"error": "Trascrizione vocale non configurata. Imposta OPENAI_API_KEY."},
             status=503,
@@ -874,6 +853,15 @@ def voice_transcribe(request):
 
     audio_file = request.FILES.get("audio")
     if audio_file is None:
+        record_raw_event(
+            _ensure_session_id(request),
+            event_type="error",
+            interaction_id=interaction_id,
+            operation="voice_transcription",
+            interaction_mode="voice",
+            error_type="missing_audio",
+            error_message="Audio file missing",
+        )
         return JsonResponse({"error": "Audio mancante nella richiesta."}, status=400)
 
     duration_ms = None
@@ -886,388 +874,75 @@ def voice_transcribe(request):
     try:
         transcript = transcribe_uploaded_audio(audio_file)
     except ValueError as exc:
-        record_experiment_event(
-            request.session,
+        record_raw_event(
+            _ensure_session_id(request),
             event_type="error",
-            channel=InteractionChannel.VOICE.value,
+            interaction_id=interaction_id,
             operation="voice_transcription",
             interaction_mode="voice",
             duration_ms=duration_ms,
-            error=str(exc),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
         )
         return JsonResponse({"error": str(exc)}, status=400)
     except LlmProviderUnavailableError as exc:
-        record_experiment_event(
-            request.session,
+        record_raw_event(
+            _ensure_session_id(request),
             event_type="error",
-            channel=InteractionChannel.VOICE.value,
+            interaction_id=interaction_id,
             operation="voice_transcription",
             interaction_mode="voice",
             duration_ms=duration_ms,
-            error=str(exc),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
         )
         return JsonResponse({"error": str(exc)}, status=503)
 
-    record_experiment_event(
-        request.session,
+    record_raw_event(
+        _ensure_session_id(request),
         event_type="voice_transcribed",
-        channel=InteractionChannel.VOICE.value,
+        interaction_id=interaction_id,
         operation="voice_transcription",
         interaction_mode="voice",
         duration_ms=duration_ms,
-        user_transcript=transcript,
-        details={"transcriptLength": len(transcript)},
+        transcript=transcript,
     )
-    return JsonResponse({"transcript": transcript})
-
-
-@require_http_methods(["GET", "POST", "DELETE"])
-def experiment_log(request):
-    if request.method == "GET":
-        return JsonResponse(export_experiment_log(request.session))
-
-    if request.method == "DELETE":
-        clear_experiment_log(request.session)
-        return JsonResponse(export_experiment_log(request.session))
-
-    try:
-        payload = json.loads(request.body.decode("utf-8"))
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
-
-    if not isinstance(payload, dict):
-        return JsonResponse({"error": "Richiesta non valida: payload non supportato."}, status=400)
-
-    event = record_experiment_event(
-        request.session,
-        event_type=str(payload.get("eventType") or ""),
-        channel=str(payload.get("channel") or "system"),
-        operation=str(payload.get("operation") or ""),
-        interaction_mode=str(payload.get("interactionMode") or ""),
-        duration_ms=payload.get("durationMs") if isinstance(payload.get("durationMs"), int) else None,
-        step_count=payload.get("stepCount") if isinstance(payload.get("stepCount"), int) else None,
-        task_id=str(payload.get("taskId") or ""),
-        task_run_id=str(payload.get("taskRunId") or ""),
-        condition=str(payload.get("condition") or ""),
-        status=str(payload.get("status") or ""),
-        error=str(payload.get("error") or ""),
-        intent=str(payload.get("intent") or ""),
-        user_text=str(payload.get("userText") or ""),
-        user_transcript=str(payload.get("userTranscript") or ""),
-        assistant_response=str(payload.get("assistantResponse") or ""),
-        details=payload.get("details") if isinstance(payload.get("details"), dict) else {},
-    )
-    return JsonResponse({"event": event, "summary": export_experiment_log(request.session)["summary"]})
-
-
-@require_http_methods(["GET", "POST", "DELETE"])
-def study_session(request):
-    if request.method == "GET":
-        context = _study_context_payload(request)
-        if context is None:
-            return JsonResponse({"active": False, "export": None})
-        if request.GET.get("format") == "jsonl":
-            body = export_study_events_jsonl(context)
-            response = HttpResponse(body, content_type="application/jsonl; charset=utf-8")
-            response["Content-Disposition"] = (
-                f'attachment; filename="{context["participantId"]}_{context["studySessionId"]}.jsonl"'
-            )
-            return response
-        return JsonResponse({"active": True, "export": export_study_session(context)})
-
-    if request.method == "DELETE":
-        context = _study_context_payload(request)
-        if context is not None:
-            active_task = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
-            if isinstance(active_task, dict):
-                record_experiment_event(
-                    request.session,
-                    event_type="task_interrupted",
-                    channel="system",
-                    operation="study_task",
-                    interaction_mode="system",
-                    task_id=str(active_task.get("taskId") or ""),
-                    task_run_id=str(active_task.get("taskRunId") or ""),
-                    condition=str(context.get("condition") or ""),
-                    status="interrupted",
-                    error="study_session_reset",
-                )
-            record_experiment_event(
-                request.session,
-                event_type="reset_completed",
-                channel="system",
-                operation="study_session_reset",
-                interaction_mode="system",
-                status="completed",
-            )
-        request.session.pop(STUDY_CONTEXT_SESSION_KEY, None)
-        _clear_operational_state_for_task(request)
-        request.session.modified = True
-        return JsonResponse({"active": False})
-
-    try:
-        payload = json.loads(request.body.decode("utf-8"))
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Richiesta non valida: formato JSON errato."}, status=400)
-
-    if not isinstance(payload, dict):
-        return JsonResponse({"error": "Richiesta non valida: payload non supportato."}, status=400)
-
-    participant_id = str(payload.get("participantId") or "").strip()
-    condition = str(payload.get("condition") or "").strip()
-    task_id = str(payload.get("taskId") or "").strip()
-    if not participant_id:
-        return JsonResponse({"error": "Codice anonimo mancante."}, status=400)
-
-    previous_context = _study_context_payload(request)
-    active_task = request.session.get(EXPERIMENT_ACTIVE_TASK_SESSION_KEY)
-    if previous_context is not None and isinstance(active_task, dict):
-        record_experiment_event(
-            request.session,
-            event_type="task_interrupted",
-            channel="system",
-            operation="study_task",
-            interaction_mode="system",
-            task_id=str(active_task.get("taskId") or ""),
-            task_run_id=str(active_task.get("taskRunId") or ""),
-            condition=str(previous_context.get("condition") or ""),
-            status="interrupted",
-            error="study_session_replaced",
-        )
-    clear_experiment_log(request.session)
-    _clear_operational_state_for_task(request)
-    context = create_study_session(
-        participant_id=participant_id,
-        condition=condition,
-        task_id=task_id or None,
-    )
-    context_payload = _store_study_context(request, context)
-    event = record_experiment_event(
-        request.session,
-        event_type="session_started",
-        channel="system",
-        operation="study_session_started",
-        interaction_mode="system",
-        status="active",
-        details={"taskId": context.taskId or ""},
-    )
-    return JsonResponse({"active": True, "session": context_payload, "event": event})
-
-
-def _read_study_json(path: Path) -> dict[str, object]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _read_study_jsonl(path: Path, *, with_pretty: bool = False) -> list[dict[str, object]]:
-    if not path.exists():
-        return []
-    events: list[dict[str, object]] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            if with_pretty:
-                event["prettyJson"] = json.dumps(event, ensure_ascii=False, indent=2, sort_keys=True)
-            events.append(event)
-    return events
-
-
-def _resolve_study_session_path(participant_id: str, study_session_id: str) -> Path | None:
-    if sanitize_identifier(participant_id, prefix="participant") != participant_id:
-        return None
-    if sanitize_identifier(study_session_id, prefix="session") != study_session_id:
-        return None
-    root = get_study_log_root().resolve()
-    session_path = (root / participant_id / study_session_id).resolve()
-    if root not in session_path.parents or not session_path.is_dir():
-        return None
-    return session_path
-
-
-def _study_admin_records() -> list[dict[str, object]]:
-    root = get_study_log_root()
-    if not root.exists():
-        return []
-    records: list[dict[str, object]] = []
-    for participant_path in root.iterdir():
-        if not participant_path.is_dir() or participant_path.name.startswith("."):
-            continue
-        for session_path in participant_path.iterdir():
-            if not session_path.is_dir() or session_path.name.startswith("."):
-                continue
-            summary = _read_study_json(session_path / "summary.json")
-            events = _read_study_jsonl(session_path / "events.jsonl", with_pretty=True)
-            last_event = events[-1] if events else {}
-            closed = (
-                last_event.get("eventType") == "reset_completed"
-                and last_event.get("operation") == "study_session_reset"
-            )
-            records.append(
-                {
-                    "participantId": participant_path.name,
-                    "studySessionId": session_path.name,
-                    "condition": summary.get("condition") or "—",
-                    "eventCount": summary.get("eventCount") or len(events),
-                    "taskCompletionCount": summary.get("taskCompletionCount") or 0,
-                    "failedTaskCount": summary.get("failedTaskCount") or 0,
-                    "errorCount": summary.get("errorCount") or 0,
-                    "unknownRequestCount": summary.get("unknownRequestCount") or 0,
-                    "startedAt": summary.get("startedAt"),
-                    "completedAt": summary.get("completedAt"),
-                    "statusLabel": "Chiusa" if closed else "Salvata",
-                    "summary": summary,
-                    "events": events,
-                }
-            )
-    return sorted(
-        records,
-        key=lambda item: str(item.get("startedAt") or item.get("studySessionId") or ""),
-        reverse=True,
-    )
-
-
-@never_cache
-@ensure_csrf_cookie
-@require_http_methods(["GET", "POST"])
-def study_admin_login(request):
-    if _study_admin_is_authenticated(request):
-        return redirect(_study_admin_redirect_target(request))
-
-    configured = bool(_study_admin_password())
-    error = None
-    status = 200
-    if request.method == "POST":
-        submitted = str(request.POST.get("password") or "")
-        if configured and constant_time_compare(submitted, _study_admin_password()):
-            request.session.cycle_key()
-            request.session[STUDY_ADMIN_AUTH_SESSION_KEY] = _study_admin_auth_token()
-            request.session.modified = True
-            return redirect(_study_admin_redirect_target(request))
-        error = "Password non corretta." if configured else "Password amministrativa non configurata."
-        status = 401 if configured else 503
-    elif not configured:
-        error = "Password amministrativa non configurata."
-        status = 503
-
-    return render(
-        request,
-        "cartaNatura/study_admin_login.html",
-        {
-            "error": error,
-            "configured": configured,
-            "next": _study_admin_redirect_target(request),
-        },
-        status=status,
-    )
+    return JsonResponse({"transcript": transcript, "interactionId": interaction_id})
 
 
 @require_POST
-def study_admin_logout(request):
-    request.session.pop(STUDY_ADMIN_AUTH_SESSION_KEY, None)
-    request.session.modified = True
-    return redirect("study_admin_login")
+def telemetry_event(request):
+    """Accept only frontend-authoritative, non-conversational raw events."""
+    try:
+        payload = _read_json_body(request)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
 
-
-@never_cache
-@study_admin_required
-@ensure_csrf_cookie
-@require_http_methods(["GET"])
-def study_admin(request):
-    records = _study_admin_records()
-    requested_participant = str(request.GET.get("participant") or "")
-    requested_session = str(request.GET.get("session") or "")
-    selected = next(
-        (
-            record
-            for record in records
-            if record["participantId"] == requested_participant
-            and record["studySessionId"] == requested_session
-        ),
-        records[0] if records else None,
-    )
-    active_context = _study_context_payload(request)
-    active_key = None
-    if active_context:
-        active_key = (
-            active_context.get("participantId"),
-            active_context.get("studySessionId"),
-        )
-    if selected:
-        selected["isActive"] = active_key == (
-            selected["participantId"],
-            selected["studySessionId"],
-        )
-    return render(
-        request,
-        "cartaNatura/study_admin.html",
-        {
-            "records": records,
-            "selected": selected,
-            "participant_count": len({record["participantId"] for record in records}),
-            "event_count": sum(int(record["eventCount"] or 0) for record in records),
-            "deleted": request.GET.get("deleted") == "1",
-            "delete_blocked": request.GET.get("error") == "active",
-        },
-    )
-
-
-@never_cache
-@study_admin_required
-@require_http_methods(["GET"])
-def study_admin_download(request, participant_id: str, study_session_id: str, export_format: str):
-    session_path = _resolve_study_session_path(participant_id, study_session_id)
-    if session_path is None or export_format not in {"json", "jsonl"}:
-        return HttpResponseNotFound("Sessione non trovata.")
-    events_path = session_path / "events.jsonl"
-    if export_format == "jsonl":
-        body = events_path.read_text(encoding="utf-8") if events_path.exists() else ""
-        content_type = "application/jsonl; charset=utf-8"
-    else:
-        body = json.dumps(
-            {
-                "schema": "carta-natura-study-log",
-                "participantId": participant_id,
-                "studySessionId": study_session_id,
-                "summary": _read_study_json(session_path / "summary.json"),
-                "events": _read_study_jsonl(events_path),
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        content_type = "application/json; charset=utf-8"
-    response = HttpResponse(body, content_type=content_type)
-    response["Content-Disposition"] = (
-        f'attachment; filename="{participant_id}_{study_session_id}.{export_format}"'
-    )
-    return response
-
-
-@study_admin_required
-@require_POST
-def study_admin_delete(request, participant_id: str, study_session_id: str):
-    session_path = _resolve_study_session_path(participant_id, study_session_id)
-    if session_path is None:
-        return HttpResponseNotFound("Sessione non trovata.")
-    active_context = _study_context_payload(request)
-    if active_context and (
-        active_context.get("participantId") == participant_id
-        and active_context.get("studySessionId") == study_session_id
+    event_type = str(payload.get("eventType") or "")
+    if event_type not in FRONTEND_EVENT_TYPES:
+        return JsonResponse({"error": "Tipo evento frontend non consentito."}, status=400)
+    if any(
+        payload.get(key)
+        for key in ("userText", "transcript", "userTranscript", "assistantResponse")
     ):
-        return redirect(f'{reverse("study_admin")}?error=active')
-    participant_path = session_path.parent
-    shutil.rmtree(session_path)
+        return JsonResponse(
+            {"error": "Il testo conversazionale è registrato esclusivamente dal backend."},
+            status=400,
+        )
+
     try:
-        participant_path.rmdir()
-    except OSError:
-        pass
-    return redirect(f'{reverse("study_admin")}?deleted=1')
+        event = record_raw_event(
+            _ensure_session_id(request),
+            event_type=event_type,
+            interaction_mode=str(payload.get("interactionMode") or "gui"),
+            interaction_id=str(payload.get("interactionId") or "") or None,
+            operation=str(payload.get("operation") or "") or None,
+            duration_ms=payload.get("durationMs"),
+            analysis_id=str(payload.get("analysisId") or "") or None,
+            error_type=str(payload.get("errorType") or "") or None,
+            error_message=str(payload.get("errorMessage") or "") or None,
+            data=payload.get("data") if isinstance(payload.get("data"), dict) else {},
+        )
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    return JsonResponse({"eventId": event["eventId"]}, status=201)

@@ -57,8 +57,7 @@ Variabili principali:
 - `DJANGO_ALLOWED_HOSTS`
 - `DJANGO_CORS_ALLOWED_ORIGINS`
 - `DJANGO_CSRF_TRUSTED_ORIGINS`
-- `DJANGO_DATA_DIR`: directory persistente per SQLite e log dello studio
-- `STUDY_ADMIN_PASSWORD`: password condivisa richiesta dall'archivio delle sessioni
+- `DJANGO_DATA_DIR`: directory persistente per SQLite e telemetria raw JSONL
 - `AI_ASSISTANT_ENABLED`
 - `LLM_PROVIDER`: `openai` oppure `ollama`
 - `LLM_MODEL`: override generico del modello selezionato
@@ -101,7 +100,6 @@ Il container applica automaticamente le migrazioni e avvia Django con Gunicorn s
 
 ```env
 DJANGO_SECRET_KEY=<una-chiave-lunga-e-casuale>
-STUDY_ADMIN_PASSWORD=<una-password-lunga-e-casuale>
 DJANGO_ALLOWED_HOSTS=.up.railway.app
 DJANGO_CSRF_TRUSTED_ORIGINS=https://nome-servizio.up.railway.app
 DJANGO_SECURE_SSL_REDIRECT=true
@@ -116,7 +114,7 @@ Moduli principali:
 - [cartaNatura/domain](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/domain): categorie forestali, coefficienti CO2, regole sui comuni
 - [cartaNatura/services](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/services): parsing payload, dataset GIS, clip spaziale, sintesi analitica
 - [cartaNatura/interaction](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/interaction): intenti, orchestratore, runtime LLM, tool deterministici, stato conversazionale
-- [cartaNatura/experiments](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/experiments): eventi sperimentali e export JSON
+- [cartaNatura/telemetry.py](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/telemetry.py): eventi runtime raw JSONL append-only
 - [cartaNatura/static/js/modules](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/static/js/modules): API client, mappa, analisi lato client, export PDF
 - [cartaNatura/templates](/Users/matteoercolino/IdeaProjects/CartaNatura/cartaNatura/templates): shell UI WebGIS
 
@@ -143,15 +141,13 @@ Conversazionale:
 
 Intenti documentati: [docs/conversational-interface.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/conversational-interface.md:1).
 
-## Logging Sperimentale
+## Telemetria Raw
 
-Endpoint:
-
-- `GET /progettoGIS/cartaNatura/experiment/log` esporta log JSON
-- `POST /progettoGIS/cartaNatura/experiment/log` registra evento controllato
-- `DELETE /progettoGIS/cartaNatura/experiment/log` svuota log sessione
-
-Metriche raccolte: tempo completamento task, numero interazioni, passaggi operativi, errori, richieste non comprese, uso testo/voce, operazioni completate, generazione report. Il log evita testo libero, transcript, identificativi personali e dati browser.
+Il runtime salva eventi raw JSONL correlati tramite sessione anonima e, quando
+pertinente, `interactionId`. Non calcola metriche di studio. Il backend è
+autorevole per messaggi, transcript, risposte e tool; il browser registra solo
+azioni e risultati client-side. Audio, participant ID, IP e user-agent non sono
+persistiti.
 
 Dettaglio: [docs/experimental-logging.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/experimental-logging.md:1).
 
@@ -161,7 +157,11 @@ Protocollo operativo: [docs/asita-2026-pilot-protocol.md](/Users/matteoercolino/
 
 Task sheet operatore: [docs/asita-2026-task-sheet.md](/Users/matteoercolino/IdeaProjects/CartaNatura/docs/asita-2026-task-sheet.md:1).
 
-La task sheet v0.5 contiene due incarichi estesi: confronto territoriale con approfondimento delle categorie e della legenda; preparazione di un report con correzione dell'area, esame degli scenari economici e revisione del PDF. Sostituisce la proposta a quattro task. Il tempo obiettivo è di 5–7 minuti per incarico, da verificare nel pilota. La proposta di protocollo v0.2 resta consultabile come versione precedente; l'assegnazione delle modalità è a cura del ricercatore.
+Il protocollo, i partecipanti, le consegne e l'assegnazione delle condizioni sono
+gestiti manualmente dall'operatore fuori dall'app. Per impostare una prova usare
+`?mode=gui-only` oppure `?mode=conversational-only`; `?mode=full` riattiva entrambe.
+I documenti di protocollo precedenti restano materiale storico e non descrivono
+un lifecycle implementato dal runtime corrente.
 
 Funzioni provate online e limiti: [docs/asita-2026-feasibility-check.md](docs/asita-2026-feasibility-check.md).
 

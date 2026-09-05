@@ -1,5 +1,8 @@
 # Due incarichi estesi per i partecipanti
 
+> **Foglio esterno per l'operatore.** Nessun task, partecipante, assegnamento o
+> stato di completamento qui descritto è gestito dal runtime Carta Natura.
+
 Versione: **ASITA-TASK-v0.5** · 3 settembre 2026.
 
 La versione corrente contiene soltanto **due task lunghi** e sostituisce entrambe le precedenti proposte, da due e da quattro task. Ogni task è un incarico unico con più fasi e un risultato finale verificabile. Il PDF contiene una pagina per task.
