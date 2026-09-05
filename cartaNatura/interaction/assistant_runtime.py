@@ -94,6 +94,18 @@ class RuntimeLoopResult:
     grounding_payloads: tuple[dict[str, Any], ...] = ()
 
 
+class QuantitativeGroundingError(LlmProviderUnavailableError):
+    """A final answer contains numeric claims absent from verified tool output."""
+
+    def __init__(self, unsupported_literals: list[str]):
+        self.unsupported_literals = tuple(unsupported_literals)
+        super().__init__(
+            "La risposta LLM contiene valori quantitativi non verificabili nei risultati backend: "
+            + ", ".join(unsupported_literals)
+            + "."
+        )
+
+
 class AssistantTextDeltaExtractor:
     _FIELD_PATTERN = re.compile(r'"assistant_text"\s*:\s*"')
 
@@ -405,11 +417,33 @@ class AssistantRuntime:
             session_context=session_context,
             event_callback=None,
         )
-        return self._build_interaction_response(
-            request=request,
-            session_context=session_context,
-            loop_result=loop_result,
-        )
+        try:
+            return self._build_interaction_response(
+                request=request,
+                session_context=session_context,
+                loop_result=loop_result,
+            )
+        except QuantitativeGroundingError as exc:
+            corrected_body = self._request_response_body(
+                request=request,
+                session_context=session_context,
+                response_input=self._quantitative_correction_request(loop_result, exc),
+                previous_response_id=str(loop_result.response_body.get("id") or ""),
+                event_callback=None,
+                provider_metadata=self._build_provider_metadata(
+                    current_turn_input=self._build_model_input(
+                        request=request,
+                        session_context=session_context,
+                    ),
+                    tool_exchanges=[],
+                    response_phase="final",
+                ),
+            )
+            return self._build_interaction_response(
+                request=request,
+                session_context=session_context,
+                loop_result=replace(loop_result, response_body=corrected_body),
+            )
 
     def stream_handle(
         self,
@@ -496,8 +530,12 @@ class AssistantRuntime:
                     outcome=outcome,
                     failed_tool_calls=failed_tool_calls,
                 )
+                model_tool_output = self._build_model_tool_output(
+                    tool_name=tool_call["name"],
+                    payload=outcome.payload,
+                )
                 if outcome.tool_error is None:
-                    grounding_payloads.append(outcome.payload)
+                    grounding_payloads.append(model_tool_output)
                 tool_request, tool_context = self._advance_tool_context(tool_request, tool_context, outcome)
                 if outcome.clears_context:
                     latest_analysis_result = latest_analysis = latest_selection_payload = None
@@ -543,13 +581,7 @@ class AssistantRuntime:
                     {
                         "type": "function_call_output",
                         "call_id": tool_call["call_id"],
-                        "output": json.dumps(
-                            self._build_model_tool_output(
-                                tool_name=tool_call["name"],
-                                payload=outcome.payload,
-                            ),
-                            ensure_ascii=True,
-                        ),
+                        "output": json.dumps(model_tool_output, ensure_ascii=True),
                     }
                 )
 
@@ -603,27 +635,58 @@ class AssistantRuntime:
                 emit_message_deltas=False,
             )
 
-        response = self._build_interaction_response(
-            request=request,
-            session_context=session_context,
-            loop_result=RuntimeLoopResult(
-                response_body=response_body,
-                latest_analysis_result=latest_analysis_result,
-                latest_economic_result=latest_economic_result,
-                latest_scenario_comparison=latest_scenario_comparison,
-                latest_report_context=latest_report_context,
-                latest_map_filter=latest_map_filter,
-                latest_last_analysis_details=latest_last_analysis_details,
-                latest_history_result=latest_history_result,
-                latest_search_result=latest_search_result,
-                latest_tool_error=latest_tool_error,
-                latest_analysis=latest_analysis,
-                latest_selection_payload=latest_selection_payload,
-                derived_intent=derived_intent,
-                clears_context=clears_context,
-                grounding_payloads=tuple(grounding_payloads),
-            ),
+        loop_result = RuntimeLoopResult(
+            response_body=response_body,
+            latest_analysis_result=latest_analysis_result,
+            latest_economic_result=latest_economic_result,
+            latest_scenario_comparison=latest_scenario_comparison,
+            latest_report_context=latest_report_context,
+            latest_map_filter=latest_map_filter,
+            latest_last_analysis_details=latest_last_analysis_details,
+            latest_history_result=latest_history_result,
+            latest_search_result=latest_search_result,
+            latest_tool_error=latest_tool_error,
+            latest_analysis=latest_analysis,
+            latest_selection_payload=latest_selection_payload,
+            derived_intent=derived_intent,
+            clears_context=clears_context,
+            grounding_payloads=tuple(grounding_payloads),
         )
+        try:
+            response = self._build_interaction_response(
+                request=request,
+                session_context=session_context,
+                loop_result=loop_result,
+            )
+        except QuantitativeGroundingError as exc:
+            yield {
+                "type": "status",
+                "stage": "correcting_response",
+                "phase": "final",
+                "message": "Correggo la formulazione quantitativa usando i risultati verificati.",
+            }
+            corrected_body = yield from self._stream_response_body_events(
+                request=request,
+                payload=self._build_model_request_payload(
+                    request=request,
+                    session_context=session_context,
+                    response_input=self._quantitative_correction_request(loop_result, exc),
+                    previous_response_id=str(response_body.get("id") or ""),
+                    provider_metadata=self._build_provider_metadata(
+                        current_turn_input=current_turn_input,
+                        tool_exchanges=[],
+                        response_phase="final",
+                    ),
+                ),
+                phase="final",
+                emit_message_deltas=False,
+            )
+            loop_result = replace(loop_result, response_body=corrected_body)
+            response = self._build_interaction_response(
+                request=request,
+                session_context=session_context,
+                loop_result=loop_result,
+            )
         yield {
             "type": "message_delta",
             "delta": response.messages[0].text,
@@ -734,8 +797,12 @@ class AssistantRuntime:
                     outcome=outcome,
                     failed_tool_calls=failed_tool_calls,
                 )
+                model_tool_output = self._build_model_tool_output(
+                    tool_name=tool_call["name"],
+                    payload=outcome.payload,
+                )
                 if outcome.tool_error is None:
-                    grounding_payloads.append(outcome.payload)
+                    grounding_payloads.append(model_tool_output)
                 tool_request, tool_context = self._advance_tool_context(tool_request, tool_context, outcome)
                 if outcome.clears_context:
                     latest_analysis_result = latest_analysis = latest_selection_payload = None
@@ -791,13 +858,7 @@ class AssistantRuntime:
                     {
                         "type": "function_call_output",
                         "call_id": tool_call["call_id"],
-                        "output": json.dumps(
-                            self._build_model_tool_output(
-                                tool_name=tool_call["name"],
-                                payload=outcome.payload,
-                            ),
-                            ensure_ascii=True,
-                        ),
+                        "output": json.dumps(model_tool_output, ensure_ascii=True),
                     }
                 )
 
@@ -1277,6 +1338,33 @@ class AssistantRuntime:
             }],
         }]
 
+    @staticmethod
+    def _quantitative_correction_request(
+        loop_result: RuntimeLoopResult,
+        error: QuantitativeGroundingError,
+    ) -> list[dict[str, Any]]:
+        final_payload = AssistantRuntime._parse_final_payload(loop_result.response_body)
+        correction_context = {
+            "invalidAssistantText": final_payload.get("assistant_text", ""),
+            "unsupportedLiterals": list(error.unsupported_literals),
+            "verifiedToolOutputs": list(loop_result.grounding_payloads),
+        }
+        return [{
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": (
+                    "La risposta finale precedente non ha superato il quantitative grounding. "
+                    "Correggi una sola volta l'intero oggetto JSON finale. Non chiamare tool, non "
+                    "ricalcolare risultati e non introdurre numeri nuovi. Nel testo usa esclusivamente "
+                    "valori quantitativi copiati dagli output backend verificati qui sotto, eventualmente "
+                    "formattati con arrotondamento decimale a 0, 1 o 2 cifre. Se una quantità non compare "
+                    "esplicitamente, omettila. Mantieni intent, azioni UI e significato della risposta.\n"
+                    + json.dumps(correction_context, ensure_ascii=True)
+                ),
+            }],
+        }]
+
     def _build_interaction_response(
         self,
         *,
@@ -1293,11 +1381,11 @@ class AssistantRuntime:
         )
         if not message_text:
             raise LlmProviderUnavailableError("Il modello LLM ha restituito una risposta testuale vuota.")
+        self._validate_report_claims(message_text)
         self._validate_quantitative_grounding(
             message_text=message_text,
             grounding_payloads=loop_result.grounding_payloads,
         )
-        self._validate_report_claims(message_text)
         ui_actions = filter_ui_actions(final_payload.get("ui_actions"))
         follow_up_suggestions = final_payload.get("follow_up_suggestions", [])
         final_intent = self._resolve_final_intent(
@@ -1354,15 +1442,41 @@ class AssistantRuntime:
         if tool_name in {MODEL_TOOL_ANALYZE_MUNICIPALITIES, MODEL_TOOL_ANALYZE_CURRENT_SELECTION}:
             # Keep geometry out of the model context, but expose every computed
             # metric and the id needed for subsequent tool calls.
+            summary = AssistantRuntime._summary_with_authorized_derivations(
+                payload.get("summary", {})
+            )
             return {
                 "analysisId": payload.get("analysisId"),
                 "source": payload.get("source"),
                 "requestedMunicipalities": payload.get("requestedMunicipalities", []),
                 "intersectedMunicipalities": payload.get("intersectedMunicipalities", []),
-                "summary": payload.get("summary", {}),
+                "summary": summary,
                 **({"ok": False, "error": payload["error"]} if "error" in payload else {}),
             }
         return payload
+
+    @staticmethod
+    def _summary_with_authorized_derivations(summary: Any) -> dict[str, Any]:
+        if not isinstance(summary, dict):
+            return {}
+        enriched = dict(summary)
+        enriched_items = []
+        for item in summary.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            enriched_item = dict(item)
+            hectares = item.get("hectares")
+            co2_per_hectare = item.get("co2PerHectare")
+            if (
+                isinstance(hectares, Real)
+                and not isinstance(hectares, bool)
+                and isinstance(co2_per_hectare, Real)
+                and not isinstance(co2_per_hectare, bool)
+            ):
+                enriched_item["totalCo2"] = float(hectares) * float(co2_per_hectare)
+            enriched_items.append(enriched_item)
+        enriched["items"] = enriched_items
+        return enriched
 
     @staticmethod
     def _serialize_response(response: InteractionResponse) -> dict[str, Any]:
@@ -1539,11 +1653,7 @@ class AssistantRuntime:
             )
         ]
         if unsupported:
-            raise LlmProviderUnavailableError(
-                "La risposta LLM contiene valori quantitativi non verificabili nei risultati backend: "
-                + ", ".join(unsupported)
-                + "."
-            )
+            raise QuantitativeGroundingError(unsupported)
 
     @staticmethod
     def _numeric_literals(text: str) -> list[tuple[str, float]]:

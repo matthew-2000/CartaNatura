@@ -12,6 +12,7 @@ from django.test import Client, SimpleTestCase, override_settings
 from shapely.geometry import box
 
 from cartaNatura.interaction.analysis_store import InMemoryAnalysisStore, create_stored_analysis
+from cartaNatura.interaction.assistant_runtime import AssistantRuntime
 from cartaNatura.interaction.llm import (
     LlmProviderUnavailableError,
     OpenAiResponsesLlmProvider,
@@ -79,6 +80,21 @@ class FailingAfterResponsesProvider(FakeResponsesProvider):
         if self._responses:
             return super().create_response(**payload)
         raise LlmProviderUnavailableError("OpenAI unavailable")
+
+
+class CountingAnalysisStore(InMemoryAnalysisStore):
+    def __init__(self):
+        super().__init__()
+        self.committed_saves = 0
+        self.committed_clears = 0
+
+    def save(self, analysis):
+        self.committed_saves += 1
+        return super().save(analysis)
+
+    def clear(self):
+        self.committed_clears += 1
+        return super().clear()
 
 
 class ConversationalTrustBoundaryTests(SimpleTestCase):
@@ -190,7 +206,7 @@ class ConversationalTrustBoundaryTests(SimpleTestCase):
                 input=InteractionInput(text="Analizza Avellino"),
             )))
 
-    def test_quantitative_contradiction_is_rejected_and_economic_mutation_rolls_back(self):
+    def test_quantitative_contradiction_is_rejected_after_one_retry_and_mutation_rolls_back(self):
         store = InMemoryAnalysisStore()
         saved = store.save(create_stored_analysis(
             source="municipalities",
@@ -205,6 +221,7 @@ class ConversationalTrustBoundaryTests(SimpleTestCase):
                 "scenario_key": "social_cost", "analysis_id": saved.analysis_id,
             }, call_id="economic"),
             model_answer("Il valore autorevole è 999 euro.", "compare_economic_scenarios"),
+            model_answer("Il valore autorevole resta 999 euro.", "compare_economic_scenarios"),
         ], store=store)
 
         with self.assertRaisesMessage(LlmProviderUnavailableError, "non verificabili"):
@@ -215,6 +232,201 @@ class ConversationalTrustBoundaryTests(SimpleTestCase):
                 context=InteractionContext(displayed_analysis_id=saved.analysis_id),
             ))
         self.assertIsNone(store.get(saved.analysis_id).economic_valuation)
+
+    @patch("cartaNatura.interaction.tools.registry.analyze_municipalities", side_effect=fake_analysis)
+    def test_grounded_number_succeeds_without_correction_retry(self, analyze):
+        store = CountingAnalysisStore()
+        provider = FakeResponsesProvider([
+            tool_call("analyze_municipalities", {"municipality_names": ["Avellino"]}, call_id="analysis"),
+            model_answer("La CO2 totale è 10,00.", "analyze_municipalities"),
+        ])
+        orchestrator = build_default_orchestrator(
+            llm_provider=provider,
+            analysis_store=store,
+            session_store=InMemorySessionStore(),
+        )
+
+        response = orchestrator.handle(InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="grounded-first-answer",
+            input=InteractionInput(text="Analizza Avellino"),
+        ))
+
+        self.assertEqual(response.messages[0].text, "La CO2 totale è 10,00.")
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(analyze.call_count, 1)
+        self.assertEqual(store.committed_saves, 1)
+        self.assertEqual(store.committed_clears, 1)
+
+    @patch("cartaNatura.interaction.tools.registry.analyze_municipalities", side_effect=fake_analysis)
+    def test_one_cent_difference_is_corrected_without_reexecuting_tool_and_commits_once(self, analyze):
+        store = CountingAnalysisStore()
+        provider = FakeResponsesProvider([
+            tool_call("analyze_municipalities", {"municipality_names": ["Avellino"]}, call_id="analysis"),
+            model_answer("La CO2 totale è 9,99.", "analyze_municipalities"),
+            model_answer("La CO2 totale è 10,00.", "analyze_municipalities"),
+        ])
+        orchestrator = build_default_orchestrator(
+            llm_provider=provider,
+            analysis_store=store,
+            session_store=InMemorySessionStore(),
+        )
+
+        response = orchestrator.handle(InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="grounding-correction",
+            input=InteractionInput(text="Analizza Avellino"),
+        ))
+
+        self.assertEqual(response.messages[0].text, "La CO2 totale è 10,00.")
+        self.assertEqual(analyze.call_count, 1)
+        self.assertEqual(len(provider.calls), 3)
+        self.assertEqual(provider.calls[-1]["tools"], [])
+        self.assertEqual(provider.calls[-1]["tool_choice"], "none")
+        self.assertIn("9,99", provider.calls[-1]["input"][0]["content"][0]["text"])
+        self.assertEqual(store.committed_saves, 1)
+        self.assertEqual(store.committed_clears, 1)
+        self.assertEqual(len(store.list_recent()), 1)
+
+    @patch("cartaNatura.interaction.tools.registry.analyze_municipalities", side_effect=fake_analysis)
+    def test_invented_number_remaining_invalid_after_retry_fails_without_commit(self, analyze):
+        store = CountingAnalysisStore()
+        provider = FakeResponsesProvider([
+            tool_call("analyze_municipalities", {"municipality_names": ["Avellino"]}, call_id="analysis"),
+            model_answer("La CO2 totale è 999,99.", "analyze_municipalities"),
+            model_answer("La CO2 totale è ancora 888,88.", "analyze_municipalities"),
+        ])
+        orchestrator = build_default_orchestrator(
+            llm_provider=provider,
+            analysis_store=store,
+            session_store=InMemorySessionStore(),
+        )
+
+        with self.assertRaisesMessage(LlmProviderUnavailableError, "888,88"):
+            orchestrator.handle(InteractionRequest(
+                channel=InteractionChannel.WEB_CHAT,
+                session_id="grounding-double-failure",
+                input=InteractionInput(text="Analizza Avellino"),
+            ))
+
+        self.assertEqual(analyze.call_count, 1)
+        self.assertEqual(len(provider.calls), 3)
+        self.assertEqual(store.committed_saves, 0)
+        self.assertEqual(store.committed_clears, 0)
+        self.assertEqual(store.list_recent(), [])
+
+    @patch("cartaNatura.interaction.tools.registry.analyze_municipalities", side_effect=fake_analysis)
+    def test_streaming_correction_does_not_publish_invalid_draft_or_reexecute_tool(self, analyze):
+        store = CountingAnalysisStore()
+        provider = FakeStreamingProvider(model_streams([
+            tool_call("analyze_municipalities", {"municipality_names": ["Avellino"]}, call_id="analysis"),
+            model_answer("La CO2 totale è 9,99.", "analyze_municipalities"),
+            model_answer("La CO2 totale è 10,00.", "analyze_municipalities"),
+        ]))
+        orchestrator = build_default_orchestrator(
+            llm_provider=provider,
+            analysis_store=store,
+            session_store=InMemorySessionStore(),
+        )
+
+        events = list(orchestrator.handle_stream(InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="stream-grounding-correction",
+            input=InteractionInput(text="Analizza Avellino"),
+        )))
+
+        message_text = "".join(
+            event.get("delta", "") for event in events if event["type"] == "message_delta"
+        )
+        self.assertEqual(message_text, "La CO2 totale è 10,00.")
+        self.assertNotIn("9,99", message_text)
+        self.assertIn("correcting_response", [event.get("stage") for event in events])
+        self.assertEqual(analyze.call_count, 1)
+        self.assertEqual(len(provider.stream_calls), 3)
+        self.assertEqual(provider.stream_calls[-1]["tools"], [])
+        self.assertEqual(store.committed_saves, 1)
+        self.assertEqual(store.committed_clears, 1)
+
+    def test_only_explicitly_authorized_category_derivation_is_grounded(self):
+        model_output = AssistantRuntime._build_model_tool_output(
+            tool_name="analyze_municipalities",
+            payload={
+                "analysisId": "analysis-derived",
+                "summary": {
+                    "items": [{
+                        "key": "faggete", "label": "Faggete",
+                        "hectares": 2.0, "co2PerHectare": 5.0,
+                    }],
+                    "totalCo2": 11.0,
+                    "totalHectares": 2.0,
+                    "hasSupportedVegetation": True,
+                    "topCategory": {"key": "faggete", "label": "Faggete"},
+                },
+            },
+        )
+
+        self.assertEqual(model_output["summary"]["items"][0]["totalCo2"], 10.0)
+        AssistantRuntime._validate_quantitative_grounding(
+            message_text="La categoria produce 10,00 tonnellate.",
+            grounding_payloads=(model_output,),
+        )
+        with self.assertRaisesMessage(LlmProviderUnavailableError, "10,01"):
+            AssistantRuntime._validate_quantitative_grounding(
+                message_text="La categoria produce 10,01 tonnellate.",
+                grounding_payloads=(model_output,),
+            )
+
+    @patch("cartaNatura.interaction.tools.registry.analyze_municipalities")
+    def test_caserta_serino_comparison_repairs_observed_rounding_failure(self, analyze):
+        baselines = {
+            "Caserta": (1070.29, 4476.63, "Querceti di roverella"),
+            "Serino": (2428.70, 15370.997064533913, "Castagneti"),
+        }
+
+        def analysis_for(municipality_names):
+            name = municipality_names[0]
+            hectares, total_co2, top_label = baselines[name]
+            return {
+                "source": "municipalities",
+                "selectionPayload": {"areas": [{"kind": "municipalities", "geojson": {}}]},
+                "clipped": {"type": "FeatureCollection", "features": []},
+                "requestedMunicipalities": [name],
+                "intersectedMunicipalities": [name],
+                "summary": {
+                    "items": [], "totalCo2": total_co2, "totalHectares": hectares,
+                    "hasSupportedVegetation": True,
+                    "topCategory": {"key": top_label.casefold(), "label": top_label},
+                },
+            }
+
+        analyze.side_effect = analysis_for
+        store = CountingAnalysisStore()
+        provider = FakeResponsesProvider([
+            tool_call("analyze_municipalities", {"municipality_names": ["Caserta"]}, call_id="caserta"),
+            tool_call("analyze_municipalities", {"municipality_names": ["Serino"]}, call_id="serino"),
+            tool_call("compare_recent_analyses", {"recent_count": 2}, call_id="comparison"),
+            model_answer("Serino assorbe 15.370,99 tonnellate di CO2.", "compare_analyses"),
+            model_answer("Serino assorbe 15.371,00 tonnellate di CO2.", "compare_analyses"),
+        ])
+        orchestrator = build_default_orchestrator(
+            llm_provider=provider,
+            analysis_store=store,
+            session_store=InMemorySessionStore(),
+        )
+
+        response = orchestrator.handle(InteractionRequest(
+            channel=InteractionChannel.WEB_CHAT,
+            session_id="caserta-serino-regression",
+            input=InteractionInput(text="Analizza separatamente Caserta e Serino e poi confronta"),
+        ))
+
+        self.assertEqual(response.messages[0].text, "Serino assorbe 15.371,00 tonnellate di CO2.")
+        self.assertEqual(analyze.call_count, 2)
+        self.assertEqual(len(provider.calls), 5)
+        self.assertEqual(provider.calls[-1]["tools"], [])
+        self.assertEqual(store.committed_saves, 2)
+        self.assertEqual(store.committed_clears, 1)
+        self.assertEqual(len(store.list_recent()), 2)
 
     def test_report_tool_cannot_claim_pdf_generation_or_download(self):
         store = InMemoryAnalysisStore()
